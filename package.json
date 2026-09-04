@@ -1,7 +1,7 @@
 {
   "name": "one_piece_bot",
   "version": "1.0.0",
-  "main": "bot.js",
+  "main": "server.js",
   "dependencies": {
     "tmi.js": "^1.8.5",
     "better-sqlite3": "^11.0.0"
