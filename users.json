@@ -1,0 +1,24 @@
+{
+  "fan_d_larana": {
+    "armadura": 1,
+    "observacion": 0,
+    "conquistador": 0,
+    "fruta": null,
+    "racha_dia": 0,
+    "ultimo_comando": 0,
+    "minutos_lurk": 0,
+    "rechazo_usado": 0,
+    "ultimo_dia": null
+  },
+  "lenno_ap": {
+    "armadura": 2,
+    "observacion": 0,
+    "conquistador": 0,
+    "fruta": null,
+    "racha_dia": 0,
+    "ultimo_comando": 0,
+    "minutos_lurk": 0,
+    "rechazo_usado": 0,
+    "ultimo_dia": null
+  }
+}
