@@ -25,7 +25,7 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 async function getUsuario(username) {
     console.log(`?? getUsuario llamado para: "${username}"`);
 
-    // Usar .select() sin .single() para evitar PGRST116
+    // Obtener usuario
     const { data, error } = await supabase
         .from('usuarios')
         .select('*')
@@ -36,17 +36,17 @@ async function getUsuario(username) {
         return null;
     }
 
-    // Si no hay datos, data es un array vacío []
+    // Si no existe, crearlo
     if (!data || data.length === 0) {
         console.log(`?? Usuario "${username}" no existe. Creando...`);
-        
+
         const { data: newUser, error: insertError } = await supabase
             .from('usuarios')
             .insert([{
-                username: username,
+                username,
                 armadura: 0,
-                observacion: 0,
-                conquistador: 0,
+                haki_observacion: 0,
+                haki_conquistador: 0,
                 fruta: null,
                 fruta_pendiente: null,
                 recompensa_publica: 0,
@@ -55,7 +55,13 @@ async function getUsuario(username) {
                 minutos_lurk: 0,
                 rechazo_usado: 0,
                 ultimo_dia: null,
-                titulos: []  // array vacío
+                titulos: [],
+                evento_tipo: null,
+                evento_fase: null,
+                evento_fruta: null,
+                evento_nivel: null,
+                evento_estado: null,
+                evento_comandos: null
             }])
             .select()
             .single();

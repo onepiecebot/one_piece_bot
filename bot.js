@@ -6,7 +6,7 @@ const { getUsuario, updateUsuario, supabase } = require('./database.js');
 // COOLDOWNS
 // ============================================
 const cooldowns = {};
-const COOLDOWN_FRUTA = 3600000; // 1 hora en milisegundos
+const COOLDOWN_FRUTA = 60000; // 1 minuto (para pruebas)
 
 // ============================================
 // ADMIN: Dueño del canal
@@ -30,32 +30,85 @@ client.connect().then(() => {
 }).catch(err => console.error('Error al conectar:', err));
 
 // ============================================
-// FUNCIÓN PARA CALCULAR RESULTADO DE COMBATE
+// SISTEMA DE COMBATE
 // ============================================
-function calcularCombate(nivel, hakiConquistador) {
-    const baseExito = [0, 90, 70, 50, 30, 10];
-    let exito = baseExito[nivel] || 50;
-    const bonus = Math.min(Math.floor(hakiConquistador / 50), 20);
-    exito += bonus;
-    return Math.random() * 100 < exito;
+
+function calcularPoderHakis(armadura, observacion, conquistador) {
+    const factorArmadura = armadura <= 0 ? 0 : armadura <= 49 ? 0.2 : armadura <= 79 ? 0.5 : armadura <= 99 ? 0.8 : 1.0;
+    const factorObservacion = observacion <= 0 ? 0 : observacion <= 49 ? 0.2 : observacion <= 79 ? 0.5 : observacion <= 99 ? 0.8 : 1.0;
+    const factorConquistador = conquistador <= 49 ? 0 : conquistador <= 79 ? 0.1 : conquistador <= 94 ? 0.25 : conquistador <= 100 ? 0.5 : 1.0;
+
+    return (armadura * factorArmadura * 2.5) + (observacion * factorObservacion * 1.8) + (conquistador * factorConquistador * 4.0);
 }
 
-// ============================================
-// FUNCIÓN PARA ASIGNAR RECOMPENSAS
-// ============================================
-function obtenerRecompensas(nivel, resultado) {
-    const recompensas = {
-        1: { conquistador: 5, berries: 1000000 },
-        2: { conquistador: 10, berries: 3000000 },
-        3: { conquistador: 15, berries: 5000000 },
-        4: { conquistador: 20, berries: 10000000 },
-        5: { conquistador: 30, berries: 15000000 }
+function calcularPoderBase(poderFruta, armadura, observacion, conquistador) {
+    return poderFruta + calcularPoderHakis(armadura, observacion, conquistador);
+}
+
+function aplicarVariacion(poder) {
+    const random = Math.floor(Math.random() * 101);
+    return poder * (950 + random) / 1000;
+}
+
+function calcularCombate(poderUsuario, poderEnemigo) {
+    const poderFinalUsuario = aplicarVariacion(poderUsuario);
+    const poderFinalEnemigo = aplicarVariacion(poderEnemigo);
+    const victoria = poderFinalUsuario > poderFinalEnemigo;
+    const diferencia = poderFinalUsuario - poderFinalEnemigo;
+    const porcentaje = (diferencia / poderFinalEnemigo) * 100;
+    return { victoria, diferencia, porcentaje, poderFinalUsuario, poderFinalEnemigo };
+}
+
+function obtenerMensaje(victoria, porcentaje) {
+    const categoria = victoria ? 'victoria' : 'derrota';
+    let rango = '';
+    const absP = Math.abs(porcentaje);
+    if (absP > 50) rango = 'aplastante';
+    else if (absP >= 20) rango = 'clara';
+    else if (absP >= 5) rango = 'ajustada';
+    else if (absP >= 0) rango = 'por_los_pelos';
+
+    const mensajes = {
+        victoria: {
+            aplastante: [
+                '¡VICTORIA ARROLLADORA! Tu poder es abrumador. El enemigo apenas puede mantenerse en pie antes de caer derrotado. La audiencia enmudece ante semejante despliegue de fuerza.',
+                '¡HAS DEVASTADO A TU RIVAL! Cada golpe era una sentencia. El enemigo no ha tenido oportunidad ni de reaccionar.'
+            ],
+            clara: [
+                '¡VICTORIA CONTUNDENTE! Has dominado el combate de principio a fin. El enemigo ha luchado con honor, pero tu poder era muy superior.',
+                '¡TRIUNFO SIN DISCUSIÓN! Te has impuesto con autoridad. El rival ha reconocido tu superioridad.'
+            ],
+            ajustada: [
+                '¡VICTORIA SUDADA! Has ganado, pero no ha sido fácil. Has tenido que emplearte a fondo para superar a tu rival.',
+                '¡VICTORIA POR LOS JUSTOS! El combate ha sido igualado, pero tu determinación ha sido mayor.'
+            ],
+            por_los_pelos: [
+                '¡VICTORIA AGÓNICA! Literalmente has ganado por un pelo. El enemigo ha caído justo cuando se disponía a atacar. ¡Menudo respiro!',
+                '¡VICTORIA MILAGROSA! Has ganado por centímetros. El destino ha estado de tu lado hoy.'
+            ]
+        },
+        derrota: {
+            aplastante: [
+                'DERROTA ANIQUILADORA. El enemigo te ha superado con una facilidad pasmosa. Ni siquiera has podido reaccionar a sus movimientos.',
+                'HAS SIDO BARRIDO. Tu oponente era de otro nivel. Vuelve a entrenar y busca la revancha.'
+            ],
+            clara: [
+                'DERROTA CLARA. Has luchado con valor, pero el enemigo ha sido claramente superior. La diferencia de poder era evidente.',
+                'DERROTA SIN PALIATIVOS. Has dado todo, pero el rival ha sido demasiado fuerte hoy.'
+            ],
+            ajustada: [
+                'DERROTA AJUSTADA. Has estado a punto de ganar. El combate ha sido igualado, pero en el momento clave el enemigo ha sido más listo.',
+                'DERROTA POR POCO. Has peleado bien, pero te ha faltado un último esfuerzo.'
+            ],
+            por_los_pelos: [
+                'DERROTA POR LOS PELOS. Has perdido por un suspiro. El enemigo ha caído justo después de su ataque, pero ha sido él quien se ha levantado primero.',
+                'DERROTA INEXTREMIS. Has estado a punto de ganar. La diferencia ha sido mínima.'
+            ]
+        }
     };
-    const base = recompensas[nivel] || recompensas[1];
-    return resultado ? base : {
-        conquistador: -Math.floor(base.conquistador / 2),
-        berries: -Math.floor(base.berries / 4)
-    };
+
+    const pool = mensajes[categoria][rango] || mensajes[categoria]['ajustada'];
+    return pool[Math.floor(Math.random() * pool.length)];
 }
 
 // ============================================
@@ -108,15 +161,14 @@ client.on('message', async (channel, tags, message, self) => {
         const ultimoUso = cooldowns[`fruta_${username}`] || 0;
         const tiempoRestante = COOLDOWN_FRUTA - (ahora - ultimoUso);
         if (tiempoRestante > 0) {
-            const minutos = Math.floor(tiempoRestante / 60000);
-            const segundos = Math.floor((tiempoRestante % 60000) / 1000);
-            client.say(channel, `@${tags.username} Debes esperar ${minutos} min y ${segundos} seg para usar !fruta nuevamente.`);
+            const segundos = Math.ceil(tiempoRestante / 1000);
+            client.say(channel, `@${tags.username} Debes esperar ${segundos} segundos para usar !fruta nuevamente.`);
             return;
         }
 
-        // Verificar si el usuario está en medio de un evento
+        // Verificar evento pendiente
         if (user && user.evento_estado === 'pendiente') {
-            client.say(channel, `@${tags.username} Ya tienes un evento pendiente. Completa la decisión primero.`);
+            client.say(channel, `@${tags.username} Ya tienes un evento pendiente. Usa !pendiente para ver la decisión que debes tomar.`);
             return;
         }
 
@@ -126,68 +178,42 @@ client.on('message', async (channel, tags, message, self) => {
             return;
         }
 
-        // Temporal: racha activa para pruebas
+        // Racha activa para pruebas
         const tieneRacha = true;
         if (!tieneRacha) {
             client.say(channel, `@${tags.username} Necesitas tener la racha activa para buscar una fruta.`);
             return;
         }
 
-        // ============================================
-        // 1. Probabilidad general (5%)
-        // ============================================
+        // Probabilidad general (5%)
         const probGeneral = 5;
-        const randomGeneral = Math.random() * 100;
-        if (randomGeneral > probGeneral) {
+        if (Math.random() * 100 > probGeneral) {
             cooldowns[`fruta_${username}`] = Date.now();
             client.say(channel, `@${tags.username} No tuviste suerte esta vez. ¡Suerte para la próxima!`);
             return;
         }
 
-        // ============================================
-        // 2. Obtener frutas disponibles
-        // ============================================
-        const { data: usuariosConFruta, error: errorUsuarios } = await supabase
-            .from('usuarios')
-            .select('fruta')
-            .not('fruta', 'is', null);
-
-        if (errorUsuarios) {
-            console.error('Error al obtener usuarios con fruta:', errorUsuarios);
-            client.say(channel, `@${tags.username} Hubo un error. Intenta de nuevo.`);
-            return;
-        }
-
-        const frutasOcupadas = usuariosConFruta.map(u => u.fruta);
+        // Obtener frutas disponibles
+        const { data: usuariosConFruta } = await supabase.from('usuarios').select('fruta').not('fruta', 'is', null);
+        const frutasOcupadas = (usuariosConFruta || []).map(u => u.fruta);
         const { data: frutasDisponibles, error: errorFrutas } = await supabase
             .from('frutas')
             .select('*')
             .not('nombre', 'in', `(${frutasOcupadas.map(f => `'${f}'`).join(',')})`);
 
-        if (errorFrutas) {
-            console.error('Error al obtener frutas:', errorFrutas);
-            client.say(channel, `@${tags.username} Hubo un error. Intenta de nuevo.`);
-            return;
-        }
-
-        if (!frutasDisponibles || frutasDisponibles.length === 0) {
+        if (errorFrutas || !frutasDisponibles || frutasDisponibles.length === 0) {
             cooldowns[`fruta_${username}`] = Date.now();
             client.say(channel, `@${tags.username} No hay frutas disponibles en este momento. ¡Vuelve más tarde!`);
             return;
         }
 
-        // ============================================
-        // 3. Selección ponderada
-        // ============================================
+        // Selección ponderada
         const totalProb = frutasDisponibles.reduce((sum, f) => sum + f.probabilidad, 0);
         let randomPick = Math.random() * totalProb;
         let selectedFruit = null;
         for (const fruta of frutasDisponibles) {
             randomPick -= fruta.probabilidad;
-            if (randomPick <= 0) {
-                selectedFruit = fruta;
-                break;
-            }
+            if (randomPick <= 0) { selectedFruit = fruta; break; }
         }
 
         if (!selectedFruit) {
@@ -196,12 +222,8 @@ client.on('message', async (channel, tags, message, self) => {
             return;
         }
 
-        // Actualizar cooldown
         cooldowns[`fruta_${username}`] = Date.now();
 
-        // ============================================
-        // 4. Verificar si la fruta tiene evento
-        // ============================================
         if (selectedFruit.evento) {
             await updateUsuario(username, {
                 evento_tipo: 'fruta',
@@ -220,6 +242,28 @@ client.on('message', async (channel, tags, message, self) => {
     }
 
     // ============================================
+    // !pendiente
+    // ============================================
+    if (command === '!pendiente') {
+        const user = await getUsuario(username);
+        if (!user || user.evento_estado !== 'pendiente') {
+            client.say(channel, `@${tags.username} No tienes ningún evento pendiente.`);
+            return;
+        }
+        const { data: fruta } = await supabase
+            .from('frutas')
+            .select('fase1, fase2')
+            .eq('nombre', user.evento_fruta)
+            .single();
+        if (!fruta) {
+            client.say(channel, `@${tags.username} Error al obtener detalles del evento.`);
+            return;
+        }
+        const texto = user.evento_fase === 'avistamiento' ? fruta.fase1 : fruta.fase2;
+        client.say(channel, `@${tags.username} ${texto}`);
+        return;
+    }
+    // ============================================
     // !testevento (FORZAR EVENTO DE PRUEBA)
     // ============================================
     if (command === '!testevento') {
@@ -235,10 +279,10 @@ client.on('message', async (channel, tags, message, self) => {
             evento_comandos: null
         });
 
-        // Obtener la fruta Mera Mera para mostrar su fase1
+        // Buscar la fruta Mera Mera en la tabla
         const { data: fruta, error } = await supabase
             .from('frutas')
-            .select('fase1')
+            .select('*')
             .eq('nombre', 'Mera Mera no Mi')
             .single();
 
@@ -248,12 +292,12 @@ client.on('message', async (channel, tags, message, self) => {
             return;
         }
 
-        // Simular que encontró la Mera Mera no Mi (evento)
+        // Guardar evento exactamente igual que en !fruta
         await updateUsuario(username, {
             evento_tipo: 'fruta',
             evento_fase: 'avistamiento',
-            evento_fruta: 'Mera Mera no Mi',
-            evento_nivel: 4,
+            evento_fruta: fruta.nombre,
+            evento_nivel: fruta.nivel || 1,
             evento_estado: 'pendiente',
             evento_comandos: 'si_no'
         });
@@ -263,72 +307,80 @@ client.on('message', async (channel, tags, message, self) => {
     }
 
     // ============================================
-    // !si (Fase 1 - Avistamiento)
-    // ============================================
-    if (command === '!si') {
-        const user = await getUsuario(username);
-        if (!user || user.evento_estado !== 'pendiente' || user.evento_tipo !== 'fruta' || user.evento_fase !== 'avistamiento') {
-            client.say(channel, `@${tags.username} No tienes un evento de fruta pendiente en esta fase.`);
-            return;
-        }
-
-        await updateUsuario(username, {
-            evento_fase: 'encuentro',
-            evento_comandos: 'pelear_huir'
-        });
-
-        const { data: fruta } = await supabase
-            .from('frutas')
-            .select('fase2')
-            .eq('nombre', user.evento_fruta)
-            .single();
-
-        client.say(channel, `@${tags.username} ${fruta.fase2}`);
-        return;
-    }
-
-    // ============================================
-    // !no (Fase 1 - Avistamiento)
-    // ============================================
-    if (command === '!no') {
-        const user = await getUsuario(username);
-        if (!user || user.evento_estado !== 'pendiente' || user.evento_tipo !== 'fruta' || user.evento_fase !== 'avistamiento') {
-            client.say(channel, `@${tags.username} No tienes un evento de fruta pendiente en esta fase.`);
-            return;
-        }
-
-        await updateUsuario(username, {
-            evento_tipo: null,
-            evento_fase: null,
-            evento_fruta: null,
-            evento_nivel: null,
-            evento_estado: null,
-            evento_comandos: null
-        });
-
-        client.say(channel, `@${tags.username} Decides retirarte. El evento ha terminado.`);
-        return;
-    }
-
-    // ============================================
-    // !pelear (Fase 2 - Encuentro)
+    // !pelear (con NPCs y números detallados)
     // ============================================
     if (command === '!pelear') {
         const user = await getUsuario(username);
-        if (!user || user.evento_estado !== 'pendiente' || user.evento_tipo !== 'fruta' || user.evento_fase !== 'encuentro') {
+        if (!user || user.evento_estado !== 'pendiente' || user.evento_fase !== 'encuentro') {
             client.say(channel, `@${tags.username} No tienes un evento de fruta pendiente en esta fase.`);
             return;
         }
 
-        const nivel = user.evento_nivel || 1;
-        const hakiConquistador = user.conquistador || 0;
-        const victoria = calcularCombate(nivel, hakiConquistador);
-        const recompensas = obtenerRecompensas(nivel, victoria);
+        // 1. Obtener datos de la fruta del usuario
+        const { data: frutaData } = await supabase
+            .from('frutas')
+            .select('poder_fruta, sombra')
+            .eq('nombre', user.evento_fruta)
+            .single();
 
+        const poderFrutaUsuario = frutaData ? frutaData.poder_fruta : 0;
+        const nombreSombra = frutaData ? frutaData.sombra : null;
+
+        // 2. Calcular poder del usuario
+        const armadura = user.armadura || 0;
+        const observacion = user.observacion || 0;
+        const conquistador = user.conquistador || 0;
+        const poderUsuario = calcularPoderBase(poderFrutaUsuario, armadura, observacion, conquistador);
+
+        // 3. Obtener poder del enemigo (NPC) desde la tabla npcs
+        let poderEnemigoBase = 80;
+        let npcNombre = '';
+
+        if (nombreSombra) {
+            const { data: npc, error: npcError } = await supabase
+                .from('npcs')
+                .select('pcf_final, pcf_calculado, nivel')
+                .eq('nombre', nombreSombra)
+                .maybeSingle();
+
+            if (npcError || !npc) {
+                console.warn(`⚠️ NPC ${nombreSombra} no encontrado en tabla npcs. Usando valor por defecto.`);
+                poderEnemigoBase = 80;
+            } else {
+                poderEnemigoBase = npc.pcf_final || npc.pcf_calculado || 80;
+                npcNombre = nombreSombra;
+            }
+        } else {
+            const nivel = user.evento_nivel || 4;
+            poderEnemigoBase = 20 + nivel * 15;
+            npcNombre = 'enemigo genérico';
+        }
+
+        // 4. Calcular combate (con variación)
+        const resultado = calcularCombate(poderUsuario, poderEnemigoBase);
+
+        // 5. Recompensas
+        const nivel = user.evento_nivel || 4;
+        const baseConquistador = nivel * 5;
+        const baseBerries = nivel * 1000000;
+        const recompensaConq = resultado.victoria ? baseConquistador : -Math.floor(baseConquistador / 2);
+        const recompensaBerries = resultado.victoria ? baseBerries : -Math.floor(baseBerries / 4);
+
+        // 6. Mensaje narrativo
+        const mensaje = obtenerMensaje(resultado.victoria, resultado.porcentaje);
+
+        // 7. Logs para pruebas (CMD)
+        console.log(`🔍 Hakis del usuario: Armadura=${armadura}, Observacion=${observacion}, Conquistador=${conquistador}`);
+        console.log(`🔍 Poder Fruta Usuario: ${poderFrutaUsuario}`);
+        console.log(`🔍 Poder Usuario Base: ${poderUsuario}`);
+        console.log(`🔍 Poder Enemigo Base: ${poderEnemigoBase}`);
+        console.log(`🔍 Resultado: Victoria=${resultado.victoria}, Porcentaje=${resultado.porcentaje.toFixed(2)}%`);
+
+        // 8. Actualizar usuario
         await updateUsuario(username, {
-            conquistador: (user.conquistador || 0) + recompensas.conquistador,
-            recompensa_publica: (user.recompensa_publica || 0) + recompensas.berries,
-            fruta: victoria ? user.evento_fruta : null,
+            conquistador: (user.conquistador || 0) + recompensaConq,
+            recompensa_publica: (user.recompensa_publica || 0) + recompensaBerries,
+            fruta: resultado.victoria ? user.evento_fruta : null,
             evento_tipo: null,
             evento_fase: null,
             evento_fruta: null,
@@ -337,33 +389,28 @@ client.on('message', async (channel, tags, message, self) => {
             evento_comandos: null
         });
 
-        if (victoria) {
-            client.say(channel, `@${tags.username} ¡Has ganado el combate! Has obtenido la ${user.evento_fruta}. +${recompensas.conquistador} Conquistador, +${recompensas.berries} Berries.`);
-        } else {
-            client.say(channel, `@${tags.username} Has perdido el combate. No has obtenido la fruta. ${recompensas.conquistador} Conquistador, ${recompensas.berries} Berries.`);
-        }
+        // 9. Respuesta en chat con números detallados
+        const resultadoTexto = resultado.victoria
+            ? `¡Has ganado! Tu poder base: ${poderUsuario.toFixed(0)} | Variación aplicada: ${(1000 - 950) / 10}% → Final: ${resultado.poderFinalUsuario.toFixed(0)} | Enemigo: base ${poderEnemigoBase} | Variación aplicada: ${(1000 - 950) / 10}% → Final: ${resultado.poderFinalEnemigo.toFixed(0)} | Diferencia: ${resultado.diferencia.toFixed(0)} (${resultado.porcentaje.toFixed(1)}%)`
+            : `Has perdido. Tu poder base: ${poderUsuario.toFixed(0)} | Variación aplicada: ${(1000 - 950) / 10}% → Final: ${resultado.poderFinalUsuario.toFixed(0)} | Enemigo: base ${poderEnemigoBase} | Variación aplicada: ${(1000 - 950) / 10}% → Final: ${resultado.poderFinalEnemigo.toFixed(0)} | Diferencia: ${resultado.diferencia.toFixed(0)} (${resultado.porcentaje.toFixed(1)}%)`;
+
+        client.say(channel, `@${tags.username} ${mensaje} ${resultadoTexto}`);
         return;
     }
 
     // ============================================
-    // !huir (Fase 2 - Encuentro)
+    // !huir
     // ============================================
     if (command === '!huir') {
         const user = await getUsuario(username);
-        if (!user || user.evento_estado !== 'pendiente' || user.evento_tipo !== 'fruta' || user.evento_fase !== 'encuentro') {
+        if (!user || user.evento_estado !== 'pendiente' || user.evento_fase !== 'encuentro') {
             client.say(channel, `@${tags.username} No tienes un evento de fruta pendiente en esta fase.`);
             return;
         }
-
         await updateUsuario(username, {
-            evento_tipo: null,
-            evento_fase: null,
-            evento_fruta: null,
-            evento_nivel: null,
-            evento_estado: null,
-            evento_comandos: null
+            evento_tipo: null, evento_fase: null, evento_fruta: null,
+            evento_nivel: null, evento_estado: null, evento_comandos: null
         });
-
         client.say(channel, `@${tags.username} Has decidido huir. No has obtenido la fruta.`);
         return;
     }
@@ -414,128 +461,133 @@ client.on('message', async (channel, tags, message, self) => {
     // ============================================
     // COMANDOS DE ADMIN (SOLO PARA EL DUEÑO)
     // ============================================
-    if (!esDueño(username)) return; // Si no es el dueño, ignora todo lo que sigue
+    if (!esDueño(username)) return;
 
-    // !sumar1 <usuario> <cantidad> (suma armadura)
+    // !sumar1 (armadura), !sumar2 (observacion), !sumar3 (conquistador)
     if (command === '!sumar1') {
-        if (args.length < 3) {
-            client.say(channel, `@${tags.username} Uso correcto: !sumar1 @usuario cantidad`);
-            return;
-        }
+        if (args.length < 3) return client.say(channel, `@${tags.username} Uso: !sumar1 @usuario cantidad`);
         const target = args[1].replace('@', '').toLowerCase();
         const cantidad = parseInt(args[2]);
-        if (isNaN(cantidad)) {
-            client.say(channel, `@${tags.username} La cantidad debe ser un número.`);
-            return;
-        }
+        if (isNaN(cantidad)) return client.say(channel, `@${tags.username} La cantidad debe ser un número.`);
         const user = await getUsuario(target);
         await updateUsuario(target, { armadura: (user.armadura || 0) + cantidad });
         client.say(channel, `@${tags.username} Has sumado ${cantidad} puntos de armadura a @${target}. Ahora tiene ${user.armadura + cantidad}.`);
         return;
     }
-
-    // !restar1 <usuario> <cantidad> (resta armadura)
-    if (command === '!restar1') {
-        if (args.length < 3) {
-            client.say(channel, `@${tags.username} Uso correcto: !restar1 @usuario cantidad`);
-            return;
-        }
-        const target = args[1].replace('@', '').toLowerCase();
-        const cantidad = parseInt(args[2]);
-        if (isNaN(cantidad)) {
-            client.say(channel, `@${tags.username} La cantidad debe ser un número.`);
-            return;
-        }
-        const user = await getUsuario(target);
-        const nuevoValor = Math.max((user.armadura || 0) - cantidad, 0);
-        await updateUsuario(target, { armadura: nuevoValor });
-        client.say(channel, `@${tags.username} Has restado ${cantidad} puntos de armadura a @${target}. Ahora tiene ${nuevoValor}.`);
-        return;
-    }
-
-    // !sumar2 <usuario> <cantidad> (suma observacion)
     if (command === '!sumar2') {
-        if (args.length < 3) {
-            client.say(channel, `@${tags.username} Uso correcto: !sumar2 @usuario cantidad`);
-            return;
-        }
+        if (args.length < 3) return client.say(channel, `@${tags.username} Uso: !sumar2 @usuario cantidad`);
         const target = args[1].replace('@', '').toLowerCase();
         const cantidad = parseInt(args[2]);
-        if (isNaN(cantidad)) {
-            client.say(channel, `@${tags.username} La cantidad debe ser un número.`);
-            return;
-        }
+        if (isNaN(cantidad)) return client.say(channel, `@${tags.username} La cantidad debe ser un número.`);
         const user = await getUsuario(target);
         await updateUsuario(target, { observacion: (user.observacion || 0) + cantidad });
         client.say(channel, `@${tags.username} Has sumado ${cantidad} puntos de observación a @${target}. Ahora tiene ${user.observacion + cantidad}.`);
         return;
     }
-
-    // !restar2 <usuario> <cantidad> (resta observacion)
-    if (command === '!restar2') {
-        if (args.length < 3) {
-            client.say(channel, `@${tags.username} Uso correcto: !restar2 @usuario cantidad`);
-            return;
-        }
-        const target = args[1].replace('@', '').toLowerCase();
-        const cantidad = parseInt(args[2]);
-        if (isNaN(cantidad)) {
-            client.say(channel, `@${tags.username} La cantidad debe ser un número.`);
-            return;
-        }
-        const user = await getUsuario(target);
-        const nuevoValor = Math.max((user.observacion || 0) - cantidad, 0);
-        await updateUsuario(target, { observacion: nuevoValor });
-        client.say(channel, `@${tags.username} Has restado ${cantidad} puntos de observación a @${target}. Ahora tiene ${nuevoValor}.`);
-        return;
-    }
-
-    // !sumar3 <usuario> <cantidad> (suma conquistador)
     if (command === '!sumar3') {
-        if (args.length < 3) {
-            client.say(channel, `@${tags.username} Uso correcto: !sumar3 @usuario cantidad`);
-            return;
-        }
+        if (args.length < 3) return client.say(channel, `@${tags.username} Uso: !sumar3 @usuario cantidad`);
         const target = args[1].replace('@', '').toLowerCase();
         const cantidad = parseInt(args[2]);
-        if (isNaN(cantidad)) {
-            client.say(channel, `@${tags.username} La cantidad debe ser un número.`);
-            return;
-        }
+        if (isNaN(cantidad)) return client.say(channel, `@${tags.username} La cantidad debe ser un número.`);
         const user = await getUsuario(target);
         await updateUsuario(target, { conquistador: (user.conquistador || 0) + cantidad });
         client.say(channel, `@${tags.username} Has sumado ${cantidad} puntos de conquistador a @${target}. Ahora tiene ${user.conquistador + cantidad}.`);
         return;
     }
 
-    // !restar3 <usuario> <cantidad> (resta conquistador)
-    if (command === '!restar3') {
-        if (args.length < 3) {
-            client.say(channel, `@${tags.username} Uso correcto: !restar3 @usuario cantidad`);
-            return;
-        }
+    // !restar1, !restar2, !restar3
+    if (command === '!restar1') {
+        if (args.length < 3) return client.say(channel, `@${tags.username} Uso: !restar1 @usuario cantidad`);
         const target = args[1].replace('@', '').toLowerCase();
         const cantidad = parseInt(args[2]);
-        if (isNaN(cantidad)) {
-            client.say(channel, `@${tags.username} La cantidad debe ser un número.`);
-            return;
-        }
+        if (isNaN(cantidad)) return client.say(channel, `@${tags.username} La cantidad debe ser un número.`);
         const user = await getUsuario(target);
-        const nuevoValor = Math.max((user.conquistador || 0) - cantidad, 0);
-        await updateUsuario(target, { conquistador: nuevoValor });
-        client.say(channel, `@${tags.username} Has restado ${cantidad} puntos de conquistador a @${target}. Ahora tiene ${nuevoValor}.`);
+        const nuevo = Math.max((user.armadura || 0) - cantidad, 0);
+        await updateUsuario(target, { armadura: nuevo });
+        client.say(channel, `@${tags.username} Has restado ${cantidad} puntos de armadura a @${target}. Ahora tiene ${nuevo}.`);
+        return;
+    }
+    if (command === '!restar2') {
+        if (args.length < 3) return client.say(channel, `@${tags.username} Uso: !restar2 @usuario cantidad`);
+        const target = args[1].replace('@', '').toLowerCase();
+        const cantidad = parseInt(args[2]);
+        if (isNaN(cantidad)) return client.say(channel, `@${tags.username} La cantidad debe ser un número.`);
+        const user = await getUsuario(target);
+        const nuevo = Math.max((user.observacion || 0) - cantidad, 0);
+        await updateUsuario(target, { observacion: nuevo });
+        client.say(channel, `@${tags.username} Has restado ${cantidad} puntos de observación a @${target}. Ahora tiene ${nuevo}.`);
+        return;
+    }
+    if (command === '!restar3') {
+        if (args.length < 3) return client.say(channel, `@${tags.username} Uso: !restar3 @usuario cantidad`);
+        const target = args[1].replace('@', '').toLowerCase();
+        const cantidad = parseInt(args[2]);
+        if (isNaN(cantidad)) return client.say(channel, `@${tags.username} La cantidad debe ser un número.`);
+        const user = await getUsuario(target);
+        const nuevo = Math.max((user.conquistador || 0) - cantidad, 0);
+        await updateUsuario(target, { conquistador: nuevo });
+        client.say(channel, `@${tags.username} Has restado ${cantidad} puntos de conquistador a @${target}. Ahora tiene ${nuevo}.`);
         return;
     }
 
-    // !quitarfruta <usuario> (quita la fruta a un usuario)
+    // !quitarfruta
     if (command === '!quitarfruta') {
-        if (args.length < 2) {
-            client.say(channel, `@${tags.username} Uso correcto: !quitarfruta @usuario`);
-            return;
-        }
+        if (args.length < 2) return client.say(channel, `@${tags.username} Uso: !quitarfruta @usuario`);
         const target = args[1].replace('@', '').toLowerCase();
         await updateUsuario(target, { fruta: null, fruta_pendiente: null });
         client.say(channel, `@${tags.username} Has quitado la fruta a @${target}.`);
+        return;
+    }
+
+    // ============================================
+    // !setpcf (Cambiar PCF de un NPC) - SOLO ADMIN
+    // ============================================
+    if (command === '!setpcf') {
+        if (args.length < 3) {
+            client.say(channel, `@${tags.username} Uso: !setpcf nombreNPC poder`);
+            return;
+        }
+        const npcNombre = args[1].toLowerCase();
+        const nuevoPoder = parseInt(args[2]);
+        if (isNaN(nuevoPoder) || nuevoPoder < 0) {
+            client.say(channel, `@${tags.username} El poder debe ser un número positivo.`);
+            return;
+        }
+
+        const { data: npcExistente, error: searchError } = await supabase
+            .from('npcs')
+            .select('*')
+            .eq('nombre', npcNombre)
+            .maybeSingle();
+
+        if (searchError) {
+            console.error('Error al buscar NPC:', searchError);
+            client.say(channel, `@${tags.username} Error al buscar el enemigo.`);
+            return;
+        }
+
+        if (npcExistente) {
+            const { error: updateError } = await supabase
+                .from('npcs')
+                .update({ pcf_final: nuevoPoder })
+                .eq('nombre', npcNombre);
+            if (updateError) {
+                console.error('Error al actualizar NPC:', updateError);
+                client.say(channel, `@${tags.username} Error al actualizar el poder.`);
+                return;
+            }
+        } else {
+            const { error: insertError } = await supabase
+                .from('npcs')
+                .insert([{ nombre: npcNombre, pcf_final: nuevoPoder, nivel: 4 }]);
+            if (insertError) {
+                console.error('Error al insertar NPC:', insertError);
+                client.say(channel, `@${tags.username} Error al crear el enemigo.`);
+                return;
+            }
+        }
+
+        client.say(channel, `@${tags.username} Has cambiado el PCF de ${npcNombre} a ${nuevoPoder}.`);
         return;
     }
 });
