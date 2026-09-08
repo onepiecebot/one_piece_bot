@@ -263,36 +263,24 @@ client.on('message', async (channel, tags, message, self) => {
         client.say(channel, `@${tags.username} ${texto}`);
         return;
     }
+
     // ============================================
     // !testevento (FORZAR EVENTO DE PRUEBA)
     // ============================================
     if (command === '!testevento') {
-        const user = await getUsuario(username);
-
-        // Limpiar cualquier evento pendiente
         await updateUsuario(username, {
-            evento_tipo: null,
-            evento_fase: null,
-            evento_fruta: null,
-            evento_nivel: null,
-            evento_estado: null,
-            evento_comandos: null
+            evento_tipo: null, evento_fase: null, evento_fruta: null,
+            evento_nivel: null, evento_estado: null, evento_comandos: null
         });
-
-        // Buscar la fruta Mera Mera en la tabla
         const { data: fruta, error } = await supabase
             .from('frutas')
             .select('*')
             .eq('nombre', 'Mera Mera no Mi')
             .single();
-
         if (error || !fruta) {
             client.say(channel, `@${tags.username} Error al cargar el evento de prueba.`);
-            console.error('Error al cargar Mera Mera:', error);
             return;
         }
-
-        // Guardar evento exactamente igual que en !fruta
         await updateUsuario(username, {
             evento_tipo: 'fruta',
             evento_fase: 'avistamiento',
@@ -301,8 +289,43 @@ client.on('message', async (channel, tags, message, self) => {
             evento_estado: 'pendiente',
             evento_comandos: 'si_no'
         });
-
         client.say(channel, `@${tags.username} [TEST] Has encontrado un evento. ${fruta.fase1}`);
+        return;
+    }
+
+    // ============================================
+    // !si
+    // ============================================
+    if (command === '!si') {
+        const user = await getUsuario(username);
+        if (!user || user.evento_estado !== 'pendiente' || user.evento_fase !== 'avistamiento') {
+            client.say(channel, `@${tags.username} No tienes un evento de fruta pendiente en esta fase.`);
+            return;
+        }
+        await updateUsuario(username, { evento_fase: 'encuentro', evento_comandos: 'pelear_huir' });
+        const { data: fruta } = await supabase
+            .from('frutas')
+            .select('fase2')
+            .eq('nombre', user.evento_fruta)
+            .single();
+        client.say(channel, `@${tags.username} ${fruta.fase2}`);
+        return;
+    }
+
+    // ============================================
+    // !no
+    // ============================================
+    if (command === '!no') {
+        const user = await getUsuario(username);
+        if (!user || user.evento_estado !== 'pendiente' || user.evento_fase !== 'avistamiento') {
+            client.say(channel, `@${tags.username} No tienes un evento de fruta pendiente en esta fase.`);
+            return;
+        }
+        await updateUsuario(username, {
+            evento_tipo: null, evento_fase: null, evento_fruta: null,
+            evento_nivel: null, evento_estado: null, evento_comandos: null
+        });
+        client.say(channel, `@${tags.username} Decides retirarte. El evento ha terminado.`);
         return;
     }
 
