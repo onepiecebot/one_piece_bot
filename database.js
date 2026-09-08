@@ -1,29 +1,29 @@
-const { createClient } = require('@supabase/supabase-js');
+﻿const { createClient } = require('@supabase/supabase-js');
 
 // ============================================================
-// ?? REEMPLAZ� ESTAS DOS L�NEAS CON TUS DATOS DE SUPABASE
+// ⚠️ REEMPLAZÁ ESTAS DOS LÍNEAS CON TUS DATOS DE SUPABASE
 // ============================================================
 const supabaseUrl = 'https://pditdbvzyqjvalkznpcv.supabase.co';  // <- TU URL
-const supabaseKey = 'sb_publishable_4-NeJ86heLfWJzvX3_GPYA_9KLSvLPG';  // <- TU ANON KEY (la p�blica)
+const supabaseKey = 'sb_publishable_4-NeJ86heLfWJzvX3_GPYA_9KLSvLPG';  // <- TU ANON KEY (la pública)
 // ============================================================
 
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-// Verificaci�n de conexi�n al iniciar
+// Verificación de conexión al iniciar
 (async () => {
     const { data, error } = await supabase.from('usuarios').select('count').limit(0);
     if (error) {
-        console.error('? Error de conexi�n a Supabase:', error.message);
-        console.error('   Verific� que la URL y la Anon Key sean correctas.');
+        console.error('❌ Error de conexión a Supabase:', error.message);
+        console.error('   Verificá que la URL y la Anon Key sean correctas.');
     } else {
-        console.log('? Conexi�n a Supabase establecida correctamente.');
+        console.log('✅ Conexión a Supabase establecida correctamente.');
     }
 })();
 
 // ==================== FUNCIONES ====================
 
 async function getUsuario(username) {
-    console.log(`?? getUsuario llamado para: "${username}"`);
+    console.log(`🔍 getUsuario llamado para: "${username}"`);
 
     // Obtener usuario
     const { data, error } = await supabase
@@ -32,21 +32,21 @@ async function getUsuario(username) {
         .eq('username', username);
 
     if (error) {
-        console.error('? Error al obtener usuario:', error);
+        console.error('❌ Error al obtener usuario:', error);
         return null;
     }
 
     // Si no existe, crearlo
     if (!data || data.length === 0) {
-        console.log(`?? Usuario "${username}" no existe. Creando...`);
+        console.log(`📝 Usuario "${username}" no existe. Creando...`);
 
         const { data: newUser, error: insertError } = await supabase
             .from('usuarios')
             .insert([{
                 username,
                 armadura: 0,
-                haki_observacion: 0,
-                haki_conquistador: 0,
+                observacion: 0,
+                conquistador: 0,
                 fruta: null,
                 fruta_pendiente: null,
                 recompensa_publica: 0,
@@ -67,22 +67,22 @@ async function getUsuario(username) {
             .single();
 
         if (insertError) {
-            console.error('? Error al crear usuario:', insertError);
-            console.error('? Detalles del error:', JSON.stringify(insertError, null, 2));
+            console.error('❌ Error al crear usuario:', insertError);
+            console.error('❌ Detalles del error:', JSON.stringify(insertError, null, 2));
             return null;
         }
 
-        console.log(`? Usuario "${username}" creado exitosamente.`);
+        console.log(`✅ Usuario "${username}" creado exitosamente.`);
         return newUser;
     }
 
-    console.log(`? Usuario "${username}" encontrado.`);
+    console.log(`✅ Usuario "${username}" encontrado.`);
     return data[0];
 }
 
 async function updateUsuario(username, datos) {
-    console.log(`?? updateUsuario llamado con username: "${username}"`);
-    console.log(`?? Datos recibidos:`, JSON.stringify(datos, null, 2));
+    console.log(`🔍 updateUsuario llamado con username: "${username}"`);
+    console.log(`🔍 Datos recibidos:`, JSON.stringify(datos, null, 2));
 
     const { data, error } = await supabase
         .from('usuarios')
@@ -91,11 +91,11 @@ async function updateUsuario(username, datos) {
         .select();
 
     if (error) {
-        console.error('? ERROR en updateUsuario:', error);
+        console.error('❌ ERROR en updateUsuario:', error);
         return null;
     }
 
-    console.log(`? Datos devueltos por Supabase:`, JSON.stringify(data, null, 2));
+    console.log(`✅ Datos devueltos por Supabase:`, JSON.stringify(data, null, 2));
     return data;
 }
 
