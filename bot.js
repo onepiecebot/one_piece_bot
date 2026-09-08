@@ -38,16 +38,26 @@ function calcularPoderHakis(armadura, observacion, conquistador) {
     const factorObservacion = observacion <= 0 ? 0 : observacion <= 49 ? 0.2 : observacion <= 79 ? 0.5 : observacion <= 99 ? 0.8 : 1.0;
     const factorConquistador = conquistador <= 49 ? 0 : conquistador <= 79 ? 0.1 : conquistador <= 94 ? 0.25 : conquistador <= 100 ? 0.5 : 1.0;
 
-    return (armadura * factorArmadura * 2.5) + (observacion * factorObservacion * 1.8) + (conquistador * factorConquistador * 4.0);
+    console.log(`🔍 Factores: Armadura=${factorArmadura}, Observacion=${factorObservacion}, Conquistador=${factorConquistador}`);
+
+    const poderHakis = (armadura * factorArmadura * 2.5) + (observacion * factorObservacion * 1.8) + (conquistador * factorConquistador * 4.0);
+    console.log(`🔍 PoderHakis: ${poderHakis}`);
+    return poderHakis;
 }
 
 function calcularPoderBase(poderFruta, armadura, observacion, conquistador) {
-    return poderFruta + calcularPoderHakis(armadura, observacion, conquistador);
+    const poderHakis = calcularPoderHakis(armadura, observacion, conquistador);
+    const poderBase = poderFruta + poderHakis;
+    console.log(`🔍 PoderFruta: ${poderFruta} | PoderBase: ${poderBase}`);
+    return poderBase;
 }
 
 function aplicarVariacion(poder) {
     const random = Math.floor(Math.random() * 101);
-    return poder * (950 + random) / 1000;
+    const variacion = (950 + random) / 1000;
+    const resultado = poder * variacion;
+    console.log(`🔍 Variación aplicada: ${(variacion - 1) * 100}% → Poder final: ${resultado.toFixed(2)}`);
+    return resultado;
 }
 
 function calcularCombate(poderUsuario, poderEnemigo) {
@@ -56,6 +66,7 @@ function calcularCombate(poderUsuario, poderEnemigo) {
     const victoria = poderFinalUsuario > poderFinalEnemigo;
     const diferencia = poderFinalUsuario - poderFinalEnemigo;
     const porcentaje = (diferencia / poderFinalEnemigo) * 100;
+    console.log(`🔍 Resultado: Victoria=${victoria}, Diferencia=${diferencia.toFixed(2)} (${porcentaje.toFixed(2)}%)`);
     return { victoria, diferencia, porcentaje, poderFinalUsuario, poderFinalEnemigo };
 }
 
@@ -353,6 +364,10 @@ client.on('message', async (channel, tags, message, self) => {
         const armadura = user.armadura || 0;
         const observacion = user.observacion || 0;
         const conquistador = user.conquistador || 0;
+
+        console.log(`🔍 Hakis: Armadura=${armadura}, Observacion=${observacion}, Conquistador=${conquistador}`);
+        console.log(`🔍 Multiplicadores: Armadura x2.5, Observacion x1.8, Conquistador x4.0`);
+
         const poderUsuario = calcularPoderBase(poderFrutaUsuario, armadura, observacion, conquistador);
 
         // 3. Obtener poder del enemigo (NPC) desde la tabla npcs
@@ -378,6 +393,8 @@ client.on('message', async (channel, tags, message, self) => {
             poderEnemigoBase = 20 + nivel * 15;
             npcNombre = 'enemigo genérico';
         }
+
+        console.log(`🔍 Poder Enemigo Base: ${poderEnemigoBase}`);
 
         // 4. Calcular combate (con variación)
         const resultado = calcularCombate(poderUsuario, poderEnemigoBase);
