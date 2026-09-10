@@ -8,10 +8,10 @@ const { getUsuario, updateUsuario, supabase } = require('./database.js');
 
 function getRangoArmadura(puntos, esSupremo = false) {
     if (esSupremo) return { nombre: 'Supremo', factor: 1.0, emoji: '👑' };
-    if (puntos >= 100) return { nombre: 'Avanzado Élite', factor: 0.8, emoji: '💪' };
-    if (puntos >= 80) return { nombre: 'Avanzado', factor: 0.8, emoji: '💪' };
-    if (puntos >= 50) return { nombre: 'Básico', factor: 0.5, emoji: '✅' };
-    if (puntos >= 20) return { nombre: 'Despertado', factor: 0.2, emoji: '👁️' };
+    if (puntos >= 100) return { nombre: 'Avanzado Élite', factor: 0.8, emoji: '🔥' };
+    if (puntos >= 80) return { nombre: 'Avanzado', factor: 0.8, emoji: '🔥' };
+    if (puntos >= 50) return { nombre: 'Básico', factor: 0.5, emoji: '💪' };
+    if (puntos >= 20) return { nombre: 'Despertado', factor: 0.2, emoji: '💡' };
     return { nombre: 'No despertado', factor: 0, emoji: '❌' };
 }
 
@@ -86,13 +86,13 @@ function getTextoResultado(rango, delta) {
 function getMensajeNuevoRango(rango, usuario) {
     switch (rango) {
         case 'Despertado':
-            return `👁️ ¡Felicidades ${usuario}! Tu Haki de Armadura ha despertado.`;
+            return `💡 ¡Felicidades ${usuario}! Tu Haki de Armadura ha despertado.`;
         case 'Básico':
-            return `🛡️ ¡Tu defensa se vuelve confiable, ${usuario}! Nivel Básico alcanzado. ✅`;
+            return `💪 ¡Tu defensa se vuelve confiable, ${usuario}! Nivel Básico alcanzado.`;
         case 'Avanzado':
-            return `⚔️ ¡Impresionante, ${usuario}! Tu Armadura tiene gran poder. Rango Avanzado. 💪`;
+            return `🔥 ¡Impresionante, ${usuario}! Tu Armadura tiene gran poder. Rango Avanzado.`;
         case 'Supremo':
-            return `🌊 ¡Como un emperador del mar, ${usuario} ha dominado el Haki de Armadura! Ahora es SUPREMO. 👑`;
+            return `👑 ¡Como un emperador del mar, ${usuario} ha dominado el Haki de Armadura! Ahora es SUPREMO.`;
         default:
             return '';
     }
@@ -116,12 +116,40 @@ function getFechaAyer() {
 }
 
 // ============================================
+// FUNCIONES DE EMOJIS PARA !infoop
+// ============================================
+
+function getEmojiRangoArmadura(puntos, esSupremo = false) {
+    if (esSupremo) return '👑';
+    if (puntos >= 100) return '🔥';
+    if (puntos >= 80) return '🔥';
+    if (puntos >= 50) return '💪';
+    if (puntos >= 20) return '💡';
+    return '❌';
+}
+
+function getEmojiRangoObservacion(puntos) {
+    if (puntos >= 100) return '👑';
+    if (puntos >= 80) return '🔥';
+    if (puntos >= 50) return '💪';
+    if (puntos >= 20) return '💡';
+    return '❌';
+}
+
+function getEmojiRangoConquistador(puntos) {
+    if (puntos > 100) return '👑';
+    if (puntos >= 95) return '🔥';
+    if (puntos >= 80) return '💪';
+    if (puntos >= 50) return '💡';
+    return '❌';
+}
+
+// ============================================
 // SISTEMA DE SUPREMOS DINÁMICOS
 // ============================================
 
 async function getSupremosActuales() {
     try {
-        // 1. Contar dedicados (usuarios con op_usos_hoy > 0)
         const { data: dedicadosData, error: err1 } = await supabase
             .from('usuarios')
             .select('username')
@@ -133,31 +161,21 @@ async function getSupremosActuales() {
         }
 
         const numDedicados = (dedicadosData || []).length;
-
-        // 2. Calcular plazas base
         const plazasBase = numDedicados === 0 ? 0 : Math.floor(numDedicados / 21) + 1;
 
-        // 3. Obtener máximo de armadura
-        const { data: maxData, error: err2 } = await supabase
+        const { data: maxData } = await supabase
             .from('usuarios')
             .select('armadura')
             .order('armadura', { ascending: false })
             .limit(1);
 
-        if (err2) {
-            console.error('Error al obtener max armadura:', err2);
-            return [];
-        }
-
         const maxArmadura = maxData && maxData[0] ? maxData[0].armadura : 0;
 
-        // 4. Calcular plazas extra
         let plazasExtra = 0;
         if (maxArmadura >= 100) {
             plazasExtra = Math.floor((maxArmadura - 100) / 100) * 3;
         }
 
-        // 5. Obtener mínimo histórico (guardado en el usuario del dueño)
         const { data: dueñoData } = await supabase
             .from('usuarios')
             .select('supremos_min_historico')
@@ -166,7 +184,6 @@ async function getSupremosActuales() {
 
         const minHistorico = dueñoData?.supremos_min_historico || 0;
 
-        // 6. Actualizar mínimo histórico si plazasBase lo supera
         if (plazasBase > minHistorico) {
             await supabase
                 .from('usuarios')
@@ -174,20 +191,15 @@ async function getSupremosActuales() {
                 .eq('username', 'fan_d_larana');
         }
 
-        // 7. Plazas base efectivas (nunca bajan del mínimo histórico)
         const plazasBaseEfectivas = Math.max(plazasBase, minHistorico);
-
-        // 8. Total de plazas
         let totalPlazas = Math.max(plazasBaseEfectivas, plazasExtra + 1);
 
-        // Si no hay dedicados, solo se usan las plazas extra + histórico
         if (numDedicados === 0) {
             totalPlazas = Math.max(plazasExtra, minHistorico);
         }
 
         if (totalPlazas === 0) return [];
 
-        // 9. Obtener los mejores usuarios con armadura >= 100
         const { data: topData, error: err3 } = await supabase
             .from('usuarios')
             .select('username, armadura')
@@ -216,7 +228,7 @@ async function esSupremo(username) {
 // COOLDOWNS
 // ============================================
 const cooldowns = {};
-const COOLDOWN_FRUTA = 60000; // 1 minuto (para pruebas)
+const COOLDOWN_FRUTA = 60000;
 
 // ============================================
 // ADMIN
@@ -248,8 +260,7 @@ function calcularPoderHakis(armadura, observacion, conquistador, esSupremoArmadu
     const factorObservacion = observacion <= 19 ? 0 : observacion <= 49 ? 0.2 : observacion <= 79 ? 0.5 : observacion <= 99 ? 0.8 : 1.0;
     const factorConquistador = conquistador <= 49 ? 0 : conquistador <= 79 ? 0.1 : conquistador <= 94 ? 0.25 : conquistador <= 100 ? 0.5 : 1.0;
 
-    const poderHakis = (armadura * factorArmadura * 2.5) + (observacion * factorObservacion * 1.8) + (conquistador * factorConquistador * 4.0);
-    return poderHakis;
+    return (armadura * factorArmadura * 2.5) + (observacion * factorObservacion * 1.8) + (conquistador * factorConquistador * 4.0);
 }
 
 function calcularPoderBase(poderFruta, armadura, observacion, conquistador, esSupremoArmadura = false) {
@@ -332,24 +343,26 @@ client.on('message', async (channel, tags, message, self) => {
     const username = tags.username.toLowerCase();
 
     // ============================================
-    // !infoop
+    // !infoop (NUEVO FORMATO)
     // ============================================
     if (command === '!infoop') {
         const target = args[1] ? args[1].replace('@', '').toLowerCase() : username;
         const user = await getUsuario(target);
         const esSupremoUser = await esSupremo(target);
 
-        const rangoArm = getRangoArmadura(user && user.armadura ? user.armadura : 0, esSupremoUser);
-        const rangoObs = getRangoArmadura(user && user.observacion ? user.observacion : 0, false);
-        const rangoConq = (pts) => {
-            if (pts <= 49) return 'No despertado';
-            if (pts <= 79) return 'Despertado';
-            if (pts <= 94) return 'Básico';
-            if (pts <= 100) return 'Avanzado';
-            return 'Supremo';
-        };
-        const fruta = user && user.fruta ? user.fruta : 'Ninguna';
-        const respuesta = `@${target} | Fruta: ${fruta} | Haki Armadura: ${rangoArm.nombre} ${rangoArm.emoji} | Haki Observacion: ${rangoObs.nombre} | Haki Conquistador: ${rangoConq(user && user.conquistador ? user.conquistador : 0)}`;
+        const frutaNombre = user && user.fruta ? user.fruta : null;
+        const recompensa = user && user.recompensa_publica ? user.recompensa_publica : 0;
+
+        // Si no tiene fruta, mostramos "Ninguna"
+        const frutaTexto = frutaNombre ? `🍎 ${frutaNombre}` : `🍎 Ninguna`;
+
+        // Emojis de rango
+        const emojiArm = getEmojiRangoArmadura(user?.armadura || 0, esSupremoUser);
+        const emojiObs = getEmojiRangoObservacion(user?.observacion || 0);
+        const emojiConq = getEmojiRangoConquistador(user?.conquistador || 0);
+
+        // Construir respuesta
+        const respuesta = `@${target} | ${frutaTexto} | 🛡️:${emojiArm} | 👁️:${emojiObs} | ⚜️:${emojiConq} | 🏴‍☠️💰 $${recompensa.toLocaleString('es-AR')}`;
         client.say(channel, respuesta);
         return;
     }
@@ -360,7 +373,7 @@ client.on('message', async (channel, tags, message, self) => {
     if (command === '!op') {
         const user = await getUsuario(username);
 
-        // 1. Cooldown de 10 minutos
+        // Cooldown de 10 minutos
         const ahora = Date.now();
         const ultimoTimestamp = user.ultimo_op_timestamp ? new Date(user.ultimo_op_timestamp).getTime() : 0;
         const tiempoCooldown = 10 * 60 * 1000;
@@ -372,7 +385,7 @@ client.on('message', async (channel, tags, message, self) => {
             return;
         }
 
-        // 2. Cambio de día y penalización
+        // Cambio de día y penalización
         const hoy = getFechaHoy();
         const ultimoDia = user.ultimo_op_fecha || null;
 
@@ -415,26 +428,23 @@ client.on('message', async (channel, tags, message, self) => {
             }
         }
 
-        // 3. Recargar usuario
+        // Recargar usuario
         const userAct = await getUsuario(username);
 
-        // 4. Verificar límite diario
+        // Límite diario
         if ((userAct.op_usos_hoy || 0) >= 3) {
             client.say(channel, `Tu cuerpo llegó al límite por hoy. Descansá y mañana seguís.`);
             return;
         }
 
-        // 5. Rango actual y tirada
+        // Rango actual y tirada
         const armaduraActual = userAct.armadura || 0;
         const eraSupremo = await esSupremo(username);
         const rangoActual = getRangoArmadura(armaduraActual, eraSupremo);
         const intervalo = getIntervaloTirada(rangoActual.nombre);
         const delta = tiradaAleatoria(intervalo.min, intervalo.max);
 
-        // 6. Nueva armadura y rango
         const nuevaArmadura = Math.max(armaduraActual + delta, 0);
-
-        // 7. Actualizar datos
         const nuevosUsos = (userAct.op_usos_hoy || 0) + 1;
         const esTerceraTirada = nuevosUsos === 3;
 
@@ -474,16 +484,13 @@ client.on('message', async (channel, tags, message, self) => {
 
         await updateUsuario(username, updateData);
 
-        // 8. Verificar si ahora es Supremo
         const ahoraSupremo = await esSupremo(username);
         const armaduraFinal = updateData.armadura;
         const rangoFinal = getRangoArmadura(armaduraFinal, ahoraSupremo);
 
-        // 9. Construir mensaje
         const textoResultado = getTextoResultado(rangoFinal.nombre, delta);
         let respuesta = `@${tags.username} ${textoResultado} ${delta > 0 ? '+' : ''}${delta} de Haki de Armadura ${rangoFinal.emoji}`;
 
-        // Cambio de rango
         const rangoAnterior = eraSupremo ? 'Supremo' : getRangoArmadura(armaduraActual).nombre;
         if (rangoAnterior !== rangoFinal.nombre) {
             const msgRango = getMensajeNuevoRango(rangoFinal.nombre, tags.username);
@@ -522,8 +529,6 @@ client.on('message', async (channel, tags, message, self) => {
             client.say(channel, `@${tags.username} Ya tienes una fruta (${user.fruta}). Usa !rechazar si quieres liberarla.`);
             return;
         }
-
-        const tieneRacha = true;
 
         const probGeneral = 5;
         if (Math.random() * 100 > probGeneral) {
@@ -667,7 +672,7 @@ client.on('message', async (channel, tags, message, self) => {
     }
 
     // ============================================
-    // !pelear
+    // !pelear (SIN NÚMEROS EN EL CHAT)
     // ============================================
     if (command === '!pelear') {
         const user = await getUsuario(username);
@@ -733,11 +738,7 @@ client.on('message', async (channel, tags, message, self) => {
             evento_comandos: null
         });
 
-        const resultadoTexto = resultado.victoria
-            ? `¡Has ganado! Poder: ${poderUsuario.toFixed(0)} → ${resultado.poderFinalUsuario.toFixed(0)} | Enemigo: ${poderEnemigoBase} → ${resultado.poderFinalEnemigo.toFixed(0)} | Dif: ${resultado.diferencia.toFixed(0)} (${resultado.porcentaje.toFixed(1)}%)`
-            : `Has perdido. Poder: ${poderUsuario.toFixed(0)} → ${resultado.poderFinalUsuario.toFixed(0)} | Enemigo: ${poderEnemigoBase} → ${resultado.poderFinalEnemigo.toFixed(0)} | Dif: ${resultado.diferencia.toFixed(0)} (${resultado.porcentaje.toFixed(1)}%)`;
-
-        client.say(channel, `@${tags.username} ${mensaje} ${resultadoTexto}`);
+        client.say(channel, `@${tags.username} ${mensaje}`);
         return;
     }
 
@@ -783,7 +784,7 @@ client.on('message', async (channel, tags, message, self) => {
     }
 
     // ============================================
-    // !rechazar
+    // !rechazar (SOLO FRUTA PENDIENTE)
     // ============================================
     if (command === '!rechazar') {
         const user = await getUsuario(username);
@@ -792,9 +793,7 @@ client.on('message', async (channel, tags, message, self) => {
             await updateUsuario(username, { fruta_pendiente: null });
             client.say(channel, `@${tags.username} Has rechazado la ${frutaNombre}. ¡Quizás la próxima sea mejor!`);
         } else if (user && user.fruta) {
-            const frutaNombre = user.fruta;
-            await updateUsuario(username, { fruta: null });
-            client.say(channel, `@${tags.username} Has rechazado tu fruta (${frutaNombre}). Ahora puedes buscar otra con !fruta.`);
+            client.say(channel, `@${tags.username} Ya has consumido tu fruta (${user.fruta}). No puedes rechazarla.`);
         } else {
             client.say(channel, `@${tags.username} Como te rechazaron toda tu vida, ¿no?`);
         }
