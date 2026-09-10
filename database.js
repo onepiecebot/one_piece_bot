@@ -4,7 +4,7 @@
 // ⚠️ REEMPLAZÁ ESTAS DOS LÍNEAS CON TUS DATOS DE SUPABASE
 // ============================================================
 const supabaseUrl = 'https://pditdbvzyqjvalkznpcv.supabase.co';  // <- TU URL
-const supabaseKey = 'sb_publishable_4-NeJ86heLfWJzvX3_GPYA_9KLSvLPG';  // <- TU ANON KEY (la pública)
+const supabaseKey = 'sb_publishable_4-NeJ86heLfWJzvX3_GPYA_9KLSvLPG';  // <- TU ANON KEY (la pública, empieza con eyJ...)
 // ============================================================
 
 const supabase = createClient(supabaseUrl, supabaseKey);
@@ -25,7 +25,6 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 async function getUsuario(username) {
     console.log(`🔍 getUsuario llamado para: "${username}"`);
 
-    // Obtener usuario
     const { data, error } = await supabase
         .from('usuarios')
         .select('*')
@@ -36,7 +35,6 @@ async function getUsuario(username) {
         return null;
     }
 
-    // Si no existe, crearlo
     if (!data || data.length === 0) {
         console.log(`📝 Usuario "${username}" no existe. Creando...`);
 
@@ -61,7 +59,7 @@ async function getUsuario(username) {
                 evento_fruta: null,
                 evento_nivel: null,
                 evento_estado: null,
-                evento_comandos: null
+                evento_comandos: null,
                 op_usos_hoy: 0,
                 ultimo_op_fecha: null,
                 ultimo_op_timestamp: null,
