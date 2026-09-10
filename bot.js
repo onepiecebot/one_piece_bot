@@ -51,7 +51,7 @@ const client = new tmi.Client({
         username: config.botName,
         password: config.oauth
     },
-    channels: [config.channelName]
+    channels: [config.channelName, 'op_d_bot']
 });
 
 client.connect().then(() => {
