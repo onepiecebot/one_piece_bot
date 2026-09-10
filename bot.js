@@ -353,15 +353,22 @@ client.on('message', async (channel, tags, message, self) => {
         const frutaNombre = user && user.fruta ? user.fruta : null;
         const recompensa = user && user.recompensa_publica ? user.recompensa_publica : 0;
 
-        // Si no tiene fruta, mostramos "Ninguna"
-        const frutaTexto = frutaNombre ? `🍎 ${frutaNombre}` : `🍎 Ninguna`;
+        // Obtener emoji de la fruta si tiene
+        let frutaTexto = '🍎 Ninguna';
+        if (frutaNombre) {
+            const { data: frutaData } = await supabase
+                .from('frutas')
+                .select('emoji')
+                .eq('nombre', frutaNombre)
+                .single();
+            const emojiFruta = frutaData && frutaData.emoji ? frutaData.emoji : '';
+            frutaTexto = `🍎 ${frutaNombre} ${emojiFruta}`.trim();
+        }
 
-        // Emojis de rango
         const emojiArm = getEmojiRangoArmadura(user?.armadura || 0, esSupremoUser);
         const emojiObs = getEmojiRangoObservacion(user?.observacion || 0);
         const emojiConq = getEmojiRangoConquistador(user?.conquistador || 0);
 
-        // Construir respuesta
         const respuesta = `@${target} | ${frutaTexto} | 🛡️:${emojiArm} | 👁️:${emojiObs} | ⚜️:${emojiConq} | 🏴‍☠️💰 $${recompensa.toLocaleString('es-AR')}`;
         client.say(channel, respuesta);
         return;
@@ -373,7 +380,6 @@ client.on('message', async (channel, tags, message, self) => {
     if (command === '!op') {
         const user = await getUsuario(username);
 
-        // Cooldown de 10 minutos
         const ahora = Date.now();
         const ultimoTimestamp = user.ultimo_op_timestamp ? new Date(user.ultimo_op_timestamp).getTime() : 0;
         const tiempoCooldown = 10 * 60 * 1000;
@@ -385,7 +391,6 @@ client.on('message', async (channel, tags, message, self) => {
             return;
         }
 
-        // Cambio de día y penalización
         const hoy = getFechaHoy();
         const ultimoDia = user.ultimo_op_fecha || null;
 
@@ -428,16 +433,13 @@ client.on('message', async (channel, tags, message, self) => {
             }
         }
 
-        // Recargar usuario
         const userAct = await getUsuario(username);
 
-        // Límite diario
         if ((userAct.op_usos_hoy || 0) >= 3) {
             client.say(channel, `Tu cuerpo llegó al límite por hoy. Descansá y mañana seguís.`);
             return;
         }
 
-        // Rango actual y tirada
         const armaduraActual = userAct.armadura || 0;
         const eraSupremo = await esSupremo(username);
         const rangoActual = getRangoArmadura(armaduraActual, eraSupremo);
@@ -578,7 +580,16 @@ client.on('message', async (channel, tags, message, self) => {
             client.say(channel, `@${tags.username} ${selectedFruit.fase1}`);
         } else {
             await updateUsuario(username, { fruta_pendiente: selectedFruit.nombre });
-            client.say(channel, `@${tags.username} ${selectedFruit.texto_sin_evento}`);
+            
+            const emojiFruta = selectedFruit.emoji || '';
+            const atq = selectedFruit.ataque || 0;
+            const def = selectedFruit.defensa || 0;
+            const util = selectedFruit.utilidad || 0;
+            
+            client.say(channel, `@${tags.username} ¡Felicidades! Has encontrado una fruta del diablo: la ${selectedFruit.nombre} ${emojiFruta}`);
+            client.say(channel, `${selectedFruit.descripcion}`);
+            client.say(channel, `⚔️ ${atq} | 🛡️ ${def} | 🧠 Utilidad: ${util}`);
+            client.say(channel, `¿Qué decisión tomas? !comer o !rechazar`);
         }
         return;
     }
@@ -647,10 +658,19 @@ client.on('message', async (channel, tags, message, self) => {
         await updateUsuario(username, { evento_fase: 'encuentro', evento_comandos: 'pelear_huir' });
         const { data: fruta } = await supabase
             .from('frutas')
-            .select('fase2')
+            .select('*')
             .eq('nombre', user.evento_fruta)
             .single();
+        
+        const emojiFruta = fruta.emoji || '';
+        const atq = fruta.ataque || 0;
+        const def = fruta.defensa || 0;
+        const util = fruta.utilidad || 0;
+        
         client.say(channel, `@${tags.username} ${fruta.fase2}`);
+        client.say(channel, `🍎 ${fruta.nombre} ${emojiFruta}`);
+        client.say(channel, `⚔️ ${atq} | 🛡️ ${def} | 🧠 Utilidad: ${util}`);
+        client.say(channel, `¿Qué haces? !pelear o !huir`);
         return;
     }
 
@@ -768,15 +788,16 @@ client.on('message', async (channel, tags, message, self) => {
             const frutaNombre = user.fruta_pendiente;
             const { data: frutaData } = await supabase
                 .from('frutas')
-                .select('descripcion')
+                .select('descripcion, emoji')
                 .eq('nombre', frutaNombre)
                 .single();
             const descripcion = frutaData ? frutaData.descripcion : 'humano de algo misterioso';
+            const emojiFruta = frutaData && frutaData.emoji ? frutaData.emoji : '';
             await updateUsuario(username, {
                 fruta: frutaNombre,
                 fruta_pendiente: null
             });
-            client.say(channel, `@${tags.username} Has consumido la ${frutaNombre}. Ahora eres un ${descripcion}.`);
+            client.say(channel, `@${tags.username} Has consumido la ${frutaNombre} ${emojiFruta}. Ahora eres un ${descripcion}.`);
         } else {
             client.say(channel, `@${tags.username} FELICIDADES TE COMISTE... ESTA 🫱`);
         }
