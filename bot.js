@@ -32,6 +32,85 @@ function tiradaAleatoria(min, max) {
 }
 
 // ============================================
+// FUNCIONES AUXILIARES PARA !op
+// ============================================
+
+function getBonusDiario(rango) {
+    switch (rango) {
+        case 'No despertado': return 5;
+        case 'Despertado': return 4;
+        case 'Básico': return 3;
+        case 'Avanzado': return 2;
+        case 'Avanzado Élite': return 2;
+        case 'Supremo': return 1;
+        default: return 0;
+    }
+}
+
+function getBonusRacha(dias) {
+    if (dias % 10 === 0) return 10;
+    if (dias % 5 === 0) return 5;
+    return 1;
+}
+
+function getTextoResultado(rango, delta) {
+    if (delta > 0) {
+        switch (rango) {
+            case 'No despertado': return '¡Sentís una chispa interior!';
+            case 'Despertado': return '¡Tu espíritu se enciende!';
+            case 'Básico': return '¡Tu cuerpo se vuelve más duro!';
+            case 'Avanzado':
+            case 'Avanzado Élite': return '¡Tu voluntad es inquebrantable!';
+            case 'Supremo': return '¡Nadie puede detenerte!';
+            default: return '¡Has entrenado!';
+        }
+    } else if (delta < 0) {
+        switch (rango) {
+            case 'No despertado': return 'Tu Haki se resiste...';
+            case 'Despertado': return 'El entrenamiento fue duro...';
+            case 'Básico': return 'Golpeaste mal y perdiste fuerza...';
+            case 'Avanzado':
+            case 'Avanzado Élite': return 'Tu Armadura flaqueó un instante...';
+            case 'Supremo': return 'Hasta los más fuertes fallan...';
+            default: return 'Perdiste fuerza...';
+        }
+    } else {
+        switch (rango) {
+            case 'No despertado': return 'Nada cambió... pero no te rindas.';
+            case 'Despertado': return 'Tu Haki está estable.';
+            case 'Básico': return 'Hoy no hubo cambios, pero seguís firme.';
+            case 'Avanzado':
+            case 'Avanzado Élite': return 'Nada te mueve, ni siquiera la suerte.';
+            case 'Supremo': return 'Nada puede tocarte, ni el azar.';
+            default: return 'Sin cambios.';
+        }
+    }
+}
+
+function getMensajeNuevoRango(rango, usuario) {
+    switch (rango) {
+        case 'Despertado':
+            return `👁️ ¡Felicidades ${usuario}! Tu Haki de Armadura ha despertado.`;
+        case 'Básico':
+            return `🛡️ ¡Tu defensa se vuelve confiable, ${usuario}! Nivel Básico alcanzado. ✅`;
+        case 'Avanzado':
+            return `⚔️ ¡Impresionante, ${usuario}! Tu Armadura tiene gran poder. Rango Avanzado. 💪`;
+        case 'Supremo':
+            return `🌊 ¡Como un emperador del mar, ${usuario} ha dominado el Haki de Armadura! Ahora es SUPREMO. 👑`;
+        default:
+            return '';
+    }
+}
+
+function getFechaHoy() {
+    const ahora = new Date();
+    const offsetArg = -3 * 60;
+    const utc = ahora.getTime() + (ahora.getTimezoneOffset() * 60000);
+    const arg = new Date(utc + (offsetArg * 60000));
+    return arg.toISOString().split('T')[0];
+}
+
+// ============================================
 // COOLDOWNS
 // ============================================
 const cooldowns = {};
@@ -55,7 +134,7 @@ const client = new tmi.Client({
 });
 
 client.connect().then(() => {
-    console.log(`Bot conectado como ${config.botName} en el canal #${config.channelName}`);
+    console.log(`Bot conectado como ${config.botName} en los canales #${config.channelName} y #op_d_bot`);
 }).catch(err => console.error('Error al conectar:', err));
 
 // ============================================
@@ -167,7 +246,6 @@ client.on('message', async (channel, tags, message, self) => {
         const target = args[1] ? args[1].replace('@', '').toLowerCase() : username;
         const user = await getUsuario(target);
         const rango = (pts) => {
-            if (pts <= 0) return 'No despertado';
             if (pts <= 19) return 'No despertado';
             if (pts <= 49) return 'Despertado';
             if (pts <= 79) return 'Básico';
@@ -197,7 +275,6 @@ client.on('message', async (channel, tags, message, self) => {
     if (command === '!fruta') {
         const user = await getUsuario(username);
 
-        // Verificar cooldown
         const ahora = Date.now();
         const ultimoUso = cooldowns[`fruta_${username}`] || 0;
         const tiempoRestante = COOLDOWN_FRUTA - (ahora - ultimoUso);
@@ -207,26 +284,22 @@ client.on('message', async (channel, tags, message, self) => {
             return;
         }
 
-        // Verificar evento pendiente
         if (user && user.evento_estado === 'pendiente') {
             client.say(channel, `@${tags.username} Ya tienes un evento pendiente. Usa !pendiente para ver la decisión que debes tomar.`);
             return;
         }
 
-        // Verificar si ya tiene fruta
         if (user && user.fruta) {
             client.say(channel, `@${tags.username} Ya tienes una fruta (${user.fruta}). Usa !rechazar si quieres liberarla.`);
             return;
         }
 
-        // Racha activa para pruebas
         const tieneRacha = true;
         if (!tieneRacha) {
             client.say(channel, `@${tags.username} Necesitas tener la racha activa para buscar una fruta.`);
             return;
         }
 
-        // Probabilidad general (5%)
         const probGeneral = 5;
         if (Math.random() * 100 > probGeneral) {
             cooldowns[`fruta_${username}`] = Date.now();
@@ -234,7 +307,6 @@ client.on('message', async (channel, tags, message, self) => {
             return;
         }
 
-        // Obtener frutas disponibles
         const { data: usuariosConFruta } = await supabase.from('usuarios').select('fruta').not('fruta', 'is', null);
         const frutasOcupadas = (usuariosConFruta || []).map(u => u.fruta);
         const { data: frutasDisponibles, error: errorFrutas } = await supabase
@@ -248,7 +320,6 @@ client.on('message', async (channel, tags, message, self) => {
             return;
         }
 
-        // Selección ponderada
         const totalProb = frutasDisponibles.reduce((sum, f) => sum + f.probabilidad, 0);
         let randomPick = Math.random() * totalProb;
         let selectedFruit = null;
