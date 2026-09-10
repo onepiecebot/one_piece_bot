@@ -343,7 +343,7 @@ client.on('message', async (channel, tags, message, self) => {
     const username = tags.username.toLowerCase();
 
     // ============================================
-    // !infoop (NUEVO FORMATO)
+    // !infoop
     // ============================================
     if (command === '!infoop') {
         const target = args[1] ? args[1].replace('@', '').toLowerCase() : username;
@@ -353,7 +353,6 @@ client.on('message', async (channel, tags, message, self) => {
         const frutaNombre = user && user.fruta ? user.fruta : null;
         const recompensa = user && user.recompensa_publica ? user.recompensa_publica : 0;
 
-        // Obtener emoji de la fruta si tiene
         let frutaTexto = '🍎 Ninguna';
         if (frutaNombre) {
             const { data: frutaData } = await supabase
@@ -375,7 +374,7 @@ client.on('message', async (channel, tags, message, self) => {
     }
 
     // ============================================
-    // !op (NUEVA LÓGICA)
+    // !op
     // ============================================
     if (command === '!op') {
         const user = await getUsuario(username);
@@ -508,27 +507,30 @@ client.on('message', async (channel, tags, message, self) => {
     }
 
     // ============================================
-    // !fruta
+    // !fruta (ORDEN CORREGIDO)
     // ============================================
     if (command === '!fruta') {
         const user = await getUsuario(username);
 
+        // 1. Verificar si ya tiene fruta consumida
+        if (user && user.fruta) {
+            client.say(channel, `@${tags.username} Ya tienes una fruta (${user.fruta}).`);
+            return;
+        }
+
+        // 2. Verificar si tiene evento pendiente
+        if (user && user.evento_estado === 'pendiente') {
+            client.say(channel, `@${tags.username} Ya tienes un evento pendiente. Usa !pendiente para ver la decisión que debes tomar.`);
+            return;
+        }
+
+        // 3. Verificar cooldown
         const ahora = Date.now();
         const ultimoUso = cooldowns[`fruta_${username}`] || 0;
         const tiempoRestante = COOLDOWN_FRUTA - (ahora - ultimoUso);
         if (tiempoRestante > 0) {
             const segundos = Math.ceil(tiempoRestante / 1000);
             client.say(channel, `@${tags.username} Debes esperar ${segundos} segundos para usar !fruta nuevamente.`);
-            return;
-        }
-
-        if (user && user.evento_estado === 'pendiente') {
-            client.say(channel, `@${tags.username} Ya tienes un evento pendiente. Usa !pendiente para ver la decisión que debes tomar.`);
-            return;
-        }
-
-        if (user && user.fruta) {
-            client.say(channel, `@${tags.username} Ya tienes una fruta (${user.fruta}). Usa !rechazar si quieres liberarla.`);
             return;
         }
 
@@ -692,7 +694,7 @@ client.on('message', async (channel, tags, message, self) => {
     }
 
     // ============================================
-    // !pelear (SIN NÚMEROS EN EL CHAT)
+    // !pelear
     // ============================================
     if (command === '!pelear') {
         const user = await getUsuario(username);
@@ -805,7 +807,7 @@ client.on('message', async (channel, tags, message, self) => {
     }
 
     // ============================================
-    // !rechazar (SOLO FRUTA PENDIENTE)
+    // !rechazar
     // ============================================
     if (command === '!rechazar') {
         const user = await getUsuario(username);
