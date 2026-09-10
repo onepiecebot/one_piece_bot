@@ -3,6 +3,35 @@ const config = require('./config.js');
 const { getUsuario, updateUsuario, supabase } = require('./database.js');
 
 // ============================================
+// FUNCIONES DE RANGO DE ARMADURA
+// ============================================
+
+function getRangoArmadura(puntos, esSupremo = false) {
+    if (esSupremo) return { nombre: 'Supremo', factor: 1.0, emoji: '👑' };
+    if (puntos >= 100) return { nombre: 'Avanzado Élite', factor: 0.8, emoji: '💪' };
+    if (puntos >= 80) return { nombre: 'Avanzado', factor: 0.8, emoji: '💪' };
+    if (puntos >= 50) return { nombre: 'Básico', factor: 0.5, emoji: '✅' };
+    if (puntos >= 20) return { nombre: 'Despertado', factor: 0.2, emoji: '👁️' };
+    return { nombre: 'No despertado', factor: 0, emoji: '❌' };
+}
+
+function getIntervaloTirada(rango) {
+    switch (rango) {
+        case 'No despertado': return { min: 1, max: 5 };
+        case 'Despertado': return { min: -1, max: 4 };
+        case 'Básico': return { min: -2, max: 3 };
+        case 'Avanzado': return { min: -3, max: 4 };
+        case 'Avanzado Élite': return { min: -3, max: 3 };
+        case 'Supremo': return { min: -4, max: 2 };
+        default: return { min: 0, max: 0 };
+    }
+}
+
+function tiradaAleatoria(min, max) {
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+// ============================================
 // COOLDOWNS
 // ============================================
 const cooldowns = {};
@@ -34,8 +63,8 @@ client.connect().then(() => {
 // ============================================
 
 function calcularPoderHakis(armadura, observacion, conquistador) {
-    const factorArmadura = armadura <= 0 ? 0 : armadura <= 49 ? 0.2 : armadura <= 79 ? 0.5 : armadura <= 99 ? 0.8 : 1.0;
-    const factorObservacion = observacion <= 0 ? 0 : observacion <= 49 ? 0.2 : observacion <= 79 ? 0.5 : observacion <= 99 ? 0.8 : 1.0;
+    const factorArmadura = armadura <= 0 ? 0 : armadura <= 19 ? 0 : armadura <= 49 ? 0.2 : armadura <= 79 ? 0.5 : armadura <= 99 ? 0.8 : 1.0;
+    const factorObservacion = observacion <= 0 ? 0 : observacion <= 19 ? 0 : observacion <= 49 ? 0.2 : observacion <= 79 ? 0.5 : observacion <= 99 ? 0.8 : 1.0;
     const factorConquistador = conquistador <= 49 ? 0 : conquistador <= 79 ? 0.1 : conquistador <= 94 ? 0.25 : conquistador <= 100 ? 0.5 : 1.0;
 
     console.log(`🔍 Factores: Armadura=${factorArmadura}, Observacion=${factorObservacion}, Conquistador=${factorConquistador}`);
@@ -56,7 +85,7 @@ function aplicarVariacion(poder) {
     const random = Math.floor(Math.random() * 101);
     const variacion = (950 + random) / 1000;
     const resultado = poder * variacion;
-    console.log(`🔍 Variación aplicada: ${(variacion - 1) * 100}% → Poder final: ${resultado.toFixed(2)}`);
+    console.log(`🔍 Variación aplicada: ${((variacion - 1) * 100).toFixed(1)}% → Poder final: ${resultado.toFixed(2)}`);
     return resultado;
 }
 
@@ -139,10 +168,11 @@ client.on('message', async (channel, tags, message, self) => {
         const user = await getUsuario(target);
         const rango = (pts) => {
             if (pts <= 0) return 'No despertado';
+            if (pts <= 19) return 'No despertado';
             if (pts <= 49) return 'Despertado';
-            if (pts <= 79) return 'Basico';
+            if (pts <= 79) return 'Básico';
             if (pts <= 99) return 'Avanzado';
-            return 'Supremo';
+            return 'Avanzado Élite';
         };
         const fruta = user && user.fruta ? user.fruta : 'Ninguna';
         const respuesta = `@${target} | Fruta: ${fruta} | Haki Armadura: ${rango(user && user.armadura ? user.armadura : 0)} | Haki Observacion: ${rango(user && user.observacion ? user.observacion : 0)} | Haki Conquistador: ${rango(user && user.conquistador ? user.conquistador : 0)}`;
@@ -151,7 +181,7 @@ client.on('message', async (channel, tags, message, self) => {
     }
 
     // ============================================
-    // !op
+    // !op (VERSIÓN TEMPORAL - SE ACTUALIZARÁ EN EL SIGUIENTE PASO)
     // ============================================
     if (command === '!op') {
         const user = await getUsuario(username);
@@ -276,7 +306,7 @@ client.on('message', async (channel, tags, message, self) => {
     }
 
     // ============================================
-    // !testevento (FORZAR EVENTO DE PRUEBA)
+    // !testevento
     // ============================================
     if (command === '!testevento') {
         await updateUsuario(username, {
@@ -341,7 +371,7 @@ client.on('message', async (channel, tags, message, self) => {
     }
 
     // ============================================
-    // !pelear (con NPCs y números detallados)
+    // !pelear
     // ============================================
     if (command === '!pelear') {
         const user = await getUsuario(username);
@@ -350,7 +380,6 @@ client.on('message', async (channel, tags, message, self) => {
             return;
         }
 
-        // 1. Obtener datos de la fruta del usuario
         const { data: frutaData } = await supabase
             .from('frutas')
             .select('poder_fruta, sombra')
@@ -360,17 +389,14 @@ client.on('message', async (channel, tags, message, self) => {
         const poderFrutaUsuario = frutaData ? frutaData.poder_fruta : 0;
         const nombreSombra = frutaData ? frutaData.sombra : null;
 
-        // 2. Calcular poder del usuario
         const armadura = user.armadura || 0;
         const observacion = user.observacion || 0;
         const conquistador = user.conquistador || 0;
 
         console.log(`🔍 Hakis: Armadura=${armadura}, Observacion=${observacion}, Conquistador=${conquistador}`);
-        console.log(`🔍 Multiplicadores: Armadura x2.5, Observacion x1.8, Conquistador x4.0`);
 
         const poderUsuario = calcularPoderBase(poderFrutaUsuario, armadura, observacion, conquistador);
 
-        // 3. Obtener poder del enemigo (NPC) desde la tabla npcs
         let poderEnemigoBase = 80;
         let npcNombre = '';
 
@@ -382,7 +408,7 @@ client.on('message', async (channel, tags, message, self) => {
                 .maybeSingle();
 
             if (npcError || !npc) {
-                console.warn(`⚠️ NPC ${nombreSombra} no encontrado en tabla npcs. Usando valor por defecto.`);
+                console.warn(`⚠️ NPC ${nombreSombra} no encontrado. Usando 80.`);
                 poderEnemigoBase = 80;
             } else {
                 poderEnemigoBase = npc.pcf_final || npc.pcf_calculado || 80;
@@ -396,27 +422,16 @@ client.on('message', async (channel, tags, message, self) => {
 
         console.log(`🔍 Poder Enemigo Base: ${poderEnemigoBase}`);
 
-        // 4. Calcular combate (con variación)
         const resultado = calcularCombate(poderUsuario, poderEnemigoBase);
 
-        // 5. Recompensas
         const nivel = user.evento_nivel || 4;
         const baseConquistador = nivel * 5;
         const baseBerries = nivel * 1000000;
         const recompensaConq = resultado.victoria ? baseConquistador : -Math.floor(baseConquistador / 2);
         const recompensaBerries = resultado.victoria ? baseBerries : -Math.floor(baseBerries / 4);
 
-        // 6. Mensaje narrativo
         const mensaje = obtenerMensaje(resultado.victoria, resultado.porcentaje);
 
-        // 7. Logs para pruebas (CMD)
-        console.log(`🔍 Hakis del usuario: Armadura=${armadura}, Observacion=${observacion}, Conquistador=${conquistador}`);
-        console.log(`🔍 Poder Fruta Usuario: ${poderFrutaUsuario}`);
-        console.log(`🔍 Poder Usuario Base: ${poderUsuario}`);
-        console.log(`🔍 Poder Enemigo Base: ${poderEnemigoBase}`);
-        console.log(`🔍 Resultado: Victoria=${resultado.victoria}, Porcentaje=${resultado.porcentaje.toFixed(2)}%`);
-
-        // 8. Actualizar usuario
         await updateUsuario(username, {
             conquistador: (user.conquistador || 0) + recompensaConq,
             recompensa_publica: (user.recompensa_publica || 0) + recompensaBerries,
@@ -429,10 +444,9 @@ client.on('message', async (channel, tags, message, self) => {
             evento_comandos: null
         });
 
-        // 9. Respuesta en chat con números detallados
         const resultadoTexto = resultado.victoria
-            ? `¡Has ganado! Tu poder base: ${poderUsuario.toFixed(0)} | Variación aplicada: ${(1000 - 950) / 10}% → Final: ${resultado.poderFinalUsuario.toFixed(0)} | Enemigo: base ${poderEnemigoBase} | Variación aplicada: ${(1000 - 950) / 10}% → Final: ${resultado.poderFinalEnemigo.toFixed(0)} | Diferencia: ${resultado.diferencia.toFixed(0)} (${resultado.porcentaje.toFixed(1)}%)`
-            : `Has perdido. Tu poder base: ${poderUsuario.toFixed(0)} | Variación aplicada: ${(1000 - 950) / 10}% → Final: ${resultado.poderFinalUsuario.toFixed(0)} | Enemigo: base ${poderEnemigoBase} | Variación aplicada: ${(1000 - 950) / 10}% → Final: ${resultado.poderFinalEnemigo.toFixed(0)} | Diferencia: ${resultado.diferencia.toFixed(0)} (${resultado.porcentaje.toFixed(1)}%)`;
+            ? `¡Has ganado! Tu poder base: ${poderUsuario.toFixed(0)} | Final: ${resultado.poderFinalUsuario.toFixed(0)} | Enemigo: ${poderEnemigoBase} → ${resultado.poderFinalEnemigo.toFixed(0)} | Diferencia: ${resultado.diferencia.toFixed(0)} (${resultado.porcentaje.toFixed(1)}%)`
+            : `Has perdido. Tu poder base: ${poderUsuario.toFixed(0)} | Final: ${resultado.poderFinalUsuario.toFixed(0)} | Enemigo: ${poderEnemigoBase} → ${resultado.poderFinalEnemigo.toFixed(0)} | Diferencia: ${resultado.diferencia.toFixed(0)} (${resultado.porcentaje.toFixed(1)}%)`;
 
         client.say(channel, `@${tags.username} ${mensaje} ${resultadoTexto}`);
         return;
@@ -503,7 +517,6 @@ client.on('message', async (channel, tags, message, self) => {
     // ============================================
     if (!esDueño(username)) return;
 
-    // !sumar1 (armadura), !sumar2 (observacion), !sumar3 (conquistador)
     if (command === '!sumar1') {
         if (args.length < 3) return client.say(channel, `@${tags.username} Uso: !sumar1 @usuario cantidad`);
         const target = args[1].replace('@', '').toLowerCase();
@@ -534,8 +547,6 @@ client.on('message', async (channel, tags, message, self) => {
         client.say(channel, `@${tags.username} Has sumado ${cantidad} puntos de conquistador a @${target}. Ahora tiene ${user.conquistador + cantidad}.`);
         return;
     }
-
-    // !restar1, !restar2, !restar3
     if (command === '!restar1') {
         if (args.length < 3) return client.say(channel, `@${tags.username} Uso: !restar1 @usuario cantidad`);
         const target = args[1].replace('@', '').toLowerCase();
@@ -570,7 +581,6 @@ client.on('message', async (channel, tags, message, self) => {
         return;
     }
 
-    // !quitarfruta
     if (command === '!quitarfruta') {
         if (args.length < 2) return client.say(channel, `@${tags.username} Uso: !quitarfruta @usuario`);
         const target = args[1].replace('@', '').toLowerCase();
@@ -579,9 +589,6 @@ client.on('message', async (channel, tags, message, self) => {
         return;
     }
 
-    // ============================================
-    // !setpcf (Cambiar PCF de un NPC) - SOLO ADMIN
-    // ============================================
     if (command === '!setpcf') {
         if (args.length < 3) {
             client.say(channel, `@${tags.username} Uso: !setpcf nombreNPC poder`);

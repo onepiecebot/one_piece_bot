@@ -62,6 +62,12 @@ async function getUsuario(username) {
                 evento_nivel: null,
                 evento_estado: null,
                 evento_comandos: null
+                op_usos_hoy: 0,
+                ultimo_op_fecha: null,
+                ultimo_op_timestamp: null,
+                racha_ops: 0,
+                ultimo_dia_racha: null,
+                supremos_min_historico: 0
             }])
             .select()
             .single();
