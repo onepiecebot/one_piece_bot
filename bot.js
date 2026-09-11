@@ -5,8 +5,8 @@ const { getUsuario, updateUsuario, supabase } = require('./database.js');
 // ============================================
 // CONSTANTES
 // ============================================
-const COOLDOWN_FRUTA = 60000;  // 1 minuto (pruebas)
-const PROB_FRUTA = 100;         // 100% (pruebas hasta lanzamiento)
+const COOLDOWN_FRUTA = 60000;
+const PROB_FRUTA = 100;
 const DUEÑO = 'fan_d_larana';
 
 // ============================================
@@ -56,7 +56,7 @@ function getIntervaloTirada(rango) {
 const tiradaAleatoria = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
 
 // ============================================
-// EMOJIS DE RANGO (unificados)
+// EMOJIS DE RANGO
 // ============================================
 function getEmojiRango(puntos, tipo = 'armadura', esSupremo = false) {
     if (tipo === 'conquistador') {
@@ -259,7 +259,7 @@ function obtenerMensaje(victoria, porcentaje) {
 }
 
 // ============================================
-// ADMIN: Comandos de suma/resta
+// ADMIN
 // ============================================
 const ADMIN_STATS = {
     sumar1: { campo: 'armadura', nombre: 'armadura', signo: 1 },
@@ -656,7 +656,7 @@ client.on('message', async (channel, tags, message, self) => {
     }
 
     // ============================================
-    // COMANDOS DE ADMIN (consolidados)
+    // COMANDOS DE ADMIN
     // ============================================
     if (!esDueño(username)) return;
 
