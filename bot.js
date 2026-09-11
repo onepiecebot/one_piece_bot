@@ -10,6 +10,11 @@ const PROB_FRUTA = 100;         // 100% (pruebas hasta lanzamiento)
 const DUEÑO = 'fan_d_larana';
 
 // ============================================
+// COOLDOWNS
+// ============================================
+const cooldowns = {};
+
+// ============================================
 // FUNCIONES DE FECHA (hora Argentina)
 // ============================================
 function getFechaOffset(diasOffset = 0) {
@@ -448,12 +453,10 @@ client.on('message', async (channel, tags, message, self) => {
                 return;
             }
 
-            // Obtener frutas ocupadas
             const { data: usuariosConFruta } = await supabase
                 .from('usuarios').select('fruta').not('fruta', 'is', null);
             const frutasOcupadas = (usuariosConFruta || []).map(u => u.fruta).filter(Boolean);
 
-            // Query base
             let query = supabase.from('frutas').select('*');
             if (frutasOcupadas.length > 0) {
                 query = query.not('nombre', 'in', `(${frutasOcupadas.map(f => `'${f}'`).join(',')})`);
