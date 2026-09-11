@@ -289,16 +289,19 @@ client.connect()
 // ============================================
 client.on('whisper', async (from, userstate, message, self) => {
     if (self) return;
-    console.log(`📩 Susurro de ${from}: ${message}`);
+
+    // Limpiar el 'from' (quitar # si lo tiene)
+    const fromUser = from.startsWith('#') ? from.slice(1) : from;
+
+    console.log(`📩 Susurro de ${fromUser}: ${message}`);
 
     const args = message.trim().split(' ');
     const command = args[0].toLowerCase();
 
-    // Comando de prueba
     if (command === '!testwhisper') {
         try {
-            await client.whisper(from, `¡Hola ${from}! Los susurros funcionan correctamente. 🎉`);
-            console.log(`✅ Susurro enviado a ${from}`);
+            await client.whisper(fromUser, `¡Hola ${fromUser}! Los susurros funcionan correctamente. 🎉`);
+            console.log(`✅ Susurro enviado a ${fromUser}`);
         } catch (err) {
             console.error('❌ Error al enviar susurro:', err);
         }
