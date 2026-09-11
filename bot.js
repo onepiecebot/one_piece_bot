@@ -285,7 +285,28 @@ client.connect()
     .catch(err => console.error('Error al conectar:', err));
 
 // ============================================
-// COMANDOS
+// HANDLER DE SUSURROS (PRUEBA)
+// ============================================
+client.on('whisper', async (from, userstate, message, self) => {
+    if (self) return;
+    console.log(`📩 Susurro de ${from}: ${message}`);
+
+    const args = message.trim().split(' ');
+    const command = args[0].toLowerCase();
+
+    // Comando de prueba
+    if (command === '!testwhisper') {
+        try {
+            await client.whisper(from, `¡Hola ${from}! Los susurros funcionan correctamente. 🎉`);
+            console.log(`✅ Susurro enviado a ${from}`);
+        } catch (err) {
+            console.error('❌ Error al enviar susurro:', err);
+        }
+    }
+});
+
+// ============================================
+// COMANDOS (CHAT PÚBLICO)
 // ============================================
 client.on('message', async (channel, tags, message, self) => {
     if (self) return;
