@@ -5,8 +5,8 @@ const { getUsuario, updateUsuario, supabase } = require('./database.js');
 // ============================================
 // CONSTANTES
 // ============================================
-const COOLDOWN_FRUTA = 60000;
-const PROB_FRUTA = 100;
+const COOLDOWN_FRUTA = 60000;  // 1 minuto (pruebas)
+const PROB_FRUTA = 100;         // 100% (pruebas hasta lanzamiento)
 const DUEÑO = 'fan_d_larana';
 
 // ============================================
@@ -56,7 +56,7 @@ function getIntervaloTirada(rango) {
 const tiradaAleatoria = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
 
 // ============================================
-// EMOJIS DE RANGO
+// EMOJIS DE RANGO (unificados)
 // ============================================
 function getEmojiRango(puntos, tipo = 'armadura', esSupremo = false) {
     if (tipo === 'conquistador') {
@@ -259,7 +259,7 @@ function obtenerMensaje(victoria, porcentaje) {
 }
 
 // ============================================
-// ADMIN
+// ADMIN: Comandos de suma/resta
 // ============================================
 const ADMIN_STATS = {
     sumar1: { campo: 'armadura', nombre: 'armadura', signo: 1 },
@@ -495,10 +495,12 @@ client.on('message', async (channel, tags, message, self) => {
                 client.say(channel, `@${tags.username} ${selectedFruit.fase1}`);
             } else {
                 await updateUsuario(username, { fruta_pendiente: selectedFruit.nombre });
-                client.say(channel, `@${tags.username} ¡Felicidades! Has encontrado una fruta del diablo: la ${selectedFruit.nombre} ${selectedFruit.emoji || ''}`);
-                client.say(channel, `${selectedFruit.descripcion}`);
-                client.say(channel, `⚔️ ${selectedFruit.ataque || 0} | 🛡️ ${selectedFruit.defensa || 0} | 🧠 Utilidad: ${selectedFruit.utilidad || 0}`);
-                client.say(channel, `¿Qué decisión tomas? !comer o !rechazar`);
+                const emoji = selectedFruit.emoji || '';
+                const atq = selectedFruit.ataque || 0;
+                const def = selectedFruit.defensa || 0;
+                const util = selectedFruit.utilidad || 0;
+                const desc = selectedFruit.descripcion || '';
+                client.say(channel, `@${tags.username} ¡Felicidades! Has encontrado la ${selectedFruit.nombre} ${emoji} — ${desc} ⚔️ ${atq} | 🛡️ ${def} | 🧠 Utilidad: ${util} — ¿Qué decisión tomas? !comer o !rechazar`);
             }
         } catch (err) {
             console.error('❌ Error en !fruta:', err);
@@ -534,10 +536,11 @@ client.on('message', async (channel, tags, message, self) => {
         await updateUsuario(username, { evento_fase: 'encuentro', evento_comandos: 'pelear_huir' });
         const { data: fruta } = await supabase.from('frutas').select('*').eq('nombre', user.evento_fruta).single();
 
-        client.say(channel, `@${tags.username} ${fruta.fase2}`);
-        client.say(channel, `🍎 ${fruta.nombre} ${fruta.emoji || ''}`);
-        client.say(channel, `⚔️ ${fruta.ataque || 0} | 🛡️ ${fruta.defensa || 0} | 🧠 Utilidad: ${fruta.utilidad || 0}`);
-        client.say(channel, `¿Qué haces? !pelear o !huir`);
+        const emoji = fruta.emoji || '';
+        const atq = fruta.ataque || 0;
+        const def = fruta.defensa || 0;
+        const util = fruta.utilidad || 0;
+        client.say(channel, `@${tags.username} ${fruta.fase2} 🍎 ${fruta.nombre} ${emoji} ⚔️ ${atq} | 🛡️ ${def} | 🧠 Utilidad: ${util} — ¿Qué haces? !pelear o !huir`);
         return;
     }
 
@@ -602,10 +605,10 @@ client.on('message', async (channel, tags, message, self) => {
             evento_nivel: null, evento_estado: null, evento_comandos: null
         });
 
-        client.say(channel, `@${tags.username} ${mensaje}`);
-
         if (resultado.victoria) {
-            client.say(channel, `🍎 ¡Has obtenido la ${user.evento_fruta} ${emojiFruta}!`);
+            client.say(channel, `@${tags.username} ${mensaje} 🍎 ¡Has obtenido la ${user.evento_fruta} ${emojiFruta}!`);
+        } else {
+            client.say(channel, `@${tags.username} ${mensaje}`);
         }
         return;
     }
@@ -656,7 +659,7 @@ client.on('message', async (channel, tags, message, self) => {
     }
 
     // ============================================
-    // COMANDOS DE ADMIN
+    // COMANDOS DE ADMIN (consolidados)
     // ============================================
     if (!esDueño(username)) return;
 
