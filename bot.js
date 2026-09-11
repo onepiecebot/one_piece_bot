@@ -516,13 +516,21 @@ client.on('message', async (channel, tags, message, self) => {
             client.say(channel, `@${tags.username} No tienes ningún evento pendiente.`);
             return;
         }
-        const { data: fruta } = await supabase.from('frutas').select('fase1, fase2').eq('nombre', user.evento_fruta).single();
+        const { data: fruta } = await supabase.from('frutas').select('*').eq('nombre', user.evento_fruta).single();
         if (!fruta) {
             client.say(channel, `@${tags.username} Error al obtener detalles del evento.`);
             return;
         }
-        const texto = user.evento_fase === 'avistamiento' ? fruta.fase1 : fruta.fase2;
-        client.say(channel, `@${tags.username} ${texto}`);
+
+        if (user.evento_fase === 'avistamiento') {
+            client.say(channel, `@${tags.username} ${fruta.fase1}`);
+        } else {
+            const emoji = fruta.emoji || '';
+            const atq = fruta.ataque || 0;
+            const def = fruta.defensa || 0;
+            const util = fruta.utilidad || 0;
+            client.say(channel, `@${tags.username} ${fruta.fase2} 🍎 ${fruta.nombre} ${emoji} ⚔️ ${atq} | 🛡️ ${def} | 🧠 Utilidad: ${util} — ¿Qué haces? !pelear o !huir`);
+        }
         return;
     }
 
