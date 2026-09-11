@@ -131,7 +131,7 @@ function getMensajeNuevoRango(rango, usuario) {
 // SUPREMOS DINÁMICOS (con cache)
 // ============================================
 let supremosCache = { data: [], timestamp: 0 };
-const SUPREMOS_CACHE_TTL = 30000; // 30 segundos
+const SUPREMOS_CACHE_TTL = 30000;
 
 async function getSupremosActuales() {
     const ahora = Date.now();
@@ -419,71 +419,87 @@ client.on('message', async (channel, tags, message, self) => {
 
     // ========== !fruta ==========
     if (command === '!fruta') {
-        const user = await getUsuario(username);
+        try {
+            const user = await getUsuario(username);
 
-        if (user?.fruta) {
-            client.say(channel, `@${tags.username} Ya tienes una fruta (${user.fruta}).`);
-            return;
-        }
+            if (user?.fruta) {
+                client.say(channel, `@${tags.username} Ya tienes una fruta (${user.fruta}).`);
+                return;
+            }
 
-        if (user?.evento_estado === 'pendiente') {
-            client.say(channel, `@${tags.username} Ya tienes un evento pendiente. Usa !pendiente para ver la decisión que debes tomar.`);
-            return;
-        }
+            if (user?.evento_estado === 'pendiente') {
+                client.say(channel, `@${tags.username} Ya tienes un evento pendiente. Usa !pendiente para ver la decisión que debes tomar.`);
+                return;
+            }
 
-        const ahora = Date.now();
-        const ultimoUso = cooldowns[`fruta_${username}`] || 0;
-        const tiempoRestante = COOLDOWN_FRUTA - (ahora - ultimoUso);
-        if (tiempoRestante > 0) {
-            const seg = Math.ceil(tiempoRestante / 1000);
-            client.say(channel, `@${tags.username} Debes esperar ${seg} segundos para usar !fruta nuevamente.`);
-            return;
-        }
+            const ahora = Date.now();
+            const ultimoUso = cooldowns[`fruta_${username}`] || 0;
+            const tiempoRestante = COOLDOWN_FRUTA - (ahora - ultimoUso);
+            if (tiempoRestante > 0) {
+                const seg = Math.ceil(tiempoRestante / 1000);
+                client.say(channel, `@${tags.username} Debes esperar ${seg} segundos para usar !fruta nuevamente.`);
+                return;
+            }
 
-        cooldowns[`fruta_${username}`] = Date.now();
+            cooldowns[`fruta_${username}`] = Date.now();
 
-        if (Math.random() * 100 > PROB_FRUTA) {
-            client.say(channel, `@${tags.username} No tuviste suerte esta vez. ¡Suerte para la próxima!`);
-            return;
-        }
+            if (Math.random() * 100 > PROB_FRUTA) {
+                client.say(channel, `@${tags.username} No tuviste suerte esta vez. ¡Suerte para la próxima!`);
+                return;
+            }
 
-        const { data: usuariosConFruta } = await supabase.from('usuarios').select('fruta').not('fruta', 'is', null);
-        const frutasOcupadas = (usuariosConFruta || []).map(u => u.fruta);
-        const { data: frutasDisponibles, error: errFrutas } = await supabase
-            .from('frutas').select('*')
-            .not('nombre', 'in', `(${frutasOcupadas.map(f => `'${f}'`).join(',')})`);
+            // Obtener frutas ocupadas
+            const { data: usuariosConFruta } = await supabase
+                .from('usuarios').select('fruta').not('fruta', 'is', null);
+            const frutasOcupadas = (usuariosConFruta || []).map(u => u.fruta).filter(Boolean);
 
-        if (errFrutas || !frutasDisponibles?.length) {
-            client.say(channel, `@${tags.username} No hay frutas disponibles en este momento. ¡Vuelve más tarde!`);
-            return;
-        }
+            // Query base
+            let query = supabase.from('frutas').select('*');
+            if (frutasOcupadas.length > 0) {
+                query = query.not('nombre', 'in', `(${frutasOcupadas.map(f => `'${f}'`).join(',')})`);
+            }
 
-        const totalProb = frutasDisponibles.reduce((s, f) => s + f.probabilidad, 0);
-        let randomPick = Math.random() * totalProb;
-        let selectedFruit = null;
-        for (const f of frutasDisponibles) {
-            randomPick -= f.probabilidad;
-            if (randomPick <= 0) { selectedFruit = f; break; }
-        }
+            const { data: frutasDisponibles, error: errFrutas } = await query;
 
-        if (!selectedFruit) {
-            client.say(channel, `@${tags.username} No tuviste suerte esta vez. ¡Suerte para la próxima!`);
-            return;
-        }
+            if (errFrutas || !frutasDisponibles?.length) {
+                client.say(channel, `@${tags.username} No hay frutas disponibles en este momento. ¡Vuelve más tarde!`);
+                return;
+            }
 
-        if (selectedFruit.evento) {
-            await updateUsuario(username, {
-                evento_tipo: 'fruta', evento_fase: 'avistamiento',
-                evento_fruta: selectedFruit.nombre, evento_nivel: selectedFruit.nivel || 1,
-                evento_estado: 'pendiente', evento_comandos: 'si_no'
-            });
-            client.say(channel, `@${tags.username} ${selectedFruit.fase1}`);
-        } else {
-            await updateUsuario(username, { fruta_pendiente: selectedFruit.nombre });
-            client.say(channel, `@${tags.username} ¡Felicidades! Has encontrado una fruta del diablo: la ${selectedFruit.nombre} ${selectedFruit.emoji || ''}`);
-            client.say(channel, `${selectedFruit.descripcion}`);
-            client.say(channel, `⚔️ ${selectedFruit.ataque || 0} | 🛡️ ${selectedFruit.defensa || 0} | 🧠 Utilidad: ${selectedFruit.utilidad || 0}`);
-            client.say(channel, `¿Qué decisión tomas? !comer o !rechazar`);
+            const totalProb = frutasDisponibles.reduce((s, f) => s + (Number(f.probabilidad) || 0), 0);
+
+            let selectedFruit = null;
+            if (totalProb <= 0) {
+                selectedFruit = frutasDisponibles[Math.floor(Math.random() * frutasDisponibles.length)];
+            } else {
+                let randomPick = Math.random() * totalProb;
+                for (const f of frutasDisponibles) {
+                    randomPick -= (Number(f.probabilidad) || 0);
+                    if (randomPick <= 0) { selectedFruit = f; break; }
+                }
+            }
+
+            if (!selectedFruit) {
+                selectedFruit = frutasDisponibles[0];
+            }
+
+            if (selectedFruit.evento) {
+                await updateUsuario(username, {
+                    evento_tipo: 'fruta', evento_fase: 'avistamiento',
+                    evento_fruta: selectedFruit.nombre, evento_nivel: selectedFruit.nivel || 1,
+                    evento_estado: 'pendiente', evento_comandos: 'si_no'
+                });
+                client.say(channel, `@${tags.username} ${selectedFruit.fase1}`);
+            } else {
+                await updateUsuario(username, { fruta_pendiente: selectedFruit.nombre });
+                client.say(channel, `@${tags.username} ¡Felicidades! Has encontrado una fruta del diablo: la ${selectedFruit.nombre} ${selectedFruit.emoji || ''}`);
+                client.say(channel, `${selectedFruit.descripcion}`);
+                client.say(channel, `⚔️ ${selectedFruit.ataque || 0} | 🛡️ ${selectedFruit.defensa || 0} | 🧠 Utilidad: ${selectedFruit.utilidad || 0}`);
+                client.say(channel, `¿Qué decisión tomas? !comer o !rechazar`);
+            }
+        } catch (err) {
+            console.error('❌ Error en !fruta:', err);
+            client.say(channel, `@${tags.username} Hubo un error. Intenta de nuevo.`);
         }
         return;
     }
@@ -641,7 +657,6 @@ client.on('message', async (channel, tags, message, self) => {
     // ============================================
     if (!esDueño(username)) return;
 
-    // Sumar/Restar stats (6 comandos en un solo bloque)
     const cmdName = command.substring(1);
     if (ADMIN_STATS[cmdName]) {
         const { campo, nombre, signo } = ADMIN_STATS[cmdName];
@@ -659,7 +674,6 @@ client.on('message', async (channel, tags, message, self) => {
         return;
     }
 
-    // !quitarfruta
     if (command === '!quitarfruta') {
         if (args.length < 2) return client.say(channel, `@${tags.username} Uso: !quitarfruta @usuario`);
         const target = args[1].replace('@', '').toLowerCase();
@@ -668,7 +682,6 @@ client.on('message', async (channel, tags, message, self) => {
         return;
     }
 
-    // !setpcf
     if (command === '!setpcf') {
         if (args.length < 3) return client.say(channel, `@${tags.username} Uso: !setpcf nombreNPC poder`);
         const npcNombre = args[1].toLowerCase();
