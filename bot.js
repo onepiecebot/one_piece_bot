@@ -150,7 +150,7 @@ function calcularRecompensa(user) {
 }
 
 // ============================================
-// SUPREMOS DINÁMICOS (con cache)
+// SUPREMOS DINÁMICOS
 // ============================================
 let supremosCache = { data: [], timestamp: 0 };
 const SUPREMOS_CACHE_TTL = 30000;
@@ -303,7 +303,7 @@ client.connect()
     .catch(err => console.error('Error al conectar:', err));
 
 // ============================================
-// EVENTSUB WEBSOCKET (susurros)
+// EVENTSUB WEBSOCKET
 // ============================================
 let websocketSessionId = null;
 
@@ -387,7 +387,7 @@ async function sendWhisper(toUserId, message) {
 setTimeout(startEventSubWebSocket, 3000);
 
 // ============================================
-// HANDLER DE SUSURROS
+// HANDLER DE SUSURROS (SOLO RESPONDE POR SUSURRO)
 // ============================================
 async function handleWhisper(event) {
     const fromUserId = event.from_user_id;
@@ -397,7 +397,7 @@ async function handleWhisper(event) {
     const command = args[0].toLowerCase();
     const username = fromUserLogin.toLowerCase();
 
-    console.log(`📩 Susurro de ${fromUserLogin}: ${messageText}`);
+    console.log(`📩 [SUSURRO] de ${fromUserLogin}: ${messageText}`);
 
     // ========== !testwhisper ==========
     if (command === '!testwhisper') {
@@ -407,28 +407,39 @@ async function handleWhisper(event) {
 
     // ========== !ayudabotsito ==========
     if (command === '!ayudabotsito') {
-        const ayuda = `📖 AYUDA - op_d_bot
+        if (args[1] === 'chat') {
+            const ayuda = `💬 COMANDOS DE CHAT
 
-💬 COMANDOS DE CHAT:
-!op → Entrena Haki de Armadura (3/día)
-!fruta → Busca una fruta del diablo
-!comer → Consume la fruta pendiente
-!rechazar → Rechaza la fruta pendiente
-!infoop → Muestra tu info (versión corta, actualiza recompensa)
-!frutapendiente → Muestra tu evento de fruta pendiente
-!si / !no → Decide en evento de fruta
-!pelear / !huir → Combate en evento de fruta
-!ayuda → Este mensaje de ayuda
+🎮 !op → Entrena Haki de Armadura (3/día)
+🍎 !fruta → Busca una fruta del diablo
+😋 !comer → Consume la fruta pendiente
+❌ !rechazar → Rechaza la fruta pendiente
+📊 !infoop → Tu info (corta, actualiza recompensa)
+⏳ !frutapendiente → Tu evento de fruta pendiente
+✅ !si / ❌ !no → Decide en evento de fruta
+⚔️ !pelear / 🏃 !huir → Combate en evento de fruta
+❓ !ayuda → Este mensaje`;
+            await sendWhisper(fromUserId, ayuda);
+        } else if (args[1] === 'susurro') {
+            const ayuda = `📩 COMANDOS DE SUSURRO
 
-📩 COMANDOS DE SUSURRO (mandá un susurro al bot):
-!explorar → Explora el mundo (1/día)
-!continuar / !retroceder → Decide en exploración
-!combatir / !retirarse → Combate en exploración
-!exploracionpendiente → Muestra tu evento de exploración
-!infoop → Tu info completa (con puntos)
-!infoop @usuario → Info corta de otro usuario
-!ayudabotsito → Esta ayuda`;
-        await sendWhisper(fromUserId, ayuda);
+🗺️ !explorar → Explora el mundo (1/día)
+➡️ !continuar / ⬅️ !retroceder → Decide en exploración
+⚔️ !combatir / 🏃 !retirarse → Combate en exploración
+⏳ !exploracionpendiente → Tu evento de exploración
+📊 !infoop → Tu info completa (con puntos)
+👤 !infoop @usuario → Info corta de otro usuario
+❓ !ayudabotsito → Esta ayuda`;
+            await sendWhisper(fromUserId, ayuda);
+        } else {
+            const ayuda = `📖 AYUDA - op_d_bot
+
+¿Qué querés ver?
+
+💬 !ayudabotsito chat → Comandos de chat
+📩 !ayudabotsito susurro → Comandos de susurro`;
+            await sendWhisper(fromUserId, ayuda);
+        }
         return;
     }
 
@@ -450,9 +461,9 @@ async function handleWhisper(event) {
 
         const mensaje = `📊 Tus estadísticas:
 ${frutaTexto}
-🛡️ Haki Armadura: ${rangoArm.nombre} (${user?.armadura || 0} pts) ${rangoArm.emoji}
-👁️ Haki Observación: ${rangoObs.nombre} (${user?.observacion || 0} pts)
-⚜️ Haki Conquistador: ${rangoConq.nombre} (${user?.conquistador || 0} pts)
+🛡️ Armadura: ${rangoArm.nombre} (${user?.armadura || 0} pts) ${rangoArm.emoji}
+👁️ Observación: ${rangoObs.nombre} (${user?.observacion || 0} pts)
+⚜️ Conquistador: ${rangoConq.nombre} (${user?.conquistador || 0} pts)
 🏴‍☠️💰 Recompensa: $${(user?.recompensa_publica || 0).toLocaleString('es-AR')}`;
 
         await sendWhisper(fromUserId, mensaje);
@@ -488,7 +499,6 @@ ${frutaTexto}
             return;
         }
 
-        // Si la fruta fue comida por otro
         if (user.evento_fruta_comida_por_otro) {
             await updateUsuario(username, {
                 evento_fruta_tipo: null, evento_fruta_fase: null, evento_fruta_nombre: null,
@@ -551,13 +561,16 @@ client.on('message', async (channel, tags, message, self) => {
     const command = args[0].toLowerCase();
     const username = tags.username.toLowerCase();
 
+    // DEBUG: Ver qué mensajes llegan por IRC
+    console.log(`💬 [CHAT #${channel}] ${username}: ${message}`);
+
     // ========== !ayuda ==========
     if (command === '!ayuda') {
-        client.say(channel, `@${tags.username} Mandame un susurro con !ayudabotsito para ver todos los comandos. 📩`);
+        client.say(channel, `@${tags.username} 📩 Mandame un susurro con !ayudabotsito para ver todos los comandos.`);
         return;
     }
 
-    // ========== !infoop ==========
+    // ========== !infoop (chat) ==========
     if (command === '!infoop') {
         if (args[1]) {
             client.say(channel, `@${tags.username} Para ver la info de otro usuario, mandame un susurro con: !infoop @usuario 📩`);
@@ -567,7 +580,6 @@ client.on('message', async (channel, tags, message, self) => {
         const user = await getUsuario(username);
         const esSupremoUser = await esSupremo(username);
 
-        // Actualizar recompensa pública
         const nuevaRecompensa = calcularRecompensa(user);
         await updateUsuario(username, { recompensa_publica: nuevaRecompensa });
 
@@ -703,7 +715,6 @@ client.on('message', async (channel, tags, message, self) => {
                 return;
             }
 
-            // Solo bloquea si hay evento de FRUTA pendiente (no de explorar)
             if (user?.evento_fruta_estado === 'pendiente') {
                 client.say(channel, `@${tags.username} Ya tienes un evento de fruta pendiente. Usa !frutapendiente para ver la decisión que debes tomar.`);
                 return;
@@ -725,7 +736,6 @@ client.on('message', async (channel, tags, message, self) => {
                 return;
             }
 
-            // Obtener frutas que nadie tiene consumidas (no pendientes)
             const { data: usuariosConFruta } = await supabase
                 .from('usuarios').select('fruta').not('fruta', 'is', null);
             const frutasOcupadas = (usuariosConFruta || []).map(u => u.fruta).filter(Boolean);
@@ -781,7 +791,7 @@ client.on('message', async (channel, tags, message, self) => {
         return;
     }
 
-    // ========== !frutapendiente ==========
+    // ========== !frutapendiente (chat) ==========
     if (command === '!frutapendiente') {
         const user = await getUsuario(username);
         if (!user || user.evento_fruta_estado !== 'pendiente') {
@@ -826,7 +836,6 @@ client.on('message', async (channel, tags, message, self) => {
             return;
         }
 
-        // Verificar si la fruta ya fue consumida por otro
         if (user.evento_fruta_comida_por_otro) {
             await updateUsuario(username, {
                 evento_fruta_tipo: null, evento_fruta_fase: null, evento_fruta_nombre: null,
@@ -873,7 +882,6 @@ client.on('message', async (channel, tags, message, self) => {
             return;
         }
 
-        // Verificar si ya la consumió otro
         if (user.evento_fruta_comida_por_otro) {
             await updateUsuario(username, {
                 evento_fruta_tipo: null, evento_fruta_fase: null, evento_fruta_nombre: null,
@@ -915,13 +923,11 @@ client.on('message', async (channel, tags, message, self) => {
         const mensaje = obtenerMensaje(resultado.victoria, resultado.porcentaje);
 
         if (resultado.victoria) {
-            // Verificar si otro usuario ya la consumió
             const { data: usuarioConFruta } = await supabase
                 .from('usuarios').select('username')
                 .eq('fruta', user.evento_fruta_nombre).maybeSingle();
 
             if (usuarioConFruta) {
-                // Otro la tiene, el usuario no la obtiene
                 await updateUsuario(username, {
                     conquistador: (user.conquistador || 0) + recConq,
                     recompensa_publica: (user.recompensa_publica || 0) + recBerries,
@@ -933,7 +939,6 @@ client.on('message', async (channel, tags, message, self) => {
                 return;
             }
 
-            // Obtenerla
             await updateUsuario(username, {
                 conquistador: (user.conquistador || 0) + recConq,
                 recompensa_publica: (user.recompensa_publica || 0) + recBerries,
@@ -945,7 +950,6 @@ client.on('message', async (channel, tags, message, self) => {
 
             client.say(channel, `@${tags.username} ${mensaje} 🍎 ¡Has obtenido la ${user.evento_fruta_nombre} ${emojiFruta}!`);
 
-            // Notificar a todos los que tenían esa fruta pendiente
             const { data: afectados } = await supabase
                 .from('usuarios').select('username')
                 .eq('evento_fruta_nombre', user.evento_fruta_nombre)
