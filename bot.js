@@ -387,7 +387,7 @@ async function sendWhisper(toUserId, message) {
 setTimeout(startEventSubWebSocket, 3000);
 
 // ============================================
-// HANDLER DE SUSURROS (SOLO RESPONDE POR SUSURRO)
+// HANDLER DE SUSURROS
 // ============================================
 async function handleWhisper(event) {
     const fromUserId = event.from_user_id;
@@ -405,10 +405,21 @@ async function handleWhisper(event) {
         return;
     }
 
-    // ========== !ayudabotsito ==========
-    if (command === '!ayudabotsito') {
-        if (args[1] === 'chat') {
-            const ayuda = `💬 COMANDOS DE CHAT
+    // ========== !ayudaop ==========
+    if (command === '!ayudaop') {
+        const ayuda = `📖 AYUDA - op_d_bot
+
+¿Qué querés ver?
+
+💬 !ayudachat → Comandos de chat
+📩 !ayudasusurro → Comandos de susurro`;
+        await sendWhisper(fromUserId, ayuda);
+        return;
+    }
+
+    // ========== !ayudachat ==========
+    if (command === '!ayudachat') {
+        const ayuda = `💬 COMANDOS DE CHAT
 
 🎮 !op → Entrena Haki de Armadura (3/día)
 🍎 !fruta → Busca una fruta del diablo
@@ -417,29 +428,22 @@ async function handleWhisper(event) {
 📊 !infoop → Tu info (corta, actualiza recompensa)
 ⏳ !frutapendiente → Tu evento de fruta pendiente
 ✅ !si / ❌ !no → Decide en evento de fruta
-⚔️ !pelear / 🏃 !huir → Combate en evento de fruta
-❓ !ayuda → Este mensaje`;
-            await sendWhisper(fromUserId, ayuda);
-        } else if (args[1] === 'susurro') {
-            const ayuda = `📩 COMANDOS DE SUSURRO
+⚔️ !pelear / 🏃 !huir → Combate en evento de fruta`;
+        await sendWhisper(fromUserId, ayuda);
+        return;
+    }
+
+    // ========== !ayudasusurro ==========
+    if (command === '!ayudasusurro') {
+        const ayuda = `📩 COMANDOS DE SUSURRO
 
 🗺️ !explorar → Explora el mundo (1/día)
 ➡️ !continuar / ⬅️ !retroceder → Decide en exploración
 ⚔️ !combatir / 🏃 !retirarse → Combate en exploración
 ⏳ !exploracionpendiente → Tu evento de exploración
 📊 !infoop → Tu info completa (con puntos)
-👤 !infoop @usuario → Info corta de otro usuario
-❓ !ayudabotsito → Esta ayuda`;
-            await sendWhisper(fromUserId, ayuda);
-        } else {
-            const ayuda = `📖 AYUDA - op_d_bot
-
-¿Qué querés ver?
-
-💬 !ayudabotsito chat → Comandos de chat
-📩 !ayudabotsito susurro → Comandos de susurro`;
-            await sendWhisper(fromUserId, ayuda);
-        }
+👤 !infoop @usuario → Info corta de otro usuario`;
+        await sendWhisper(fromUserId, ayuda);
         return;
     }
 
@@ -561,12 +565,11 @@ client.on('message', async (channel, tags, message, self) => {
     const command = args[0].toLowerCase();
     const username = tags.username.toLowerCase();
 
-    // DEBUG: Ver qué mensajes llegan por IRC
     console.log(`💬 [CHAT #${channel}] ${username}: ${message}`);
 
     // ========== !ayuda ==========
     if (command === '!ayuda') {
-        client.say(channel, `@${tags.username} 📩 Mandame un susurro con !ayudabotsito para ver todos los comandos.`);
+        client.say(channel, `@${tags.username} 📩 Mandame un susurro con !ayudaop para ver todos los comandos.`);
         return;
     }
 
