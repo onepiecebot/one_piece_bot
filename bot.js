@@ -1,4 +1,5 @@
 ﻿const tmi = require('tmi.js');
+const WebSocket = require('ws');
 const config = require('./config.js');
 const { getUsuario, updateUsuario, supabase } = require('./database.js');
 
@@ -8,6 +9,7 @@ const { getUsuario, updateUsuario, supabase } = require('./database.js');
 const COOLDOWN_FRUTA = 60000;
 const PROB_FRUTA = 100;
 const DUEÑO = 'fan_d_larana';
+const TWITCH_API_URL = 'https://api.twitch.tv/helix';
 
 // ============================================
 // COOLDOWNS
@@ -273,7 +275,7 @@ const ADMIN_STATS = {
 const esDueño = (username) => username.toLowerCase() === DUEÑO;
 
 // ============================================
-// CLIENTE TWITCH (con debug)
+// CLIENTE TWITCH (IRC para chat)
 // ============================================
 const client = new tmi.Client({
     options: { debug: true },
@@ -286,28 +288,123 @@ client.connect()
     .catch(err => console.error('Error al conectar:', err));
 
 // ============================================
-// HANDLER DE SUSURROS (PRUEBA)
+// EVENTSUB WEBSOCKET (para susurros)
 // ============================================
-client.on('whisper', async (from, userstate, message, self) => {
-    if (self) return;
+let websocketSessionId = null;
 
-    // Limpiar el 'from' (quitar # si lo tiene)
-    const fromUser = from.startsWith('#') ? from.slice(1) : from;
+function startEventSubWebSocket() {
+    const ws = new WebSocket('wss://eventsub.wss.twitch.tv/ws');
 
-    console.log(`📩 Susurro de ${fromUser}: ${message}`);
+    ws.on('open', () => {
+        console.log('🔌 Conectado a EventSub WebSocket');
+    });
 
-    const args = message.trim().split(' ');
-    const command = args[0].toLowerCase();
+    ws.on('message', async (data) => {
+        const message = JSON.parse(data.toString());
+        const messageType = message.metadata.message_type;
+
+        if (messageType === 'session_welcome') {
+            websocketSessionId = message.payload.session.id;
+            console.log(`🔑 Sesión EventSub: ${websocketSessionId}`);
+            await subscribeToWhispers();
+        } else if (messageType === 'notification') {
+            if (message.payload.subscription.type === 'user.whisper.message') {
+                await handleWhisper(message.payload.event);
+            }
+        } else if (messageType === 'session_keepalive') {
+            // Keepalive, no hacer nada
+        } else if (messageType === 'session_reconnect') {
+            console.log('🔄 Reconectando EventSub...');
+            startEventSubWebSocket();
+        }
+    });
+
+    ws.on('error', (err) => {
+        console.error('❌ Error en EventSub WebSocket:', err);
+    });
+
+    ws.on('close', () => {
+        console.log('🔌 EventSub WebSocket cerrado. Reconectando en 5 segundos...');
+        setTimeout(startEventSubWebSocket, 5000);
+    });
+}
+
+async function subscribeToWhispers() {
+    const url = `${TWITCH_API_URL}/eventsub/subscriptions`;
+    const body = {
+        type: 'user.whisper.message',
+        version: '1',
+        condition: {
+            user_id: config.botUserId
+        },
+        transport: {
+            method: 'websocket',
+            session_id: websocketSessionId
+        }
+    };
+
+    try {
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Client-ID': config.clientId,
+                'Authorization': `Bearer ${config.oauth.replace('oauth:', '')}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(body)
+        });
+
+        if (response.status === 202) {
+            console.log('✅ Suscripción a susurros creada exitosamente.');
+        } else {
+            const error = await response.json();
+            console.error('❌ Error al suscribirse a susurros:', error);
+        }
+    } catch (err) {
+        console.error('❌ Error de red al suscribirse:', err);
+    }
+}
+
+async function handleWhisper(event) {
+    const fromUserId = event.from_user_id;
+    const fromUserLogin = event.from_user_login;
+    const messageText = event.whisper.text.trim();
+    const command = messageText.split(' ')[0].toLowerCase();
+
+    console.log(`📩 Susurro de ${fromUserLogin}: ${messageText}`);
 
     if (command === '!testwhisper') {
-        try {
-            await client.whisper(fromUser, `¡Hola ${fromUser}! Los susurros funcionan correctamente. 🎉`);
-            console.log(`✅ Susurro enviado a ${fromUser}`);
-        } catch (err) {
-            console.error('❌ Error al enviar susurro:', err);
-        }
+        await sendWhisper(fromUserId, `¡Hola ${fromUserLogin}! Los susurros funcionan correctamente. 🎉`);
     }
-});
+}
+
+async function sendWhisper(toUserId, message) {
+    const url = `${TWITCH_API_URL}/whispers?from_user_id=${config.botUserId}&to_user_id=${toUserId}`;
+
+    try {
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Client-ID': config.clientId,
+                'Authorization': `Bearer ${config.oauth.replace('oauth:', '')}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ message })
+        });
+
+        if (response.status === 204) {
+            console.log(`✅ Susurro enviado a ${toUserId}`);
+        } else {
+            console.error(`❌ Error al enviar susurro: ${response.status}`);
+            console.error(await response.text());
+        }
+    } catch (err) {
+        console.error('❌ Error de red al enviar susurro:', err);
+    }
+}
+
+// Iniciar EventSub WebSocket después de un breve retraso para asegurar que el bot esté listo
+setTimeout(startEventSubWebSocket, 3000);
 
 // ============================================
 // COMANDOS (CHAT PÚBLICO)

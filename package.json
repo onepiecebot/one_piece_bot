@@ -4,6 +4,7 @@
   "main": "bot.js",
   "dependencies": {
     "@supabase/supabase-js": "^1.35.7",
-    "tmi.js": "^1.8.5"
+    "tmi.js": "^1.8.5",
+    "ws": "^8.21.3"
   }
 }
