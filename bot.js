@@ -76,6 +76,10 @@ function getEmojiRango(puntos, tipo = 'armadura', esSupremo = false) {
     return '❌';
 }
 
+function getCalaveras(nivel) {
+    return '💀'.repeat(Math.min(Math.max(nivel, 1), 5));
+}
+
 // ============================================
 // BONUS Y TEXTOS
 // ============================================
@@ -132,6 +136,17 @@ function getMensajeNuevoRango(rango, usuario) {
         'Supremo': `👑 ¡Como un emperador del mar, ${usuario} ha dominado el Haki de Armadura! Ahora es SUPREMO.`
     };
     return mensajes[rango] || '';
+}
+
+// ============================================
+// CÁLCULO DE RECOMPENSA (PROVISIONAL)
+// ============================================
+function calcularRecompensa(user) {
+    const arm = user.armadura || 0;
+    const obs = user.observacion || 0;
+    const conq = user.conquistador || 0;
+    const tieneFruta = user.fruta ? 1 : 0;
+    return (arm * 500000) + (obs * 500000) + (conq * 1000000) + (tieneFruta * 10000000);
 }
 
 // ============================================
@@ -275,7 +290,7 @@ const ADMIN_STATS = {
 const esDueño = (username) => username.toLowerCase() === DUEÑO;
 
 // ============================================
-// CLIENTE TWITCH (IRC para chat)
+// CLIENTE TWITCH (IRC)
 // ============================================
 const client = new tmi.Client({
     options: { debug: true },
@@ -288,16 +303,14 @@ client.connect()
     .catch(err => console.error('Error al conectar:', err));
 
 // ============================================
-// EVENTSUB WEBSOCKET (para susurros)
+// EVENTSUB WEBSOCKET (susurros)
 // ============================================
 let websocketSessionId = null;
 
 function startEventSubWebSocket() {
     const ws = new WebSocket('wss://eventsub.wss.twitch.tv/ws');
 
-    ws.on('open', () => {
-        console.log('🔌 Conectado a EventSub WebSocket');
-    });
+    ws.on('open', () => console.log('🔌 Conectado a EventSub WebSocket'));
 
     ws.on('message', async (data) => {
         const message = JSON.parse(data.toString());
@@ -311,17 +324,13 @@ function startEventSubWebSocket() {
             if (message.payload.subscription.type === 'user.whisper.message') {
                 await handleWhisper(message.payload.event);
             }
-        } else if (messageType === 'session_keepalive') {
-            // Keepalive, no hacer nada
         } else if (messageType === 'session_reconnect') {
             console.log('🔄 Reconectando EventSub...');
             startEventSubWebSocket();
         }
     });
 
-    ws.on('error', (err) => {
-        console.error('❌ Error en EventSub WebSocket:', err);
-    });
+    ws.on('error', (err) => console.error('❌ Error en EventSub WebSocket:', err));
 
     ws.on('close', () => {
         console.log('🔌 EventSub WebSocket cerrado. Reconectando en 5 segundos...');
@@ -334,13 +343,8 @@ async function subscribeToWhispers() {
     const body = {
         type: 'user.whisper.message',
         version: '1',
-        condition: {
-            user_id: config.botUserId
-        },
-        transport: {
-            method: 'websocket',
-            session_id: websocketSessionId
-        }
+        condition: { user_id: config.botUserId },
+        transport: { method: 'websocket', session_id: websocketSessionId }
     };
 
     try {
@@ -354,33 +358,15 @@ async function subscribeToWhispers() {
             body: JSON.stringify(body)
         });
 
-        if (response.status === 202) {
-            console.log('✅ Suscripción a susurros creada exitosamente.');
-        } else {
-            const error = await response.json();
-            console.error('❌ Error al suscribirse a susurros:', error);
-        }
+        if (response.status === 202) console.log('✅ Suscripción a susurros creada exitosamente.');
+        else console.error('❌ Error al suscribirse:', await response.text());
     } catch (err) {
         console.error('❌ Error de red al suscribirse:', err);
     }
 }
 
-async function handleWhisper(event) {
-    const fromUserId = event.from_user_id;
-    const fromUserLogin = event.from_user_login;
-    const messageText = event.whisper.text.trim();
-    const command = messageText.split(' ')[0].toLowerCase();
-
-    console.log(`📩 Susurro de ${fromUserLogin}: ${messageText}`);
-
-    if (command === '!testwhisper') {
-        await sendWhisper(fromUserId, `¡Hola ${fromUserLogin}! Los susurros funcionan correctamente. 🎉`);
-    }
-}
-
 async function sendWhisper(toUserId, message) {
     const url = `${TWITCH_API_URL}/whispers?from_user_id=${config.botUserId}&to_user_id=${toUserId}`;
-
     try {
         const response = await fetch(url, {
             method: 'POST',
@@ -391,35 +377,65 @@ async function sendWhisper(toUserId, message) {
             },
             body: JSON.stringify({ message })
         });
-
-        if (response.status === 204) {
-            console.log(`✅ Susurro enviado a ${toUserId}`);
-        } else {
-            console.error(`❌ Error al enviar susurro: ${response.status}`);
-            console.error(await response.text());
-        }
+        if (response.status === 204) console.log(`✅ Susurro enviado a ${toUserId}`);
+        else console.error(`❌ Error al enviar susurro: ${response.status}`, await response.text());
     } catch (err) {
         console.error('❌ Error de red al enviar susurro:', err);
     }
 }
 
-// Iniciar EventSub WebSocket después de un breve retraso para asegurar que el bot esté listo
 setTimeout(startEventSubWebSocket, 3000);
 
 // ============================================
-// COMANDOS (CHAT PÚBLICO)
+// HANDLER DE SUSURROS
 // ============================================
-client.on('message', async (channel, tags, message, self) => {
-    if (self) return;
-    const args = message.trim().split(' ');
+async function handleWhisper(event) {
+    const fromUserId = event.from_user_id;
+    const fromUserLogin = event.from_user_login;
+    const messageText = event.whisper.text.trim();
+    const args = messageText.split(' ');
     const command = args[0].toLowerCase();
-    const username = tags.username.toLowerCase();
+    const username = fromUserLogin.toLowerCase();
 
-    // ========== !infoop ==========
-    if (command === '!infoop') {
-        const target = args[1] ? args[1].replace('@', '').toLowerCase() : username;
-        const user = await getUsuario(target);
-        const esSupremoUser = await esSupremo(target);
+    console.log(`📩 Susurro de ${fromUserLogin}: ${messageText}`);
+
+    // ========== !testwhisper ==========
+    if (command === '!testwhisper') {
+        await sendWhisper(fromUserId, `¡Hola ${fromUserLogin}! Los susurros funcionan correctamente. 🎉`);
+        return;
+    }
+
+    // ========== !ayudabotsito ==========
+    if (command === '!ayudabotsito') {
+        const ayuda = `📖 AYUDA - op_d_bot
+
+💬 COMANDOS DE CHAT:
+!op → Entrena Haki de Armadura (3/día)
+!fruta → Busca una fruta del diablo
+!comer → Consume la fruta pendiente
+!rechazar → Rechaza la fruta pendiente
+!infoop → Muestra tu info (versión corta, actualiza recompensa)
+!frutapendiente → Muestra tu evento de fruta pendiente
+!si / !no → Decide en evento de fruta
+!pelear / !huir → Combate en evento de fruta
+!ayuda → Este mensaje de ayuda
+
+📩 COMANDOS DE SUSURRO (mandá un susurro al bot):
+!explorar → Explora el mundo (1/día)
+!continuar / !retroceder → Decide en exploración
+!combatir / !retirarse → Combate en exploración
+!exploracionpendiente → Muestra tu evento de exploración
+!infoop → Tu info completa (con puntos)
+!infoop @usuario → Info corta de otro usuario
+!ayudabotsito → Esta ayuda`;
+        await sendWhisper(fromUserId, ayuda);
+        return;
+    }
+
+    // ========== !infoop (propio detallado) ==========
+    if (command === '!infoop' && !args[1]) {
+        const user = await getUsuario(username);
+        const esSupremoUser = await esSupremo(username);
 
         let frutaTexto = '🍎 Ninguna';
         if (user?.fruta) {
@@ -428,12 +444,145 @@ client.on('message', async (channel, tags, message, self) => {
             frutaTexto = `🍎 ${user.fruta} ${emojiFruta}`.trim();
         }
 
-        const recompensa = user?.recompensa_publica || 0;
+        const rangoArm = getRangoArmadura(user?.armadura || 0, esSupremoUser);
+        const rangoObs = getRangoArmadura(user?.observacion || 0);
+        const rangoConq = getRangoArmadura(user?.conquistador || 0);
+
+        const mensaje = `📊 Tus estadísticas:
+${frutaTexto}
+🛡️ Haki Armadura: ${rangoArm.nombre} (${user?.armadura || 0} pts) ${rangoArm.emoji}
+👁️ Haki Observación: ${rangoObs.nombre} (${user?.observacion || 0} pts)
+⚜️ Haki Conquistador: ${rangoConq.nombre} (${user?.conquistador || 0} pts)
+🏴‍☠️💰 Recompensa: $${(user?.recompensa_publica || 0).toLocaleString('es-AR')}`;
+
+        await sendWhisper(fromUserId, mensaje);
+        return;
+    }
+
+    // ========== !infoop @usuario (corto) ==========
+    if (command === '!infoop' && args[1]) {
+        const target = args[1].replace('@', '').toLowerCase();
+        const targetUser = await getUsuario(target);
+        const esSupremoUser = await esSupremo(target);
+
+        let frutaTexto = '🍎 Ninguna';
+        if (targetUser?.fruta) {
+            const { data: frutaData } = await supabase.from('frutas').select('emoji').eq('nombre', targetUser.fruta).single();
+            const emojiFruta = frutaData?.emoji || '';
+            frutaTexto = `🍎 ${targetUser.fruta} ${emojiFruta}`.trim();
+        }
+
+        const emojiArm = getEmojiRango(targetUser?.armadura || 0, 'armadura', esSupremoUser);
+        const emojiObs = getEmojiRango(targetUser?.observacion || 0, 'observacion');
+        const emojiConq = getEmojiRango(targetUser?.conquistador || 0, 'conquistador');
+
+        await sendWhisper(fromUserId, `@${target} | ${frutaTexto} | 🛡️:${emojiArm} | 👁️:${emojiObs} | ⚜️:${emojiConq} | 🏴‍☠️💰 $${(targetUser?.recompensa_publica || 0).toLocaleString('es-AR')}`);
+        return;
+    }
+
+    // ========== !frutapendiente ==========
+    if (command === '!frutapendiente') {
+        const user = await getUsuario(username);
+        if (!user || user.evento_fruta_estado !== 'pendiente') {
+            await sendWhisper(fromUserId, `No tienes ningún evento de fruta pendiente.`);
+            return;
+        }
+
+        // Si la fruta fue comida por otro
+        if (user.evento_fruta_comida_por_otro) {
+            await updateUsuario(username, {
+                evento_fruta_tipo: null, evento_fruta_fase: null, evento_fruta_nombre: null,
+                evento_fruta_nivel: null, evento_fruta_estado: null, evento_fruta_comandos: null,
+                evento_fruta_comida_por_otro: false
+            });
+            await sendWhisper(fromUserId, `La fruta que tenías pendiente ya fue consumida por otro usuario. Tu evento ha sido cancelado.`);
+            return;
+        }
+
+        const { data: fruta } = await supabase.from('frutas').select('*').eq('nombre', user.evento_fruta_nombre).single();
+        if (!fruta) {
+            await sendWhisper(fromUserId, `Error al obtener detalles del evento.`);
+            return;
+        }
+
+        if (user.evento_fruta_fase === 'avistamiento') {
+            await sendWhisper(fromUserId, fruta.fase1);
+        } else {
+            const emoji = fruta.emoji || '';
+            const atq = fruta.ataque || 0;
+            const def = fruta.defensa || 0;
+            const util = fruta.utilidad || 0;
+            const calaveras = getCalaveras(user.evento_fruta_nivel || 1);
+            await sendWhisper(fromUserId, `${fruta.fase2} ${calaveras} 🍎 ${fruta.nombre} ${emoji} ⚔️ ${atq} | 🛡️ ${def} | 🧠 Utilidad: ${util} — ¿Qué haces? !pelear o !huir`);
+        }
+        return;
+    }
+
+    // ========== !exploracionpendiente ==========
+    if (command === '!exploracionpendiente') {
+        const user = await getUsuario(username);
+        if (!user || user.evento_explorar_estado !== 'pendiente') {
+            await sendWhisper(fromUserId, `No tienes ningún evento de exploración pendiente.`);
+            return;
+        }
+
+        const { data: npc } = await supabase.from('npcs').select('*').eq('nombre', user.evento_explorar_npc).single();
+        if (!npc) {
+            await sendWhisper(fromUserId, `Error al obtener detalles del evento.`);
+            return;
+        }
+
+        if (user.evento_explorar_fase === 'avistamiento') {
+            await sendWhisper(fromUserId, npc.fase1);
+        } else {
+            const calaveras = getCalaveras(user.evento_explorar_nivel || 1);
+            await sendWhisper(fromUserId, `${npc.fase2} ${calaveras} — ¿Qué haces? !combatir o !retirarse`);
+        }
+        return;
+    }
+}
+
+// ============================================
+// COMANDOS DE CHAT PÚBLICO
+// ============================================
+client.on('message', async (channel, tags, message, self) => {
+    if (self) return;
+    const args = message.trim().split(' ');
+    const command = args[0].toLowerCase();
+    const username = tags.username.toLowerCase();
+
+    // ========== !ayuda ==========
+    if (command === '!ayuda') {
+        client.say(channel, `@${tags.username} Mandame un susurro con !ayudabotsito para ver todos los comandos. 📩`);
+        return;
+    }
+
+    // ========== !infoop ==========
+    if (command === '!infoop') {
+        if (args[1]) {
+            client.say(channel, `@${tags.username} Para ver la info de otro usuario, mandame un susurro con: !infoop @usuario 📩`);
+            return;
+        }
+
+        const user = await getUsuario(username);
+        const esSupremoUser = await esSupremo(username);
+
+        // Actualizar recompensa pública
+        const nuevaRecompensa = calcularRecompensa(user);
+        await updateUsuario(username, { recompensa_publica: nuevaRecompensa });
+
+        let frutaTexto = '🍎 Ninguna';
+        if (user?.fruta) {
+            const { data: frutaData } = await supabase.from('frutas').select('emoji').eq('nombre', user.fruta).single();
+            const emojiFruta = frutaData?.emoji || '';
+            frutaTexto = `🍎 ${user.fruta} ${emojiFruta}`.trim();
+        }
+
         const emojiArm = getEmojiRango(user?.armadura || 0, 'armadura', esSupremoUser);
         const emojiObs = getEmojiRango(user?.observacion || 0, 'observacion');
         const emojiConq = getEmojiRango(user?.conquistador || 0, 'conquistador');
 
-        client.say(channel, `@${target} | ${frutaTexto} | 🛡️:${emojiArm} | 👁️:${emojiObs} | ⚜️:${emojiConq} | 🏴‍☠️💰 $${recompensa.toLocaleString('es-AR')}`);
+        client.say(channel, `@${username} | ${frutaTexto} | 🛡️:${emojiArm} | 👁️:${emojiObs} | ⚜️:${emojiConq} | 🏴‍☠️💰 $${nuevaRecompensa.toLocaleString('es-AR')}`);
         return;
     }
 
@@ -554,8 +703,9 @@ client.on('message', async (channel, tags, message, self) => {
                 return;
             }
 
-            if (user?.evento_estado === 'pendiente') {
-                client.say(channel, `@${tags.username} Ya tienes un evento pendiente. Usa !pendiente para ver la decisión que debes tomar.`);
+            // Solo bloquea si hay evento de FRUTA pendiente (no de explorar)
+            if (user?.evento_fruta_estado === 'pendiente') {
+                client.say(channel, `@${tags.username} Ya tienes un evento de fruta pendiente. Usa !frutapendiente para ver la decisión que debes tomar.`);
                 return;
             }
 
@@ -575,6 +725,7 @@ client.on('message', async (channel, tags, message, self) => {
                 return;
             }
 
+            // Obtener frutas que nadie tiene consumidas (no pendientes)
             const { data: usuariosConFruta } = await supabase
                 .from('usuarios').select('fruta').not('fruta', 'is', null);
             const frutasOcupadas = (usuariosConFruta || []).map(u => u.fruta).filter(Boolean);
@@ -604,15 +755,14 @@ client.on('message', async (channel, tags, message, self) => {
                 }
             }
 
-            if (!selectedFruit) {
-                selectedFruit = frutasDisponibles[0];
-            }
+            if (!selectedFruit) selectedFruit = frutasDisponibles[0];
 
             if (selectedFruit.evento) {
                 await updateUsuario(username, {
-                    evento_tipo: 'fruta', evento_fase: 'avistamiento',
-                    evento_fruta: selectedFruit.nombre, evento_nivel: selectedFruit.nivel || 1,
-                    evento_estado: 'pendiente', evento_comandos: 'si_no'
+                    evento_fruta_tipo: 'fruta', evento_fruta_fase: 'avistamiento',
+                    evento_fruta_nombre: selectedFruit.nombre, evento_fruta_nivel: selectedFruit.nivel || 1,
+                    evento_fruta_estado: 'pendiente', evento_fruta_comandos: 'si_no',
+                    evento_fruta_comida_por_otro: false
                 });
                 client.say(channel, `@${tags.username} ${selectedFruit.fase1}`);
             } else {
@@ -631,27 +781,39 @@ client.on('message', async (channel, tags, message, self) => {
         return;
     }
 
-    // ========== !pendiente ==========
-    if (command === '!pendiente') {
+    // ========== !frutapendiente ==========
+    if (command === '!frutapendiente') {
         const user = await getUsuario(username);
-        if (!user || user.evento_estado !== 'pendiente') {
-            client.say(channel, `@${tags.username} No tienes ningún evento pendiente.`);
+        if (!user || user.evento_fruta_estado !== 'pendiente') {
+            client.say(channel, `@${tags.username} No tienes ningún evento de fruta pendiente.`);
             return;
         }
-        const { data: fruta } = await supabase.from('frutas').select('*').eq('nombre', user.evento_fruta).single();
+
+        if (user.evento_fruta_comida_por_otro) {
+            await updateUsuario(username, {
+                evento_fruta_tipo: null, evento_fruta_fase: null, evento_fruta_nombre: null,
+                evento_fruta_nivel: null, evento_fruta_estado: null, evento_fruta_comandos: null,
+                evento_fruta_comida_por_otro: false
+            });
+            client.say(channel, `@${tags.username} La fruta que tenías pendiente ya fue consumida por otro usuario. Tu evento ha sido cancelado.`);
+            return;
+        }
+
+        const { data: fruta } = await supabase.from('frutas').select('*').eq('nombre', user.evento_fruta_nombre).single();
         if (!fruta) {
             client.say(channel, `@${tags.username} Error al obtener detalles del evento.`);
             return;
         }
 
-        if (user.evento_fase === 'avistamiento') {
+        if (user.evento_fruta_fase === 'avistamiento') {
             client.say(channel, `@${tags.username} ${fruta.fase1}`);
         } else {
             const emoji = fruta.emoji || '';
             const atq = fruta.ataque || 0;
             const def = fruta.defensa || 0;
             const util = fruta.utilidad || 0;
-            client.say(channel, `@${tags.username} ${fruta.fase2} 🍎 ${fruta.nombre} ${emoji} ⚔️ ${atq} | 🛡️ ${def} | 🧠 Utilidad: ${util} — ¿Qué haces? !pelear o !huir`);
+            const calaveras = getCalaveras(user.evento_fruta_nivel || 1);
+            client.say(channel, `@${tags.username} ${fruta.fase2} ${calaveras} 🍎 ${fruta.nombre} ${emoji} ⚔️ ${atq} | 🛡️ ${def} | 🧠 Utilidad: ${util} — ¿Qué haces? !pelear o !huir`);
         }
         return;
     }
@@ -659,31 +821,45 @@ client.on('message', async (channel, tags, message, self) => {
     // ========== !si ==========
     if (command === '!si') {
         const user = await getUsuario(username);
-        if (!user || user.evento_estado !== 'pendiente' || user.evento_fase !== 'avistamiento') {
+        if (!user || user.evento_fruta_estado !== 'pendiente' || user.evento_fruta_fase !== 'avistamiento') {
             client.say(channel, `@${tags.username} No tienes un evento de fruta pendiente en esta fase.`);
             return;
         }
-        await updateUsuario(username, { evento_fase: 'encuentro', evento_comandos: 'pelear_huir' });
-        const { data: fruta } = await supabase.from('frutas').select('*').eq('nombre', user.evento_fruta).single();
+
+        // Verificar si la fruta ya fue consumida por otro
+        if (user.evento_fruta_comida_por_otro) {
+            await updateUsuario(username, {
+                evento_fruta_tipo: null, evento_fruta_fase: null, evento_fruta_nombre: null,
+                evento_fruta_nivel: null, evento_fruta_estado: null, evento_fruta_comandos: null,
+                evento_fruta_comida_por_otro: false
+            });
+            client.say(channel, `@${tags.username} La fruta que tenías pendiente ya fue consumida por otro usuario. Tu evento ha sido cancelado.`);
+            return;
+        }
+
+        await updateUsuario(username, { evento_fruta_fase: 'encuentro', evento_fruta_comandos: 'pelear_huir' });
+        const { data: fruta } = await supabase.from('frutas').select('*').eq('nombre', user.evento_fruta_nombre).single();
 
         const emoji = fruta.emoji || '';
         const atq = fruta.ataque || 0;
         const def = fruta.defensa || 0;
         const util = fruta.utilidad || 0;
-        client.say(channel, `@${tags.username} ${fruta.fase2} 🍎 ${fruta.nombre} ${emoji} ⚔️ ${atq} | 🛡️ ${def} | 🧠 Utilidad: ${util} — ¿Qué haces? !pelear o !huir`);
+        const calaveras = getCalaveras(user.evento_fruta_nivel || 1);
+        client.say(channel, `@${tags.username} ${fruta.fase2} ${calaveras} 🍎 ${fruta.nombre} ${emoji} ⚔️ ${atq} | 🛡️ ${def} | 🧠 Utilidad: ${util} — ¿Qué haces? !pelear o !huir`);
         return;
     }
 
     // ========== !no ==========
     if (command === '!no') {
         const user = await getUsuario(username);
-        if (!user || user.evento_estado !== 'pendiente' || user.evento_fase !== 'avistamiento') {
+        if (!user || user.evento_fruta_estado !== 'pendiente' || user.evento_fruta_fase !== 'avistamiento') {
             client.say(channel, `@${tags.username} No tienes un evento de fruta pendiente en esta fase.`);
             return;
         }
         await updateUsuario(username, {
-            evento_tipo: null, evento_fase: null, evento_fruta: null,
-            evento_nivel: null, evento_estado: null, evento_comandos: null
+            evento_fruta_tipo: null, evento_fruta_fase: null, evento_fruta_nombre: null,
+            evento_fruta_nivel: null, evento_fruta_estado: null, evento_fruta_comandos: null,
+            evento_fruta_comida_por_otro: false
         });
         client.say(channel, `@${tags.username} Decides retirarte. El evento ha terminado.`);
         return;
@@ -692,13 +868,24 @@ client.on('message', async (channel, tags, message, self) => {
     // ========== !pelear ==========
     if (command === '!pelear') {
         const user = await getUsuario(username);
-        if (!user || user.evento_estado !== 'pendiente' || user.evento_fase !== 'encuentro') {
+        if (!user || user.evento_fruta_estado !== 'pendiente' || user.evento_fruta_fase !== 'encuentro') {
             client.say(channel, `@${tags.username} No tienes un evento de fruta pendiente en esta fase.`);
             return;
         }
 
+        // Verificar si ya la consumió otro
+        if (user.evento_fruta_comida_por_otro) {
+            await updateUsuario(username, {
+                evento_fruta_tipo: null, evento_fruta_fase: null, evento_fruta_nombre: null,
+                evento_fruta_nivel: null, evento_fruta_estado: null, evento_fruta_comandos: null,
+                evento_fruta_comida_por_otro: false
+            });
+            client.say(channel, `@${tags.username} La fruta que tenías pendiente ya fue consumida por otro usuario. Tu evento ha sido cancelado.`);
+            return;
+        }
+
         const { data: frutaData } = await supabase.from('frutas')
-            .select('poder_fruta, sombra, emoji').eq('nombre', user.evento_fruta).single();
+            .select('poder_fruta, sombra, emoji').eq('nombre', user.evento_fruta_nombre).single();
 
         const poderFrutaUsuario = frutaData?.poder_fruta || 0;
         const nombreSombra = frutaData?.sombra || null;
@@ -716,28 +903,71 @@ client.on('message', async (channel, tags, message, self) => {
                 .select('pcf_final, pcf_calculado, nivel').eq('nombre', nombreSombra).maybeSingle();
             poderEnemigoBase = npc?.pcf_final || npc?.pcf_calculado || 80;
         } else {
-            poderEnemigoBase = 20 + (user.evento_nivel || 4) * 15;
+            poderEnemigoBase = 20 + (user.evento_fruta_nivel || 4) * 15;
         }
 
         const resultado = calcularCombate(poderUsuario, poderEnemigoBase);
-        const nivel = user.evento_nivel || 4;
+        const nivel = user.evento_fruta_nivel || 4;
         const baseConq = nivel * 5;
         const baseBerries = nivel * 1000000;
         const recConq = resultado.victoria ? baseConq : -Math.floor(baseConq / 2);
         const recBerries = resultado.victoria ? baseBerries : -Math.floor(baseBerries / 4);
         const mensaje = obtenerMensaje(resultado.victoria, resultado.porcentaje);
 
-        await updateUsuario(username, {
-            conquistador: (user.conquistador || 0) + recConq,
-            recompensa_publica: (user.recompensa_publica || 0) + recBerries,
-            fruta: resultado.victoria ? user.evento_fruta : null,
-            evento_tipo: null, evento_fase: null, evento_fruta: null,
-            evento_nivel: null, evento_estado: null, evento_comandos: null
-        });
-
         if (resultado.victoria) {
-            client.say(channel, `@${tags.username} ${mensaje} 🍎 ¡Has obtenido la ${user.evento_fruta} ${emojiFruta}!`);
+            // Verificar si otro usuario ya la consumió
+            const { data: usuarioConFruta } = await supabase
+                .from('usuarios').select('username')
+                .eq('fruta', user.evento_fruta_nombre).maybeSingle();
+
+            if (usuarioConFruta) {
+                // Otro la tiene, el usuario no la obtiene
+                await updateUsuario(username, {
+                    conquistador: (user.conquistador || 0) + recConq,
+                    recompensa_publica: (user.recompensa_publica || 0) + recBerries,
+                    evento_fruta_tipo: null, evento_fruta_fase: null, evento_fruta_nombre: null,
+                    evento_fruta_nivel: null, evento_fruta_estado: null, evento_fruta_comandos: null,
+                    evento_fruta_comida_por_otro: false
+                });
+                client.say(channel, `@${tags.username} ${mensaje} Pero la ${user.evento_fruta_nombre} ya fue consumida por otro usuario. No puedes obtenerla.`);
+                return;
+            }
+
+            // Obtenerla
+            await updateUsuario(username, {
+                conquistador: (user.conquistador || 0) + recConq,
+                recompensa_publica: (user.recompensa_publica || 0) + recBerries,
+                fruta: user.evento_fruta_nombre,
+                evento_fruta_tipo: null, evento_fruta_fase: null, evento_fruta_nombre: null,
+                evento_fruta_nivel: null, evento_fruta_estado: null, evento_fruta_comandos: null,
+                evento_fruta_comida_por_otro: false
+            });
+
+            client.say(channel, `@${tags.username} ${mensaje} 🍎 ¡Has obtenido la ${user.evento_fruta_nombre} ${emojiFruta}!`);
+
+            // Notificar a todos los que tenían esa fruta pendiente
+            const { data: afectados } = await supabase
+                .from('usuarios').select('username')
+                .eq('evento_fruta_nombre', user.evento_fruta_nombre)
+                .eq('evento_fruta_estado', 'pendiente')
+                .neq('username', username);
+
+            if (afectados && afectados.length > 0) {
+                for (const afectado of afectados) {
+                    await updateUsuario(afectado.username, {
+                        evento_fruta_comida_por_otro: true
+                    });
+                }
+                console.log(`📩 Notificados ${afectados.length} usuarios sobre consumo de ${user.evento_fruta_nombre}`);
+            }
         } else {
+            await updateUsuario(username, {
+                conquistador: (user.conquistador || 0) + recConq,
+                recompensa_publica: (user.recompensa_publica || 0) + recBerries,
+                evento_fruta_tipo: null, evento_fruta_fase: null, evento_fruta_nombre: null,
+                evento_fruta_nivel: null, evento_fruta_estado: null, evento_fruta_comandos: null,
+                evento_fruta_comida_por_otro: false
+            });
             client.say(channel, `@${tags.username} ${mensaje}`);
         }
         return;
@@ -746,13 +976,14 @@ client.on('message', async (channel, tags, message, self) => {
     // ========== !huir ==========
     if (command === '!huir') {
         const user = await getUsuario(username);
-        if (!user || user.evento_estado !== 'pendiente' || user.evento_fase !== 'encuentro') {
+        if (!user || user.evento_fruta_estado !== 'pendiente' || user.evento_fruta_fase !== 'encuentro') {
             client.say(channel, `@${tags.username} No tienes un evento de fruta pendiente en esta fase.`);
             return;
         }
         await updateUsuario(username, {
-            evento_tipo: null, evento_fase: null, evento_fruta: null,
-            evento_nivel: null, evento_estado: null, evento_comandos: null
+            evento_fruta_tipo: null, evento_fruta_fase: null, evento_fruta_nombre: null,
+            evento_fruta_nivel: null, evento_fruta_estado: null, evento_fruta_comandos: null,
+            evento_fruta_comida_por_otro: false
         });
         client.say(channel, `@${tags.username} Has decidido huir. No has obtenido la fruta.`);
         return;
