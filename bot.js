@@ -273,9 +273,10 @@ const ADMIN_STATS = {
 const esDueño = (username) => username.toLowerCase() === DUEÑO;
 
 // ============================================
-// CLIENTE TWITCH
+// CLIENTE TWITCH (con debug)
 // ============================================
 const client = new tmi.Client({
+    options: { debug: true },
     identity: { username: config.botName, password: config.oauth },
     channels: [config.channelName, 'op_d_bot']
 });
