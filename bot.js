@@ -65,7 +65,7 @@ function getEmojiRango(puntos, tipo = 'armadura', esSupremo = false) {
         if (puntos > 100) return '👑';
         if (puntos >= 95) return '🔥';
         if (puntos >= 80) return '💪';
-        if (puntos >= 50) return '💡';
+        if (puntos >= 60) return '💡';
         return '❌';
     }
     if (tipo === 'armadura' && esSupremo) return '👑';
@@ -227,9 +227,15 @@ async function esSupremo(username) {
 function calcularPoderHakis(armadura, observacion, conquistador, esSupremoArmadura = false) {
     const factorArmadura = esSupremoArmadura ? 1.0 : (armadura <= 19 ? 0 : armadura <= 49 ? 0.2 : armadura <= 79 ? 0.5 : armadura <= 99 ? 0.8 : 1.0);
     const factorObservacion = observacion <= 19 ? 0 : observacion <= 49 ? 0.2 : observacion <= 79 ? 0.5 : observacion <= 99 ? 0.8 : 1.0;
-    const factorConquistador = conquistador <= 49 ? 0 : conquistador <= 79 ? 0.1 : conquistador <= 94 ? 0.25 : conquistador <= 100 ? 0.5 : 1.0;
 
-    return (armadura * factorArmadura * 2.5) + (observacion * factorObservacion * 1.8) + (conquistador * factorConquistador * 4.0);
+    // NUEVO: aporte directo del Conquistador
+    let aporteConquistador = 0;
+    if (conquistador >= 60 && conquistador <= 79) aporteConquistador = 100;
+    else if (conquistador >= 80 && conquistador <= 94) aporteConquistador = 150;
+    else if (conquistador >= 95 && conquistador <= 100) aporteConquistador = 250;
+    else if (conquistador > 100) aporteConquistador = 400;
+
+    return (armadura * factorArmadura * 2.5) + (observacion * factorObservacion * 1.8) + aporteConquistador;
 }
 
 const calcularPoderBase = (poderFruta, arm, obs, conq, esSupremo) =>
@@ -288,6 +294,40 @@ const ADMIN_STATS = {
 };
 
 const esDueño = (username) => username.toLowerCase() === DUEÑO;
+
+// ============================================
+// TEXTOS DE AYUDA
+// ============================================
+const AYUDA_MENU = `📖 AYUDA - op_d_bot
+
+¿Qué querés ver?
+
+💬 !ayudachat → Comandos de chat
+📩 !ayudasusurro → Comandos de susurro`;
+
+const AYUDA_CHAT = `💬 COMANDOS DE CHAT
+
+🎮 !op → Entrena Haki de Armadura (3/día)
+📊 !infoop → Tu info (corta, actualiza recompensa)
+🍎 !fruta → Busca una fruta del diablo
+😋 !comer → Consume la fruta pendiente
+❌ !rechazar → Rechaza la fruta pendiente
+⏳ !frutapendiente → Tu evento de fruta pendiente
+✅ !si → Aceptás el evento de fruta
+❌ !no → Rechazás el evento de fruta
+⚔️ !pelear → Combatís contra la sombra
+🏃 !huir → Huís del combate`;
+
+const AYUDA_SUSURRO = `📩 COMANDOS DE SUSURRO
+
+🗺️ !explorar → Explora el mundo (1/día)
+➡️ !continuar → Continuás la exploración
+⬅️ !retroceder → Retrocedés la exploración
+⚔️ !combatir → Combatís contra el NPC
+🏃 !retirarse → Te retirás del combate
+⏳ !exploracionpendiente → Tu evento de exploración
+📊 !infoop → Tu info completa (con puntos)
+👤 !infoop @usuario → Info corta de otro usuario`;
 
 // ============================================
 // CLIENTE TWITCH (IRC)
@@ -405,45 +445,21 @@ async function handleWhisper(event) {
         return;
     }
 
-    // ========== !ayudaop ==========
-    if (command === '!ayudaop') {
-        const ayuda = `📖 AYUDA - op_d_bot
-
-¿Qué querés ver?
-
-💬 !ayudachat → Comandos de chat
-📩 !ayudasusurro → Comandos de susurro`;
-        await sendWhisper(fromUserId, ayuda);
+    // ========== !ayuda (alias del menú) ==========
+    if (command === '!ayuda' || command === '!ayudaop') {
+        await sendWhisper(fromUserId, AYUDA_MENU);
         return;
     }
 
     // ========== !ayudachat ==========
     if (command === '!ayudachat') {
-        const ayuda = `💬 COMANDOS DE CHAT
-
-🎮 !op → Entrena Haki de Armadura (3/día)
-🍎 !fruta → Busca una fruta del diablo
-😋 !comer → Consume la fruta pendiente
-❌ !rechazar → Rechaza la fruta pendiente
-📊 !infoop → Tu info (corta, actualiza recompensa)
-⏳ !frutapendiente → Tu evento de fruta pendiente
-✅ !si / ❌ !no → Decide en evento de fruta
-⚔️ !pelear / 🏃 !huir → Combate en evento de fruta`;
-        await sendWhisper(fromUserId, ayuda);
+        await sendWhisper(fromUserId, AYUDA_CHAT);
         return;
     }
 
     // ========== !ayudasusurro ==========
     if (command === '!ayudasusurro') {
-        const ayuda = `📩 COMANDOS DE SUSURRO
-
-🗺️ !explorar → Explora el mundo (1/día)
-➡️ !continuar / ⬅️ !retroceder → Decide en exploración
-⚔️ !combatir / 🏃 !retirarse → Combate en exploración
-⏳ !exploracionpendiente → Tu evento de exploración
-📊 !infoop → Tu info completa (con puntos)
-👤 !infoop @usuario → Info corta de otro usuario`;
-        await sendWhisper(fromUserId, ayuda);
+        await sendWhisper(fromUserId, AYUDA_SUSURRO);
         return;
     }
 
@@ -461,13 +477,21 @@ async function handleWhisper(event) {
 
         const rangoArm = getRangoArmadura(user?.armadura || 0, esSupremoUser);
         const rangoObs = getRangoArmadura(user?.observacion || 0);
-        const rangoConq = getRangoArmadura(user?.conquistador || 0);
+
+        // Rango de Conquistador (con nuevo umbral 60)
+        const conqPts = user?.conquistador || 0;
+        let rangoConq;
+        if (conqPts < 60) rangoConq = 'No despertado';
+        else if (conqPts <= 79) rangoConq = 'Despertado';
+        else if (conqPts <= 94) rangoConq = 'Básico';
+        else if (conqPts <= 100) rangoConq = 'Avanzado';
+        else rangoConq = 'Supremo';
 
         const mensaje = `📊 Tus estadísticas:
 ${frutaTexto}
 🛡️ Armadura: ${rangoArm.nombre} (${user?.armadura || 0} pts) ${rangoArm.emoji}
 👁️ Observación: ${rangoObs.nombre} (${user?.observacion || 0} pts)
-⚜️ Conquistador: ${rangoConq.nombre} (${user?.conquistador || 0} pts)
+⚜️ Conquistador: ${rangoConq} (${conqPts} pts)
 🏴‍☠️💰 Recompensa: $${(user?.recompensa_publica || 0).toLocaleString('es-AR')}`;
 
         await sendWhisper(fromUserId, mensaje);
@@ -567,9 +591,9 @@ client.on('message', async (channel, tags, message, self) => {
 
     console.log(`💬 [CHAT #${channel}] ${username}: ${message}`);
 
-    // ========== !ayuda ==========
-    if (command === '!ayuda') {
-        client.say(channel, `@${tags.username} 📩 Mandame un susurro con !ayudaop para ver todos los comandos.`);
+    // ========== !ayuda y !ayudaop ==========
+    if (command === '!ayuda' || command === '!ayudaop') {
+        client.say(channel, `@${tags.username} 📩 Mandame un susurro con !ayudaop para ver los comandos.`);
         return;
     }
 
