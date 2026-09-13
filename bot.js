@@ -519,7 +519,8 @@ async function seleccionarNPCs(pcfUsuario) {
         const escalon = getEscalon(ratio);
         const margenKey = getMargenKey(margen);
 
-        const recompensas = calcularRecompensasExplorar(elegido, bucket, escalon, margenKey, victoria);
+        // Recompensas SIEMPRE calculadas como victoria (para mostrar en menú)
+        const recompensas = calcularRecompensasExplorar(elegido, bucket, escalon, margenKey, true);
         const castigos = calcularRecompensasExplorar(elegido, bucket, escalon, margenKey, false);
 
         resultado[bucket] = {
