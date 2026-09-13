@@ -34,14 +34,16 @@ async function cargarCommitInfo() {
     }
     try {
         const response = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/commits/${RENDER_COMMIT}`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const data = await response.json();
         commitInfo = {
             hash: RENDER_COMMIT.substring(0, 7),
-            mensaje: data.commit?.message || 'Sin mensaje',
+            mensaje: data.commit?.message?.split('\n')[0] || 'Sin mensaje',
             fecha: data.commit?.author?.date || new Date().toISOString()
         };
     } catch (err) {
-        commitInfo = { hash: RENDER_COMMIT.substring(0, 7), mensaje: 'No se pudo obtener el mensaje', fecha: new Date().toISOString() };
+        console.warn('No se pudo obtener commit info:', err.message);
+        commitInfo = { hash: RENDER_COMMIT.substring(0, 7), mensaje: 'Deploy reciente (sin detalles)', fecha: new Date().toISOString() };
     }
 }
 
@@ -203,6 +205,8 @@ const PENALIZACION_BASES = {
 
 async function verificarPenalizacionExplorar(username) {
     const user = await getUsuario(username);
+    if (!user) return null;
+
     const hoy = getFechaHoy();
 
     if (!user.ultimo_dia_exploracion) {
@@ -757,17 +761,18 @@ async function handleWhisper(event) {
     // ========== !infoop propio detallado ==========
     if (command === '!infoop' && !args[1]) {
         const user = await getUsuario(username);
+        if (!user) { await sendWhisper(fromUserId, `Error al obtener tus datos. Intenta de nuevo.`); return; }
         const esSupremoUser = await esSupremo(username);
 
         let frutaTexto = '🍎 Ninguna';
-        if (user?.fruta) {
+        if (user.fruta) {
             const { data: frutaData } = await supabase.from('frutas').select('emoji').eq('nombre', user.fruta).single();
             frutaTexto = `🍎 ${user.fruta} ${frutaData?.emoji || ''}`.trim();
         }
 
-        const rangoArm = getRangoArmadura(user?.armadura || 0, esSupremoUser);
-        const rangoObs = getRangoArmadura(user?.observacion || 0);
-        const conqPts = user?.conquistador || 0;
+        const rangoArm = getRangoArmadura(user.armadura || 0, esSupremoUser);
+        const rangoObs = getRangoArmadura(user.observacion || 0);
+        const conqPts = user.conquistador || 0;
         let rangoConq;
         if (conqPts < 60) rangoConq = 'No despertado';
         else if (conqPts <= 79) rangoConq = 'Despertado';
@@ -782,7 +787,7 @@ async function handleWhisper(event) {
             if (!cd.ok) estadoExplorar = `usada. Próxima en ${formatTiempoRestante(cd.restante)}`;
         }
 
-        const mensaje = `📊 Tus estadísticas: ${frutaTexto} | 🛡️ Armadura: ${rangoArm.nombre} (${user?.armadura || 0}) ${rangoArm.emoji} | 👁️ Observación: ${rangoObs.nombre} (${user?.observacion || 0}) | ⚜️ Conquistador: ${rangoConq} (${conqPts}) | 🏴‍☠️💰 $${(user?.recompensa_publica || 0).toLocaleString('es-AR')} | 🗺️ Exploración: ${estadoExplorar}`;
+        const mensaje = `📊 Tus estadísticas: ${frutaTexto} | 🛡️ Armadura: ${rangoArm.nombre} (${user.armadura || 0}) ${rangoArm.emoji} | 👁️ Observación: ${rangoObs.nombre} (${user.observacion || 0}) | ⚜️ Conquistador: ${rangoConq} (${conqPts}) | 🏴‍☠️💰 $${(user.recompensa_publica || 0).toLocaleString('es-AR')} | 🗺️ Exploración: ${estadoExplorar}`;
         await sendWhisper(fromUserId, mensaje);
         return;
     }
@@ -791,16 +796,17 @@ async function handleWhisper(event) {
     if (command === '!infoop' && args[1]) {
         const target = args[1].replace('@', '').toLowerCase();
         const targetUser = await getUsuario(target);
+        if (!targetUser) { await sendWhisper(fromUserId, `No encontré datos de @${target}.`); return; }
         const esSupremoUser = await esSupremo(target);
         let frutaTexto = '🍎 Ninguna';
-        if (targetUser?.fruta) {
+        if (targetUser.fruta) {
             const { data: frutaData } = await supabase.from('frutas').select('emoji').eq('nombre', targetUser.fruta).single();
             frutaTexto = `🍎 ${targetUser.fruta} ${frutaData?.emoji || ''}`.trim();
         }
-        const emojiArm = getEmojiRango(targetUser?.armadura || 0, 'armadura', esSupremoUser);
-        const emojiObs = getEmojiRango(targetUser?.observacion || 0, 'observacion');
-        const emojiConq = getEmojiRango(targetUser?.conquistador || 0, 'conquistador');
-        await sendWhisper(fromUserId, `@${target} | ${frutaTexto} | 🛡️:${emojiArm} | 👁️:${emojiObs} | ⚜️:${emojiConq} | 🏴‍☠️💰 $${(targetUser?.recompensa_publica || 0).toLocaleString('es-AR')}`);
+        const emojiArm = getEmojiRango(targetUser.armadura || 0, 'armadura', esSupremoUser);
+        const emojiObs = getEmojiRango(targetUser.observacion || 0, 'observacion');
+        const emojiConq = getEmojiRango(targetUser.conquistador || 0, 'conquistador');
+        await sendWhisper(fromUserId, `@${target} | ${frutaTexto} | 🛡️:${emojiArm} | 👁️:${emojiObs} | ⚜️:${emojiConq} | 🏴‍☠️💰 $${(targetUser.recompensa_publica || 0).toLocaleString('es-AR')}`);
         return;
     }
 
@@ -835,6 +841,7 @@ async function handleWhisper(event) {
 
     if (command === '!explorar') {
         const user = await getUsuario(username);
+        if (!user) { await sendWhisper(fromUserId, `Error al obtener tus datos. Intenta de nuevo.`); return; }
 
         if (user.evento_explorar_estado === 'pendiente') {
             if (user.evento_explorar_fase === 'menu') {
@@ -914,7 +921,7 @@ async function handleWhisper(event) {
 
     if (command === '!facil' || command === '!medio' || command === '!dificil') {
         const user = await getUsuario(username);
-        if (user.evento_explorar_estado !== 'pendiente' || user.evento_explorar_fase !== 'menu') {
+        if (!user || user.evento_explorar_estado !== 'pendiente' || user.evento_explorar_fase !== 'menu') {
             await sendWhisper(fromUserId, `No tienes una exploración pendiente de elegir.`); return;
         }
         const dificultad = command.substring(1);
@@ -942,7 +949,7 @@ async function handleWhisper(event) {
 
     if (command === '!continuar') {
         const user = await getUsuario(username);
-        if (user.evento_explorar_estado !== 'pendiente' || user.evento_explorar_fase !== 'avistamiento') {
+        if (!user || user.evento_explorar_estado !== 'pendiente' || user.evento_explorar_fase !== 'avistamiento') {
             await sendWhisper(fromUserId, `No tienes una exploración pendiente en fase de avistamiento.`); return;
         }
         await updateUsuario(username, {
@@ -960,7 +967,7 @@ async function handleWhisper(event) {
 
     if (command === '!retroceder') {
         const user = await getUsuario(username);
-        if (user.evento_explorar_estado !== 'pendiente' || user.evento_explorar_fase !== 'avistamiento') {
+        if (!user || user.evento_explorar_estado !== 'pendiente' || user.evento_explorar_fase !== 'avistamiento') {
             await sendWhisper(fromUserId, `No tienes una exploración pendiente en fase de avistamiento.`); return;
         }
         const opciones = user.evento_explorar_opciones || {};
@@ -979,7 +986,7 @@ async function handleWhisper(event) {
 
     if (command === '!combatir') {
         const user = await getUsuario(username);
-        if (user.evento_explorar_estado !== 'pendiente' || user.evento_explorar_fase !== 'encuentro') {
+        if (!user || user.evento_explorar_estado !== 'pendiente' || user.evento_explorar_fase !== 'encuentro') {
             await sendWhisper(fromUserId, `No tienes una exploración pendiente en fase de encuentro.`); return;
         }
         const opciones = user.evento_explorar_opciones || {};
@@ -1013,7 +1020,7 @@ async function handleWhisper(event) {
 
     if (command === '!retirarse') {
         const user = await getUsuario(username);
-        if (user.evento_explorar_estado !== 'pendiente' || user.evento_explorar_fase !== 'encuentro') {
+        if (!user || user.evento_explorar_estado !== 'pendiente' || user.evento_explorar_fase !== 'encuentro') {
             await sendWhisper(fromUserId, `No tienes una exploración pendiente en fase de encuentro.`); return;
         }
         const opciones = user.evento_explorar_opciones || {};
@@ -1076,10 +1083,14 @@ client.on('message', async (channel, tags, message, self) => {
         return;
     }
 
-    // VERIFICAR PENALIZACIÓN POR NO EXPLORAR
-    const penal = await verificarPenalizacionExplorar(username);
-    if (penal) {
-        client.say(channel, `@${tags.username} 💤 No usaste !explorar por ${penal.dias} día(s). Perdiste ${penal.perdConq} Conquistador y $${penal.perdBerries.toLocaleString('es-AR')} Berries.`);
+    // VERIFICAR PENALIZACIÓN POR NO EXPLORAR (con try-catch)
+    try {
+        const penal = await verificarPenalizacionExplorar(username);
+        if (penal) {
+            client.say(channel, `@${tags.username} 💤 No usaste !explorar por ${penal.dias} día(s). Perdiste ${penal.perdConq} Conquistador y $${penal.perdBerries.toLocaleString('es-AR')} Berries.`);
+        }
+    } catch (err) {
+        console.error('Error en penalización:', err);
     }
 
     // BLOQUEO SI EXPLORACIÓN PENDIENTE
@@ -1097,23 +1108,25 @@ client.on('message', async (channel, tags, message, self) => {
     if (command === '!infoop') {
         if (args[1]) { client.say(channel, `@${tags.username} Por susurro, máquina 📩`); return; }
         const user = await getUsuario(username);
+        if (!user) { client.say(channel, `@${tags.username} Error al obtener tus datos. Intenta de nuevo.`); return; }
         const esSupremoUser = await esSupremo(username);
         const nuevaRecompensa = calcularRecompensa(user);
         await updateUsuario(username, { recompensa_publica: nuevaRecompensa });
         let frutaTexto = '🍎 Ninguna';
-        if (user?.fruta) {
+        if (user.fruta) {
             const { data: frutaData } = await supabase.from('frutas').select('emoji').eq('nombre', user.fruta).single();
             frutaTexto = `🍎 ${user.fruta} ${frutaData?.emoji || ''}`.trim();
         }
-        const emojiArm = getEmojiRango(user?.armadura || 0, 'armadura', esSupremoUser);
-        const emojiObs = getEmojiRango(user?.observacion || 0, 'observacion');
-        const emojiConq = getEmojiRango(user?.conquistador || 0, 'conquistador');
+        const emojiArm = getEmojiRango(user.armadura || 0, 'armadura', esSupremoUser);
+        const emojiObs = getEmojiRango(user.observacion || 0, 'observacion');
+        const emojiConq = getEmojiRango(user.conquistador || 0, 'conquistador');
         client.say(channel, `@${username} | ${frutaTexto} | 🛡️:${emojiArm} | 👁️:${emojiObs} | ⚜️:${emojiConq} | 🏴‍☠️💰 $${nuevaRecompensa.toLocaleString('es-AR')}`);
         return;
     }
 
     if (command === '!op') {
         const user = await getUsuario(username);
+        if (!user) return;
         const ahora = Date.now();
         const ultimoTs = user.ultimo_op_timestamp ? new Date(user.ultimo_op_timestamp).getTime() : 0;
         const tiempoRestante = (10 * 60 * 1000) - (ahora - ultimoTs);
@@ -1193,8 +1206,9 @@ client.on('message', async (channel, tags, message, self) => {
     if (command === '!fruta') {
         try {
             const user = await getUsuario(username);
-            if (user?.fruta) { client.say(channel, `@${tags.username} Ya tienes una fruta (${user.fruta}).`); return; }
-            if (user?.evento_fruta_estado === 'pendiente') {
+            if (!user) return;
+            if (user.fruta) { client.say(channel, `@${tags.username} Ya tienes una fruta (${user.fruta}).`); return; }
+            if (user.evento_fruta_estado === 'pendiente') {
                 client.say(channel, `@${tags.username} Ya tienes un evento de fruta pendiente. Usa !frutapendiente para ver la decisión que debes tomar.`); return;
             }
             const ahora = Date.now();
@@ -1425,6 +1439,7 @@ client.on('message', async (channel, tags, message, self) => {
         const cantidad = parseInt(args[2]);
         if (isNaN(cantidad)) return client.say(channel, `@${tags.username} La cantidad debe ser un número.`);
         const user = await getUsuario(target);
+        if (!user) return;
         const actual = user[campo] || 0;
         const nuevo = signo > 0 ? actual + cantidad : Math.max(actual - cantidad, 0);
         await updateUsuario(target, { [campo]: nuevo });
