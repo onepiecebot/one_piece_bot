@@ -10,8 +10,9 @@ const COOLDOWN_FRUTA = 60000;
 const PROB_FRUTA = 100;
 const DUEÑO = 'fan_d_larana';
 const TWITCH_API_URL = 'https://api.twitch.tv/helix';
+const GITHUB_REPO = 'onepiecebot/one_piece_bot';
 
-const MODO_COOLDOWN = 'prueba'; // 'prueba' o 'produccion'
+const MODO_COOLDOWN = 'prueba';
 const COOLDOWN_EXPLORAR_PRUEBA = 30 * 1000;
 const COOLDOWN_EXPLORAR_PRODUCCION = 24 * 60 * 60 * 1000;
 
@@ -19,6 +20,30 @@ const COOLDOWN_EXPLORAR_PRODUCCION = 24 * 60 * 60 * 1000;
 // COOLDOWNS (en memoria)
 // ============================================
 const cooldowns = {};
+
+// ============================================
+// COMMIT INFO (para !actualizacion)
+// ============================================
+const RENDER_COMMIT = process.env.RENDER_GIT_COMMIT || null;
+let commitInfo = null;
+
+async function cargarCommitInfo() {
+    if (!RENDER_COMMIT) {
+        commitInfo = { hash: 'local', mensaje: 'Modo local (sin info de deploy)', fecha: new Date().toISOString() };
+        return;
+    }
+    try {
+        const response = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/commits/${RENDER_COMMIT}`);
+        const data = await response.json();
+        commitInfo = {
+            hash: RENDER_COMMIT.substring(0, 7),
+            mensaje: data.commit?.message || 'Sin mensaje',
+            fecha: data.commit?.author?.date || new Date().toISOString()
+        };
+    } catch (err) {
+        commitInfo = { hash: RENDER_COMMIT.substring(0, 7), mensaje: 'No se pudo obtener el mensaje', fecha: new Date().toISOString() };
+    }
+}
 
 // ============================================
 // FUNCIONES DE FECHA
@@ -88,6 +113,14 @@ function getCalaverasPorProb(prob) {
     return '💀💀💀💀💀';
 }
 
+function getRangoConquistadorTexto(puntos) {
+    if (puntos < 60) return 'no_despertado';
+    if (puntos <= 79) return 'despertado';
+    if (puntos <= 94) return 'basico';
+    if (puntos <= 100) return 'avanzado';
+    return 'supremo';
+}
+
 // ============================================
 // BONUS Y TEXTOS
 // ============================================
@@ -155,6 +188,58 @@ function calcularRecompensa(user) {
     const conq = user.conquistador || 0;
     const tieneFruta = user.fruta ? 1 : 0;
     return (arm * 500000) + (obs * 500000) + (conq * 1000000) + (tieneFruta * 10000000);
+}
+
+// ============================================
+// PENALIZACIÓN POR NO USAR !explorar
+// ============================================
+const PENALIZACION_BASES = {
+    no_despertado: { conq: 1, berries: 5000000 },
+    despertado:    { conq: 2, berries: 10000000 },
+    basico:        { conq: 3, berries: 20000000 },
+    avanzado:      { conq: 5, berries: 30000000 },
+    supremo:       { conq: 8, berries: 50000000 }
+};
+
+async function verificarPenalizacionExplorar(username) {
+    const user = await getUsuario(username);
+    const hoy = getFechaHoy();
+
+    // Usuario nuevo → inicializar
+    if (!user.ultimo_dia_exploracion) {
+        await updateUsuario(username, { ultimo_dia_exploracion: hoy, dias_sin_explorar: 0 });
+        return null;
+    }
+
+    // Calcular días desde el último uso
+    const ultimo = new Date(user.ultimo_dia_exploracion);
+    const ahora = new Date(hoy);
+    const diffMs = ahora - ultimo;
+    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+    // Días esperados sin usar (si usó hoy o ayer → 0)
+    const expected = Math.max(diffDays - 1, 0);
+    const capped = Math.min(expected, 4);
+
+    if (capped <= (user.dias_sin_explorar || 0)) return null;
+
+    // Aplicar penalización
+    const rangoConq = getRangoConquistadorTexto(user.conquistador || 0);
+    const base = PENALIZACION_BASES[rangoConq];
+    const mult = capped;
+    const perdConq = base.conq * mult;
+    const perdBerries = base.berries * mult;
+
+    const nuevoConq = Math.max((user.conquistador || 0) - perdConq, 0);
+    const nuevoBerries = Math.max((user.recompensa_publica || 0) - perdBerries, 0);
+
+    await updateUsuario(username, {
+        dias_sin_explorar: capped,
+        conquistador: nuevoConq,
+        recompensa_publica: nuevoBerries
+    });
+
+    return { dias: capped, perdConq, perdBerries };
 }
 
 // ============================================
@@ -479,7 +564,6 @@ async function seleccionarNPCs(pcfUsuario) {
     for (const bucket of orden) {
         const [minProb, maxProb] = rangos[bucket];
 
-        // 1. Rango exacto
         let candidatos = npcs.filter(npc => {
             if (elegidos.has(npc.nombre)) return false;
             const pcfNpc = npc.pcf_final || npc.pcf_calculado || 0;
@@ -488,7 +572,6 @@ async function seleccionarNPCs(pcfUsuario) {
             return prob >= minProb && prob <= maxProb;
         });
 
-        // 2. Fallback: rango ±25% (solo si no hay nada en rango exacto)
         if (candidatos.length === 0) {
             candidatos = npcs.filter(npc => {
                 if (elegidos.has(npc.nombre)) return false;
@@ -499,7 +582,6 @@ async function seleccionarNPCs(pcfUsuario) {
             });
         }
 
-        // Si sigue vacío, el bucket queda vacío (NO se usa el "más cercano")
         if (candidatos.length === 0) continue;
 
         const elegido = candidatos[Math.floor(Math.random() * candidatos.length)];
@@ -519,7 +601,6 @@ async function seleccionarNPCs(pcfUsuario) {
         const escalon = getEscalon(ratio);
         const margenKey = getMargenKey(margen);
 
-        // Recompensas SIEMPRE calculadas como victoria (para mostrar en menú)
         const recompensas = calcularRecompensasExplorar(elegido, bucket, escalon, margenKey, true);
         const castigos = calcularRecompensasExplorar(elegido, bucket, escalon, margenKey, false);
 
@@ -539,7 +620,6 @@ async function seleccionarNPCs(pcfUsuario) {
         };
     }
 
-    // Si quedan menos de 2 buckets, cancelar
     if (Object.keys(resultado).length < 2) return null;
     return resultado;
 }
@@ -592,7 +672,7 @@ const AYUDA_MENU = `📖 AYUDA - op_d_bot — ¿Qué querés ver? 💬 !ayudacha
 
 const AYUDA_CHAT = `💬 COMANDOS DE CHAT 🎮 !op → Entrena Haki (3/día) 📊 !infoop → Tu info (corta) 🍎 !fruta → Busca fruta 😋 !comer → Consume ❌ !rechazar → Rechaza ⏳ !frutapendiente → Evento fruta pendiente ✅ !si / ❌ !no → Decide evento fruta ⚔️ !pelear / 🏃 !huir → Combate fruta`;
 
-const AYUDA_SUSURRO = `📩 COMANDOS DE SUSURRO 🗺️ !explorar → Explora el mundo (1/día) ➡️ !continuar / ⬅️ !retroceder → Decide exploración ⚔️ !combatir / 🏃 !retirarse → Combate exploración ⏳ !exploracionpendiente → Evento exploración 📊 !infoop → Tu info (detallada) 👤 !infoop @usuario → Info corta de otro`;
+const AYUDA_SUSURRO = `📩 COMANDOS DE SUSURRO 🗺️ !explorar → Explora el mundo (1/día) ➡️ !continuar / ⬅️ !retroceder → Decide exploración ⚔️ !combatir / 🏃 !retirarse → Combate exploración ⏳ !exploracionpendiente → Evento exploración 📊 !infoop → Tu info (detallada) 👤 !infoop @usuario → Info corta de otro 🔄 !actualizacion → Última actualización del bot`;
 
 // ============================================
 // CLIENTE TWITCH (IRC)
@@ -699,6 +779,18 @@ async function handleWhisper(event) {
     if (command === '!ayudachat') { await sendWhisper(fromUserId, AYUDA_CHAT); return; }
     if (command === '!ayudasusurro') { await sendWhisper(fromUserId, AYUDA_SUSURRO); return; }
 
+    // ========== !actualizacion ==========
+    if (command === '!actualizacion') {
+        if (!commitInfo) {
+            await sendWhisper(fromUserId, `🔄 Cargando información... intentá de nuevo en unos segundos.`);
+            return;
+        }
+        const fecha = new Date(commitInfo.fecha);
+        const fechaStr = fecha.toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+        await sendWhisper(fromUserId, `🔄 Última actualización: ${fechaStr} | Commit: ${commitInfo.hash} | ${commitInfo.mensaje}`);
+        return;
+    }
+
     // ========== !infoop propio detallado ==========
     if (command === '!infoop' && !args[1]) {
         const user = await getUsuario(username);
@@ -797,11 +889,11 @@ async function handleWhisper(event) {
             const op = opciones[user.evento_explorar_dificultad];
             if (user.evento_explorar_fase === 'avistamiento') {
                 const castigoRetroceder = Math.max(Math.ceil(op.castigo_conq * 0.1), 1);
-                await sendWhisper(fromUserId, `📍 Exploración pendiente, ${fromUserLogin}. ${npc.fase1} — Si retrocedés ahora: -${castigoRetroceder} Conquistador. Si continuás y perdés: -${op.castigo_conq} Conq / -${op.castigo_berries.toLocaleString('es-AR')} Berries. ¿Qué hacés? ➡️ !continuar o ⬅️ !retroceder`);
+                await sendWhisper(fromUserId, `📍 Exploración pendiente. ${npc.fase1} — Si retrocedés ahora: -${castigoRetroceder} Conquistador. Si continuás y perdés: -${op.castigo_conq} Conq / -${op.castigo_berries.toLocaleString('es-AR')} Berries. ¿Qué hacés? ➡️ !continuar o ⬅️ !retroceder`);
             } else {
                 const calaveras = getCalaverasPorProb(op.prob);
                 const castigoRetirarse = Math.max(Math.ceil(op.castigo_conq * 0.3), 1);
-                await sendWhisper(fromUserId, `📍 Exploración pendiente, ${fromUserLogin}. ${npc.fase2} ${calaveras} — Si ganás: +${op.recompensa_conq} Conq / +${op.recompensa_berries.toLocaleString('es-AR')} Berries. Si perdés: -${op.castigo_conq} Conq / -${op.castigo_berries.toLocaleString('es-AR')} Berries. Si te retirás: -${castigoRetirarse} Conq. ⚔️ !combatir o 🏃 !retirarse`);
+                await sendWhisper(fromUserId, `📍 Exploración pendiente. ${npc.fase2} ${calaveras} — Si ganás: +${op.recompensa_conq} Conq / +${op.recompensa_berries.toLocaleString('es-AR')} Berries. Si perdés: -${op.castigo_conq} Conq / -${op.castigo_berries.toLocaleString('es-AR')} Berries. Si te retirás: -${castigoRetirarse} Conq. ⚔️ !combatir o 🏃 !retirarse`);
             }
             return;
         }
@@ -840,12 +932,15 @@ async function handleWhisper(event) {
             evento_explorar_pcf_npc: null,
             evento_explorar_comandos: null,
             evento_explorar_opciones: opciones,
-            ultima_exploracion: new Date().toISOString()
+            ultima_exploracion: new Date().toISOString(),
+            ultimo_dia_exploracion: getFechaHoy(),
+            dias_sin_explorar: 0
         });
+
         const f = opciones.facil, m = opciones.medio, d = opciones.dificil;
         const total = [f, m, d].filter(Boolean).length;
         const plural = total === 3 ? 'tres caminos' : total === 2 ? 'dos caminos' : 'un camino';
-        let msg = `🗺️ ¡Zarpás en busca de aventura, ${fromUserLogin}! Se divisan ${plural}:`;
+        let msg = `🗺️ ¡Zarpás en busca de aventura! Se divisan ${plural}:`;
         if (f) msg += ` 🟢 !facil ${getCalaverasPorProb(f.prob)} → +${f.recompensa_conq} Conq / +${f.recompensa_berries.toLocaleString('es-AR')} Berries`;
         if (m) msg += ` 🟡 !medio ${getCalaverasPorProb(m.prob)} → +${m.recompensa_conq} Conq / +${m.recompensa_berries.toLocaleString('es-AR')} Berries`;
         if (d) msg += ` 🔴 !dificil ${getCalaverasPorProb(d.prob)} → +${d.recompensa_conq} Conq / +${d.recompensa_berries.toLocaleString('es-AR')} Berries`;
@@ -915,7 +1010,7 @@ async function handleWhisper(event) {
             evento_explorar_pcf_npc: null, evento_explorar_comandos: null, evento_explorar_opciones: null
         });
         const msgCtx = MENSAJES_RETROCEDER[Math.floor(Math.random() * MENSAJES_RETROCEDER.length)];
-        await sendWhisper(fromUserId, `${msgCtx} ⬅️ Retrocedés, ${fromUserLogin}. -${castigo} Conquistador.`);
+        await sendWhisper(fromUserId, `${msgCtx} ⬅️ Retrocedés. -${castigo} Conquistador.`);
         return;
     }
 
@@ -939,7 +1034,7 @@ async function handleWhisper(event) {
                 evento_explorar_npc: null, evento_explorar_nivel: null, evento_explorar_pcf_usuario: null,
                 evento_explorar_pcf_npc: null, evento_explorar_comandos: null, evento_explorar_opciones: null
             });
-            await sendWhisper(fromUserId, `${msgCtx} 🏆 ¡Victoria, ${fromUserLogin}! Derrotaste a la sombra de ${op.npc}. +${op.recompensa_conq} Conquistador. +${op.recompensa_berries.toLocaleString('es-AR')} Berries.`);
+            await sendWhisper(fromUserId, `${msgCtx} 🏆 ¡Victoria! Derrotaste a la sombra de ${op.npc}. +${op.recompensa_conq} Conquistador. +${op.recompensa_berries.toLocaleString('es-AR')} Berries.`);
         } else {
             await updateUsuario(username, {
                 conquistador: Math.max((user.conquistador || 0) - op.castigo_conq, 0),
@@ -948,7 +1043,7 @@ async function handleWhisper(event) {
                 evento_explorar_npc: null, evento_explorar_nivel: null, evento_explorar_pcf_usuario: null,
                 evento_explorar_pcf_npc: null, evento_explorar_comandos: null, evento_explorar_opciones: null
             });
-            await sendWhisper(fromUserId, `${msgCtx} 💀 Derrota, ${fromUserLogin}. La sombra de ${op.npc} te superó. -${op.castigo_conq} Conquistador. -${op.castigo_berries.toLocaleString('es-AR')} Berries.`);
+            await sendWhisper(fromUserId, `${msgCtx} 💀 Derrota. La sombra de ${op.npc} te superó. -${op.castigo_conq} Conquistador. -${op.castigo_berries.toLocaleString('es-AR')} Berries.`);
         }
         return;
     }
@@ -968,7 +1063,7 @@ async function handleWhisper(event) {
             evento_explorar_pcf_npc: null, evento_explorar_comandos: null, evento_explorar_opciones: null
         });
         const msgCtx = MENSAJES_RETIRARSE[Math.floor(Math.random() * MENSAJES_RETIRARSE.length)];
-        await sendWhisper(fromUserId, `${msgCtx} 🏃 Te retirás, ${fromUserLogin}. -${castigo} Conquistador.`);
+        await sendWhisper(fromUserId, `${msgCtx} 🏃 Te retirás. -${castigo} Conquistador.`);
         return;
     }
 
@@ -983,7 +1078,7 @@ async function handleWhisper(event) {
             const cf = f ? getCalaverasPorProb(f.prob) : '💀';
             const cm = m ? getCalaverasPorProb(m.prob) : '💀💀';
             const cd = d ? getCalaverasPorProb(d.prob) : '💀💀💀💀💀';
-            let msg = `📍 Exploración pendiente, ${fromUserLogin}. Elegí dificultad:`;
+            let msg = `📍 Exploración pendiente. Elegí dificultad:`;
             if (f) msg += ` 🟢 !facil ${cf} (+${f.recompensa_conq} Conq / +${f.recompensa_berries.toLocaleString('es-AR')} Berries)`;
             if (m) msg += ` 🟡 !medio ${cm} (+${m.recompensa_conq} Conq / +${m.recompensa_berries.toLocaleString('es-AR')} Berries)`;
             if (d) msg += ` 🔴 !dificil ${cd} (+${d.recompensa_conq} Conq / +${d.recompensa_berries.toLocaleString('es-AR')} Berries)`;
@@ -995,11 +1090,11 @@ async function handleWhisper(event) {
         const op = opciones[user.evento_explorar_dificultad];
         if (user.evento_explorar_fase === 'avistamiento') {
             const castigoRetroceder = Math.max(Math.ceil(op.castigo_conq * 0.1), 1);
-            await sendWhisper(fromUserId, `📍 Exploración pendiente, ${fromUserLogin}. ${npc.fase1} — Si retrocedés ahora: -${castigoRetroceder} Conq. Si continuás y perdés: -${op.castigo_conq} Conq / -${op.castigo_berries.toLocaleString('es-AR')} Berries. ➡️ !continuar o ⬅️ !retroceder`);
+            await sendWhisper(fromUserId, `📍 Exploración pendiente. ${npc.fase1} — Si retrocedés ahora: -${castigoRetroceder} Conq. Si continuás y perdés: -${op.castigo_conq} Conq / -${op.castigo_berries.toLocaleString('es-AR')} Berries. ➡️ !continuar o ⬅️ !retroceder`);
         } else {
             const calaveras = getCalaverasPorProb(op.prob);
             const castigoRetirarse = Math.max(Math.ceil(op.castigo_conq * 0.3), 1);
-            await sendWhisper(fromUserId, `📍 Exploración pendiente, ${fromUserLogin}. ${npc.fase2} ${calaveras} — Si ganás: +${op.recompensa_conq} Conq / +${op.recompensa_berries.toLocaleString('es-AR')} Berries. Si perdés: -${op.castigo_conq} Conq / -${op.castigo_berries.toLocaleString('es-AR')} Berries. Si te retirás: -${castigoRetirarse} Conq. ⚔️ !combatir o 🏃 !retirarse`);
+            await sendWhisper(fromUserId, `📍 Exploración pendiente. ${npc.fase2} ${calaveras} — Si ganás: +${op.recompensa_conq} Conq / +${op.recompensa_berries.toLocaleString('es-AR')} Berries. Si perdés: -${op.castigo_conq} Conq / -${op.castigo_berries.toLocaleString('es-AR')} Berries. Si te retirás: -${castigoRetirarse} Conq. ⚔️ !combatir o 🏃 !retirarse`);
         }
         return;
     }
@@ -1019,6 +1114,12 @@ client.on('message', async (channel, tags, message, self) => {
     if (command === '!ayudaop') {
         client.say(channel, `@${tags.username} 📩 Mandame un susurro con !ayudaop para ver los comandos.`);
         return;
+    }
+
+    // VERIFICAR PENALIZACIÓN POR NO EXPLORAR (al primer comando del día)
+    const penal = await verificarPenalizacionExplorar(username);
+    if (penal) {
+        client.say(channel, `@${tags.username} 💤 No usaste !explorar por ${penal.dias} día(s). Perdiste ${penal.perdConq} Conquistador y $${penal.perdBerries.toLocaleString('es-AR')} Berries.`);
     }
 
     // BLOQUEO SI EXPLORACIÓN PENDIENTE
@@ -1389,6 +1490,13 @@ client.on('message', async (channel, tags, message, self) => {
         }
         client.say(channel, `@${tags.username} Has cambiado el PCF de ${npcNombre} a ${nuevoPoder}.`); return;
     }
+});
+
+// ============================================
+// INICIALIZAR COMMIT INFO
+// ============================================
+cargarCommitInfo().then(() => {
+    console.log('📦 Commit info cargado:', commitInfo);
 });
 
 console.log('Bot escuchando...');
