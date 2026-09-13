@@ -12,8 +12,8 @@ const DUEÑO = 'fan_d_larana';
 const TWITCH_API_URL = 'https://api.twitch.tv/helix';
 
 const MODO_COOLDOWN = 'prueba'; // 'prueba' o 'produccion'
-const COOLDOWN_EXPLORAR_PRUEBA = 30 * 1000; // 30 segundos
-const COOLDOWN_EXPLORAR_PRODUCCION = 24 * 60 * 60 * 1000; // 24 horas
+const COOLDOWN_EXPLORAR_PRUEBA = 30 * 1000;
+const COOLDOWN_EXPLORAR_PRODUCCION = 24 * 60 * 60 * 1000;
 
 // ============================================
 // COOLDOWNS (en memoria)
@@ -80,8 +80,12 @@ function getEmojiRango(puntos, tipo = 'armadura', esSupremo = false) {
     return '❌';
 }
 
-function getCalaveras(nivel) {
-    return '💀'.repeat(Math.min(Math.max(nivel, 1), 5));
+function getCalaverasPorProb(prob) {
+    if (prob >= 0.85) return '💀';
+    if (prob >= 0.60) return '💀💀';
+    if (prob >= 0.40) return '💀💀💀';
+    if (prob >= 0.15) return '💀💀💀💀';
+    return '💀💀💀💀💀';
 }
 
 // ============================================
@@ -207,14 +211,25 @@ async function esSupremo(username) {
 // SISTEMA DE COMBATE
 // ============================================
 function calcularPoderHakis(armadura, observacion, conquistador, esSupremoArmadura = false) {
-    const factorArmadura = esSupremoArmadura ? 1.0 : (armadura <= 19 ? 0 : armadura <= 49 ? 0.2 : armadura <= 79 ? 0.5 : armadura <= 99 ? 0.8 : 1.0);
-    const factorObservacion = observacion <= 19 ? 0 : observacion <= 49 ? 0.2 : observacion <= 79 ? 0.5 : observacion <= 99 ? 0.8 : 1.0;
+    let aporteArmadura = 0;
+    if (esSupremoArmadura || armadura >= 100) aporteArmadura = 250;
+    else if (armadura >= 80) aporteArmadura = 200;
+    else if (armadura >= 50) aporteArmadura = 125;
+    else if (armadura >= 20) aporteArmadura = 50;
+
+    let aporteObservacion = 0;
+    if (observacion >= 100) aporteObservacion = 180;
+    else if (observacion >= 80) aporteObservacion = 144;
+    else if (observacion >= 50) aporteObservacion = 90;
+    else if (observacion >= 20) aporteObservacion = 36;
+
     let aporteConquistador = 0;
-    if (conquistador >= 60 && conquistador <= 79) aporteConquistador = 100;
-    else if (conquistador >= 80 && conquistador <= 94) aporteConquistador = 150;
-    else if (conquistador >= 95 && conquistador <= 100) aporteConquistador = 250;
-    else if (conquistador > 100) aporteConquistador = 400;
-    return (armadura * factorArmadura * 2.5) + (observacion * factorObservacion * 1.8) + aporteConquistador;
+    if (conquistador > 100) aporteConquistador = 400;
+    else if (conquistador >= 95) aporteConquistador = 250;
+    else if (conquistador >= 80) aporteConquistador = 150;
+    else if (conquistador >= 60) aporteConquistador = 100;
+
+    return aporteArmadura + aporteObservacion + aporteConquistador;
 }
 
 const calcularPoderBase = (poderFruta, arm, obs, conq, esSupremo) =>
@@ -256,7 +271,6 @@ function obtenerMensaje(victoria, porcentaje) {
     const pool = mensajes[cat][rango] || mensajes[cat]['ajustada'];
     return pool[Math.floor(Math.random() * pool.length)];
 }
-
 // ============================================
 // SISTEMA DE EXPLORACIÓN
 // ============================================
@@ -272,10 +286,10 @@ function getBucket(prob) {
 }
 
 function getEscalon(ratio) {
-    if (ratio >= 1.5) return 'mucho_mas_fuerte';
-    if (ratio >= 1.25) return 'mas_fuerte';
-    if (ratio >= 0.75) return 'parejo';
-    if (ratio >= 0.5) return 'mas_debil';
+    if (ratio <= 0.5) return 'mucho_mas_fuerte';
+    if (ratio <= 0.75) return 'mas_fuerte';
+    if (ratio <= 1.25) return 'parejo';
+    if (ratio <= 1.5) return 'mas_debil';
     return 'mucho_mas_debil';
 }
 
@@ -453,48 +467,57 @@ async function seleccionarNPCs(pcfUsuario) {
     const { data: npcs } = await supabase.from('npcs').select('*');
     if (!npcs || npcs.length === 0) return null;
 
-    const buckets = { facil: [], medio: [], dificil: [] };
+    const elegidos = new Set();
+    const resultado = {};
+    const orden = ['facil', 'dificil', 'medio'];
+    const rangos = {
+        facil:   [0.65, 0.95],
+        medio:   [0.21, 0.64],
+        dificil: [0.05, 0.20]
+    };
 
-    for (const npc of npcs) {
-        const pcfNpc = npc.pcf_final || npc.pcf_calculado || 0;
-        if (pcfNpc <= 0) continue;
-        const prob = calcularProbabilidadVictoria(pcfUsuario, pcfNpc);
-        if (prob < 0.01) continue;
-        const bucket = getBucket(prob);
-        if (bucket) buckets[bucket].push({ npc, prob });
-    }
+    for (const bucket of orden) {
+        const [minProb, maxProb] = rangos[bucket];
 
-    // Fallback en cascada: si un bucket está vacío, buscar el más cercano ±25%
-    const seleccionados = {};
-    for (const key of ['facil', 'medio', 'dificil']) {
-        if (buckets[key].length > 0) {
-            const elegido = buckets[key][Math.floor(Math.random() * buckets[key].length)];
-            seleccionados[key] = elegido;
-        } else {
-            // Fallback: NPC más cercano
+        let candidatos = npcs.filter(npc => {
+            if (elegidos.has(npc.nombre)) return false;
+            const pcfNpc = npc.pcf_final || npc.pcf_calculado || 0;
+            if (pcfNpc <= 0) return false;
+            const prob = calcularProbabilidadVictoria(pcfUsuario, pcfNpc);
+            return prob >= minProb && prob <= maxProb;
+        });
+
+        if (candidatos.length === 0) {
+            candidatos = npcs.filter(npc => {
+                if (elegidos.has(npc.nombre)) return false;
+                const pcfNpc = npc.pcf_final || npc.pcf_calculado || 0;
+                if (pcfNpc <= 0) return false;
+                const ratio = pcfNpc / pcfUsuario;
+                return ratio >= 0.75 && ratio <= 1.25;
+            });
+        }
+
+        if (candidatos.length === 0) {
             let mejor = null;
             let mejorDiff = Infinity;
             for (const npc of npcs) {
+                if (elegidos.has(npc.nombre)) continue;
                 const pcfNpc = npc.pcf_final || npc.pcf_calculado || 0;
                 if (pcfNpc <= 0) continue;
-                const ratio = pcfNpc / pcfUsuario;
-                const diff = Math.abs(ratio - 1);
-                if (diff < mejorDiff && ratio >= 0.75 && ratio <= 1.25) {
-                    mejorDiff = diff;
-                    mejor = { npc, prob: calcularProbabilidadVictoria(pcfUsuario, pcfNpc) };
-                }
+                const diff = Math.abs(pcfNpc / pcfUsuario - 1);
+                if (diff < mejorDiff) { mejorDiff = diff; mejor = npc; }
             }
-            if (mejor) seleccionados[key] = mejor;
+            if (mejor) candidatos = [mejor];
         }
-    }
 
-    if (Object.keys(seleccionados).length < 3) return null;
+        if (candidatos.length === 0) continue;
 
-    // Aplicar varianza y calcular resultado
-    const opciones = {};
-    for (const key of ['facil', 'medio', 'dificil']) {
-        const { npc } = seleccionados[key];
-        const pcfNpc = npc.pcf_final || npc.pcf_calculado || 0;
+        const elegido = candidatos[Math.floor(Math.random() * candidatos.length)];
+        elegidos.add(elegido.nombre);
+
+        const pcfNpc = elegido.pcf_final || elegido.pcf_calculado || 0;
+        const prob = calcularProbabilidadVictoria(pcfUsuario, pcfNpc);
+
         const pcfUserFinal = aplicarVariacion(pcfUsuario);
         const pcfNpcFinal = aplicarVariacion(pcfNpc);
         const victoria = pcfUserFinal > pcfNpcFinal;
@@ -502,24 +525,19 @@ async function seleccionarNPCs(pcfUsuario) {
         const perdedor = Math.min(pcfUserFinal, pcfNpcFinal);
         const margen = (ganador - perdedor) / perdedor;
 
-        // Escalón basado en ratio pre-varianza
         const ratio = pcfNpc / pcfUsuario;
-        let escalon;
-        if (victoria) {
-            // Usuario gana → el NPC era más débil o parejo
-            escalon = getEscalon(1 / ratio);
-        } else {
-            escalon = getEscalon(ratio);
-        }
+        const escalon = getEscalon(ratio);
         const margenKey = getMargenKey(margen);
-        const recompensas = calcularRecompensasExplorar(npc, key, escalon, margenKey, victoria);
-        const castigos = calcularRecompensasExplorar(npc, key, escalon, margenKey, false);
 
-        opciones[key] = {
-            npc: npc.nombre,
-            nivel: npc.nivel,
+        const recompensas = calcularRecompensasExplorar(elegido, bucket, escalon, margenKey, victoria);
+        const castigos = calcularRecompensasExplorar(elegido, bucket, escalon, margenKey, false);
+
+        resultado[bucket] = {
+            npc: elegido.nombre,
+            nivel: elegido.nivel,
             pcf_npc: pcfNpc,
             pcf_usuario: pcfUsuario,
+            prob: prob,
             victoria,
             escalon,
             margen_key: margenKey,
@@ -530,7 +548,8 @@ async function seleccionarNPCs(pcfUsuario) {
         };
     }
 
-    return opciones;
+    if (Object.keys(resultado).length < 2) return null;
+    return resultado;
 }
 
 // ============================================
@@ -666,7 +685,6 @@ async function sendWhisper(toUserId, message) {
 }
 
 setTimeout(startEventSubWebSocket, 3000);
-
 // ============================================
 // HANDLER DE SUSURROS
 // ============================================
@@ -680,20 +698,16 @@ async function handleWhisper(event) {
 
     console.log(`📩 [SUSURRO] de ${fromUserLogin}: ${messageText}`);
 
-    // ========== !testwhisper ==========
     if (command === '!testwhisper') {
         await sendWhisper(fromUserId, `¡Hola ${fromUserLogin}! Los susurros funcionan correctamente. 🎉`);
         return;
     }
 
-    // ========== !ayuda / !ayudaop ==========
-    if (command === '!ayuda' || command === '!ayudaop') {
-        await sendWhisper(fromUserId, AYUDA_MENU); return;
-    }
+    if (command === '!ayuda' || command === '!ayudaop') { await sendWhisper(fromUserId, AYUDA_MENU); return; }
     if (command === '!ayudachat') { await sendWhisper(fromUserId, AYUDA_CHAT); return; }
     if (command === '!ayudasusurro') { await sendWhisper(fromUserId, AYUDA_SUSURRO); return; }
 
-    // ========== !infoop (propio detallado) ==========
+    // ========== !infoop propio detallado ==========
     if (command === '!infoop' && !args[1]) {
         const user = await getUsuario(username);
         const esSupremoUser = await esSupremo(username);
@@ -714,7 +728,6 @@ async function handleWhisper(event) {
         else if (conqPts <= 100) rangoConq = 'Avanzado';
         else rangoConq = 'Supremo';
 
-        // Estado de exploración
         let estadoExplorar = 'disponible';
         if (user.evento_explorar_estado === 'pendiente') estadoExplorar = 'pendiente. Tirá !exploracionpendiente para retomar';
         else {
@@ -763,27 +776,28 @@ async function handleWhisper(event) {
         if (user.evento_fruta_fase === 'avistamiento') {
             await sendWhisper(fromUserId, fruta.fase1);
         } else {
-            const calaveras = getCalaveras(user.evento_fruta_nivel || 1);
+            const calaveras = getCalaverasPorProb(0.5);
             await sendWhisper(fromUserId, `${fruta.fase2} ${calaveras} 🍎 ${fruta.nombre} ${fruta.emoji || ''} ⚔️ ${fruta.ataque || 0} | 🛡️ ${fruta.defensa || 0} | 🧠 Utilidad: ${fruta.utilidad || 0} — ¿Qué haces? !pelear o !huir`);
         }
         return;
     }
 
     // ============================================
-    // ========== !EXPLORAR Y SUBCOMANDOS ==========
+    // !explorar y subcomandos
     // ============================================
 
-        // ========== !explorar ==========
     if (command === '!explorar') {
         const user = await getUsuario(username);
 
-        // 1. Si tiene evento pendiente → mostrar pendiente
         if (user.evento_explorar_estado === 'pendiente') {
             if (user.evento_explorar_fase === 'menu') {
                 const opciones = user.evento_explorar_opciones || {};
                 const f = opciones.facil, m = opciones.medio, d = opciones.dificil;
-                await sendWhisper(fromUserId, `⏳ Ya tenés una exploración en curso. Elegí una dificultad: 🟢 !facil 💀 (+${f.recompensa_conq} Conq / +${f.recompensa_berries.toLocaleString('es-AR')} Berries) 🟡 !medio 💀💀 (+${m.recompensa_conq} Conq / +${m.recompensa_berries.toLocaleString('es-AR')} Berries) 🔴 !dificil 💀💀💀💀💀 (+${d.recompensa_conq} Conq / +${d.recompensa_berries.toLocaleString('es-AR')} Berries)`);
-                return;
+                const cf = f ? getCalaverasPorProb(f.prob) : '💀';
+                const cm = m ? getCalaverasPorProb(m.prob) : '💀💀';
+                const cd = d ? getCalaverasPorProb(d.prob) : '💀💀💀💀💀';
+                const msg = `⏳ Ya tenés una exploración en curso. Elegí una dificultad: 🟢 !facil ${cf} (+${f?.recompensa_conq || 0} Conq / +${(f?.recompensa_berries || 0).toLocaleString('es-AR')} Berries) 🟡 !medio ${cm} (+${m?.recompensa_conq || 0} Conq / +${(m?.recompensa_berries || 0).toLocaleString('es-AR')} Berries) 🔴 !dificil ${cd} (+${d?.recompensa_conq || 0} Conq / +${(d?.recompensa_berries || 0).toLocaleString('es-AR')} Berries)`;
+                await sendWhisper(fromUserId, msg); return;
             }
             const { data: npc } = await supabase.from('npcs').select('*').eq('nombre', user.evento_explorar_npc).single();
             if (!npc) { await sendWhisper(fromUserId, `Error al obtener detalles del evento.`); return; }
@@ -793,28 +807,22 @@ async function handleWhisper(event) {
                 const castigoRetroceder = Math.max(Math.ceil(op.castigo_conq * 0.1), 1);
                 await sendWhisper(fromUserId, `📍 Exploración pendiente, ${fromUserLogin}. ${npc.fase1} — Si retrocedés ahora: -${castigoRetroceder} Conquistador. Si continuás y perdés: -${op.castigo_conq} Conq / -${op.castigo_berries.toLocaleString('es-AR')} Berries. ¿Qué hacés? ➡️ !continuar o ⬅️ !retroceder`);
             } else {
-                const calaveras = getCalaveras(user.evento_explorar_nivel || 1);
+                const calaveras = getCalaverasPorProb(op.prob);
                 const castigoRetirarse = Math.max(Math.ceil(op.castigo_conq * 0.3), 1);
                 await sendWhisper(fromUserId, `📍 Exploración pendiente, ${fromUserLogin}. ${npc.fase2} ${calaveras} — Si ganás: +${op.recompensa_conq} Conq / +${op.recompensa_berries.toLocaleString('es-AR')} Berries. Si perdés: -${op.castigo_conq} Conq / -${op.castigo_berries.toLocaleString('es-AR')} Berries. Si te retirás: -${castigoRetirarse} Conq. ⚔️ !combatir o 🏃 !retirarse`);
             }
             return;
         }
 
-        // 2. Verificar cooldown
         const cd = await puedeExplorar(user);
         if (!cd.ok) {
             await sendWhisper(fromUserId, `⏳ Todavía no podés explorar. Próxima en ${formatTiempoRestante(cd.restante)}.`);
             return;
         }
 
-        // 3. Calcular PCF del usuario (con poder de fruta correcto)
         let poderFrutaUsuario = 0;
         if (user.fruta) {
-            const { data: frutaData } = await supabase
-                .from('frutas')
-                .select('poder_fruta')
-                .eq('nombre', user.fruta)
-                .single();
+            const { data: frutaData } = await supabase.from('frutas').select('poder_fruta').eq('nombre', user.fruta).single();
             poderFrutaUsuario = frutaData?.poder_fruta || 0;
         }
 
@@ -824,14 +832,12 @@ async function handleWhisper(event) {
             user.conquistador || 0, esSupremoUser
         ));
 
-        // 4. Seleccionar NPCs
         const opciones = await seleccionarNPCs(pcfUsuario);
         if (!opciones) {
-            await sendWhisper(fromUserId, `🌊 El mar está tranquilo hoy. No encontrás ninguna sombra con quien pelear.`);
+            await sendWhisper(fromUserId, `🗺️ No encontrás rivales a tu altura hoy. El mar está tranquilo. Volvé a intentarlo más tarde (no se consumió tu exploración).`);
             return;
         }
 
-        // 5. Guardar estado
         await updateUsuario(username, {
             evento_explorar_estado: 'pendiente',
             evento_explorar_fase: 'menu',
@@ -845,14 +851,19 @@ async function handleWhisper(event) {
             ultima_exploracion: new Date().toISOString()
         });
 
-        // 6. Mostrar menú
         const f = opciones.facil, m = opciones.medio, d = opciones.dificil;
-        const msg = `🗺️ ¡Zarpás en busca de aventura, ${fromUserLogin}! Se divisan tres caminos: 🟢 !facil 💀 → +${f.recompensa_conq} Conq / +${f.recompensa_berries.toLocaleString('es-AR')} Berries 🟡 !medio 💀💀 → +${m.recompensa_conq} Conq / +${m.recompensa_berries.toLocaleString('es-AR')} Berries 🔴 !dificil 💀💀💀💀💀 → +${d.recompensa_conq} Conq / +${d.recompensa_berries.toLocaleString('es-AR')} Berries Elegí sabiamente.`;
+        const cf = f ? getCalaverasPorProb(f.prob) : '💀';
+        const cm = m ? getCalaverasPorProb(m.prob) : '💀💀';
+        const cd2 = d ? getCalaverasPorProb(d.prob) : '💀💀💀💀💀';
+        let msg = `🗺️ ¡Zarpás en busca de aventura, ${fromUserLogin}! Se divisan tres caminos:`;
+        if (f) msg += ` 🟢 !facil ${cf} → +${f.recompensa_conq} Conq / +${f.recompensa_berries.toLocaleString('es-AR')} Berries`;
+        if (m) msg += ` 🟡 !medio ${cm} → +${m.recompensa_conq} Conq / +${m.recompensa_berries.toLocaleString('es-AR')} Berries`;
+        if (d) msg += ` 🔴 !dificil ${cd2} → +${d.recompensa_conq} Conq / +${d.recompensa_berries.toLocaleString('es-AR')} Berries`;
+        msg += ` Elegí sabiamente.`;
         await sendWhisper(fromUserId, msg);
         return;
     }
 
-    // ========== !facil / !medio / !dificil ==========
     if (command === '!facil' || command === '!medio' || command === '!dificil') {
         const user = await getUsuario(username);
         if (user.evento_explorar_estado !== 'pendiente' || user.evento_explorar_fase !== 'menu') {
@@ -861,7 +872,7 @@ async function handleWhisper(event) {
         const dificultad = command.substring(1);
         const opciones = user.evento_explorar_opciones || {};
         const op = opciones[dificultad];
-        if (!op) { await sendWhisper(fromUserId, `Error: no se encontró la opción ${dificultad}.`); return; }
+        if (!op) { await sendWhisper(fromUserId, `No hay opción disponible para "${dificultad}" en tu exploración actual.`); return; }
 
         const { data: npc } = await supabase.from('npcs').select('*').eq('nombre', op.npc).single();
         if (!npc) { await sendWhisper(fromUserId, `Error al obtener al NPC.`); return; }
@@ -881,7 +892,6 @@ async function handleWhisper(event) {
         return;
     }
 
-    // ========== !continuar ==========
     if (command === '!continuar') {
         const user = await getUsuario(username);
         if (user.evento_explorar_estado !== 'pendiente' || user.evento_explorar_fase !== 'avistamiento') {
@@ -894,13 +904,12 @@ async function handleWhisper(event) {
         const { data: npc } = await supabase.from('npcs').select('*').eq('nombre', user.evento_explorar_npc).single();
         const opciones = user.evento_explorar_opciones || {};
         const op = opciones[user.evento_explorar_dificultad];
-        const calaveras = getCalaveras(user.evento_explorar_nivel || 1);
+        const calaveras = getCalaverasPorProb(op.prob);
         const msg = `${npc.fase2} ${calaveras} — Si ganás: +${op.recompensa_conq} Conq / +${op.recompensa_berries.toLocaleString('es-AR')} Berries. Si perdés: -${op.castigo_conq} Conq / -${op.castigo_berries.toLocaleString('es-AR')} Berries. Si te retirás: -${Math.max(Math.ceil(op.castigo_conq * 0.3), 1)} Conq. ⚔️ !combatir o 🏃 !retirarse`;
         await sendWhisper(fromUserId, msg);
         return;
     }
 
-    // ========== !retroceder ==========
     if (command === '!retroceder') {
         const user = await getUsuario(username);
         if (user.evento_explorar_estado !== 'pendiente' || user.evento_explorar_fase !== 'avistamiento') {
@@ -920,7 +929,6 @@ async function handleWhisper(event) {
         return;
     }
 
-    // ========== !combatir ==========
     if (command === '!combatir') {
         const user = await getUsuario(username);
         if (user.evento_explorar_estado !== 'pendiente' || user.evento_explorar_fase !== 'encuentro') {
@@ -955,7 +963,6 @@ async function handleWhisper(event) {
         return;
     }
 
-    // ========== !retirarse ==========
     if (command === '!retirarse') {
         const user = await getUsuario(username);
         if (user.evento_explorar_estado !== 'pendiente' || user.evento_explorar_fase !== 'encuentro') {
@@ -975,7 +982,6 @@ async function handleWhisper(event) {
         return;
     }
 
-    // ========== !exploracionpendiente ==========
     if (command === '!exploracionpendiente') {
         const user = await getUsuario(username);
         if (!user || user.evento_explorar_estado !== 'pendiente') {
@@ -984,7 +990,13 @@ async function handleWhisper(event) {
         if (user.evento_explorar_fase === 'menu') {
             const opciones = user.evento_explorar_opciones || {};
             const f = opciones.facil, m = opciones.medio, d = opciones.dificil;
-            const msg = `📍 Exploración pendiente, ${fromUserLogin}. Elegí dificultad: 🟢 !facil 💀 (+${f.recompensa_conq} Conq / +${f.recompensa_berries.toLocaleString('es-AR')} Berries) 🟡 !medio 💀💀 (+${m.recompensa_conq} / +${m.recompensa_berries.toLocaleString('es-AR')}) 🔴 !dificil 💀💀💀💀💀 (+${d.recompensa_conq} / +${d.recompensa_berries.toLocaleString('es-AR')})`;
+            const cf = f ? getCalaverasPorProb(f.prob) : '💀';
+            const cm = m ? getCalaverasPorProb(m.prob) : '💀💀';
+            const cd = d ? getCalaverasPorProb(d.prob) : '💀💀💀💀💀';
+            let msg = `📍 Exploración pendiente, ${fromUserLogin}. Elegí dificultad:`;
+            if (f) msg += ` 🟢 !facil ${cf} (+${f.recompensa_conq} Conq / +${f.recompensa_berries.toLocaleString('es-AR')} Berries)`;
+            if (m) msg += ` 🟡 !medio ${cm} (+${m.recompensa_conq} Conq / +${m.recompensa_berries.toLocaleString('es-AR')} Berries)`;
+            if (d) msg += ` 🔴 !dificil ${cd} (+${d.recompensa_conq} Conq / +${d.recompensa_berries.toLocaleString('es-AR')} Berries)`;
             await sendWhisper(fromUserId, msg); return;
         }
         const { data: npc } = await supabase.from('npcs').select('*').eq('nombre', user.evento_explorar_npc).single();
@@ -995,7 +1007,7 @@ async function handleWhisper(event) {
             const castigoRetroceder = Math.max(Math.ceil(op.castigo_conq * 0.1), 1);
             await sendWhisper(fromUserId, `📍 Exploración pendiente, ${fromUserLogin}. ${npc.fase1} — Si retrocedés ahora: -${castigoRetroceder} Conq. Si continuás y perdés: -${op.castigo_conq} Conq / -${op.castigo_berries.toLocaleString('es-AR')} Berries. ➡️ !continuar o ⬅️ !retroceder`);
         } else {
-            const calaveras = getCalaveras(user.evento_explorar_nivel || 1);
+            const calaveras = getCalaverasPorProb(op.prob);
             const castigoRetirarse = Math.max(Math.ceil(op.castigo_conq * 0.3), 1);
             await sendWhisper(fromUserId, `📍 Exploración pendiente, ${fromUserLogin}. ${npc.fase2} ${calaveras} — Si ganás: +${op.recompensa_conq} Conq / +${op.recompensa_berries.toLocaleString('es-AR')} Berries. Si perdés: -${op.castigo_conq} Conq / -${op.castigo_berries.toLocaleString('es-AR')} Berries. Si te retirás: -${castigoRetirarse} Conq. ⚔️ !combatir o 🏃 !retirarse`);
         }
@@ -1014,14 +1026,12 @@ client.on('message', async (channel, tags, message, self) => {
 
     console.log(`💬 [CHAT #${channel}] ${username}: ${message}`);
 
-    // ========== !ayudaop ==========
     if (command === '!ayudaop') {
         client.say(channel, `@${tags.username} 📩 Mandame un susurro con !ayudaop para ver los comandos.`);
         return;
     }
 
-    // ========== BLOQUEO SI EXPLORACIÓN PENDIENTE ==========
-    // (aplica a !op, !fruta, !comer)
+    // BLOQUEO SI EXPLORACIÓN PENDIENTE
     const comandosBloqueados = ['!op', '!fruta', '!comer'];
     if (comandosBloqueados.includes(command)) {
         const u = await getUsuario(username);
@@ -1033,12 +1043,8 @@ client.on('message', async (channel, tags, message, self) => {
         }
     }
 
-    // ========== !infoop (chat) ==========
     if (command === '!infoop') {
-        if (args[1]) {
-            client.say(channel, `@${tags.username} Por susurro, máquina 📩`);
-            return;
-        }
+        if (args[1]) { client.say(channel, `@${tags.username} Por susurro, máquina 📩`); return; }
         const user = await getUsuario(username);
         const esSupremoUser = await esSupremo(username);
         const nuevaRecompensa = calcularRecompensa(user);
@@ -1055,7 +1061,6 @@ client.on('message', async (channel, tags, message, self) => {
         return;
     }
 
-    // ========== !op ==========
     if (command === '!op') {
         const user = await getUsuario(username);
         const ahora = Date.now();
@@ -1134,7 +1139,6 @@ client.on('message', async (channel, tags, message, self) => {
         return;
     }
 
-    // ========== !fruta ==========
     if (command === '!fruta') {
         try {
             const user = await getUsuario(username);
@@ -1191,7 +1195,6 @@ client.on('message', async (channel, tags, message, self) => {
         return;
     }
 
-    // ========== !frutapendiente (chat) ==========
     if (command === '!frutapendiente') {
         const user = await getUsuario(username);
         if (!user || user.evento_fruta_estado !== 'pendiente') {
@@ -1210,13 +1213,12 @@ client.on('message', async (channel, tags, message, self) => {
         if (user.evento_fruta_fase === 'avistamiento') {
             client.say(channel, `@${tags.username} ${fruta.fase1}`);
         } else {
-            const calaveras = getCalaveras(user.evento_fruta_nivel || 1);
+            const calaveras = getCalaverasPorProb(0.5);
             client.say(channel, `@${tags.username} ${fruta.fase2} ${calaveras} 🍎 ${fruta.nombre} ${fruta.emoji || ''} ⚔️ ${fruta.ataque || 0} | 🛡️ ${fruta.defensa || 0} | 🧠 Utilidad: ${fruta.utilidad || 0} — ¿Qué haces? !pelear o !huir`);
         }
         return;
     }
 
-    // ========== !si ==========
     if (command === '!si') {
         const user = await getUsuario(username);
         if (!user || user.evento_fruta_estado !== 'pendiente' || user.evento_fruta_fase !== 'avistamiento') {
@@ -1232,12 +1234,11 @@ client.on('message', async (channel, tags, message, self) => {
         }
         await updateUsuario(username, { evento_fruta_fase: 'encuentro', evento_fruta_comandos: 'pelear_huir' });
         const { data: fruta } = await supabase.from('frutas').select('*').eq('nombre', user.evento_fruta_nombre).single();
-        const calaveras = getCalaveras(user.evento_fruta_nivel || 1);
+        const calaveras = getCalaverasPorProb(0.5);
         client.say(channel, `@${tags.username} ${fruta.fase2} ${calaveras} 🍎 ${fruta.nombre} ${fruta.emoji || ''} ⚔️ ${fruta.ataque || 0} | 🛡️ ${fruta.defensa || 0} | 🧠 Utilidad: ${fruta.utilidad || 0} — ¿Qué haces? !pelear o !huir`);
         return;
     }
 
-    // ========== !no ==========
     if (command === '!no') {
         const user = await getUsuario(username);
         if (!user || user.evento_fruta_estado !== 'pendiente' || user.evento_fruta_fase !== 'avistamiento') {
@@ -1251,7 +1252,6 @@ client.on('message', async (channel, tags, message, self) => {
         client.say(channel, `@${tags.username} Decides retirarte. El evento ha terminado.`); return;
     }
 
-    // ========== !pelear ==========
     if (command === '!pelear') {
         const user = await getUsuario(username);
         if (!user || user.evento_fruta_estado !== 'pendiente' || user.evento_fruta_fase !== 'encuentro') {
@@ -1324,7 +1324,6 @@ client.on('message', async (channel, tags, message, self) => {
         return;
     }
 
-    // ========== !huir ==========
     if (command === '!huir') {
         const user = await getUsuario(username);
         if (!user || user.evento_fruta_estado !== 'pendiente' || user.evento_fruta_fase !== 'encuentro') {
@@ -1338,7 +1337,6 @@ client.on('message', async (channel, tags, message, self) => {
         client.say(channel, `@${tags.username} Has decidido huir. No has obtenido la fruta.`); return;
     }
 
-    // ========== !comer ==========
     if (command === '!comer') {
         const user = await getUsuario(username);
         if (user?.fruta_pendiente) {
@@ -1351,7 +1349,6 @@ client.on('message', async (channel, tags, message, self) => {
         return;
     }
 
-    // ========== !rechazar ==========
     if (command === '!rechazar') {
         const user = await getUsuario(username);
         if (user?.fruta_pendiente) {
