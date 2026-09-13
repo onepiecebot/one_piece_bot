@@ -479,6 +479,7 @@ async function seleccionarNPCs(pcfUsuario) {
     for (const bucket of orden) {
         const [minProb, maxProb] = rangos[bucket];
 
+        // 1. Rango exacto
         let candidatos = npcs.filter(npc => {
             if (elegidos.has(npc.nombre)) return false;
             const pcfNpc = npc.pcf_final || npc.pcf_calculado || 0;
@@ -487,6 +488,7 @@ async function seleccionarNPCs(pcfUsuario) {
             return prob >= minProb && prob <= maxProb;
         });
 
+        // 2. Fallback: rango ±25% (solo si no hay nada en rango exacto)
         if (candidatos.length === 0) {
             candidatos = npcs.filter(npc => {
                 if (elegidos.has(npc.nombre)) return false;
@@ -497,19 +499,7 @@ async function seleccionarNPCs(pcfUsuario) {
             });
         }
 
-        if (candidatos.length === 0) {
-            let mejor = null;
-            let mejorDiff = Infinity;
-            for (const npc of npcs) {
-                if (elegidos.has(npc.nombre)) continue;
-                const pcfNpc = npc.pcf_final || npc.pcf_calculado || 0;
-                if (pcfNpc <= 0) continue;
-                const diff = Math.abs(pcfNpc / pcfUsuario - 1);
-                if (diff < mejorDiff) { mejorDiff = diff; mejor = npc; }
-            }
-            if (mejor) candidatos = [mejor];
-        }
-
+        // Si sigue vacío, el bucket queda vacío (NO se usa el "más cercano")
         if (candidatos.length === 0) continue;
 
         const elegido = candidatos[Math.floor(Math.random() * candidatos.length)];
@@ -548,6 +538,7 @@ async function seleccionarNPCs(pcfUsuario) {
         };
     }
 
+    // Si quedan menos de 2 buckets, cancelar
     if (Object.keys(resultado).length < 2) return null;
     return resultado;
 }
@@ -850,15 +841,13 @@ async function handleWhisper(event) {
             evento_explorar_opciones: opciones,
             ultima_exploracion: new Date().toISOString()
         });
-
         const f = opciones.facil, m = opciones.medio, d = opciones.dificil;
-        const cf = f ? getCalaverasPorProb(f.prob) : '💀';
-        const cm = m ? getCalaverasPorProb(m.prob) : '💀💀';
-        const cd2 = d ? getCalaverasPorProb(d.prob) : '💀💀💀💀💀';
-        let msg = `🗺️ ¡Zarpás en busca de aventura, ${fromUserLogin}! Se divisan tres caminos:`;
-        if (f) msg += ` 🟢 !facil ${cf} → +${f.recompensa_conq} Conq / +${f.recompensa_berries.toLocaleString('es-AR')} Berries`;
-        if (m) msg += ` 🟡 !medio ${cm} → +${m.recompensa_conq} Conq / +${m.recompensa_berries.toLocaleString('es-AR')} Berries`;
-        if (d) msg += ` 🔴 !dificil ${cd2} → +${d.recompensa_conq} Conq / +${d.recompensa_berries.toLocaleString('es-AR')} Berries`;
+        const total = [f, m, d].filter(Boolean).length;
+        const plural = total === 3 ? 'tres caminos' : total === 2 ? 'dos caminos' : 'un camino';
+        let msg = `🗺️ ¡Zarpás en busca de aventura, ${fromUserLogin}! Se divisan ${plural}:`;
+        if (f) msg += ` 🟢 !facil ${getCalaverasPorProb(f.prob)} → +${f.recompensa_conq} Conq / +${f.recompensa_berries.toLocaleString('es-AR')} Berries`;
+        if (m) msg += ` 🟡 !medio ${getCalaverasPorProb(m.prob)} → +${m.recompensa_conq} Conq / +${m.recompensa_berries.toLocaleString('es-AR')} Berries`;
+        if (d) msg += ` 🔴 !dificil ${getCalaverasPorProb(d.prob)} → +${d.recompensa_conq} Conq / +${d.recompensa_berries.toLocaleString('es-AR')} Berries`;
         msg += ` Elegí sabiamente.`;
         await sendWhisper(fromUserId, msg);
         return;
