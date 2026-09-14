@@ -1,3 +1,4 @@
+require('dotenv').config();
 const http = require('http');
 
 // 1. Servidor HTTP (para que Render no se queje)
