@@ -722,7 +722,24 @@ async function sendWhisper(toUserId, message) {
         else console.error(`❌ Error al enviar susurro: ${response.status}`, await response.text());
     } catch (err) { console.error('❌ Error de red al enviar susurro:', err); }
 }
-
+// ============================================
+// HANDLER DE SUSURROS POR IRC (respaldo)
+// ============================================
+client.on('whisper', async (from, userstate, message, self) => {
+    if (self) return;
+    const fromUser = from.startsWith('#') ? from.slice(1) : from;
+    console.log(`📩 [SUSURRO IRC] de ${fromUser}: ${message}`);
+    try {
+        const fakeEvent = {
+            from_user_id: userstate['user-id'],
+            from_user_login: fromUser,
+            whisper: { text: message }
+        };
+        await handleWhisper(fakeEvent);
+    } catch (err) {
+        console.error('❌ Error en whisper IRC:', err);
+    }
+});
 setTimeout(startEventSubWebSocket, 3000);
 // ============================================
 // HANDLER DE SUSURROS
@@ -1072,6 +1089,11 @@ async function handleWhisper(event) {
 // ============================================
 client.on('message', async (channel, tags, message, self) => {
     if (self) return;
+    
+    // Ignorar susurros que llegan como mensajes de chat (canal con doble #)
+    if (channel.startsWith('##')) return;
+    if (tags['message-type'] === 'whisper') return;
+
     const args = message.trim().split(' ');
     const command = args[0].toLowerCase();
     const username = tags.username.toLowerCase();
