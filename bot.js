@@ -1,5 +1,4 @@
 ﻿const tmi = require('tmi.js');
-const WebSocket = require('ws');
 const config = require('./config.js');
 const { getUsuario, updateUsuario, supabase } = require('./database.js');
 
@@ -22,7 +21,7 @@ const COOLDOWN_EXPLORAR_PRODUCCION = 24 * 60 * 60 * 1000;
 const cooldowns = {};
 
 // ============================================
-// COMMIT INFO (para !actualizacion)
+// COMMIT INFO
 // ============================================
 const RENDER_COMMIT = process.env.RENDER_GIT_COMMIT || null;
 let commitInfo = null;
@@ -206,39 +205,30 @@ const PENALIZACION_BASES = {
 async function verificarPenalizacionExplorar(username) {
     const user = await getUsuario(username);
     if (!user) return null;
-
     const hoy = getFechaHoy();
-
     if (!user.ultimo_dia_exploracion) {
         await updateUsuario(username, { ultimo_dia_exploracion: hoy, dias_sin_explorar: 0 });
         return null;
     }
-
     const ultimo = new Date(user.ultimo_dia_exploracion);
     const ahora = new Date(hoy);
     const diffMs = ahora - ultimo;
     const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-
     const expected = Math.max(diffDays - 1, 0);
     const capped = Math.min(expected, 4);
-
     if (capped <= (user.dias_sin_explorar || 0)) return null;
-
     const rangoConq = getRangoConquistadorTexto(user.conquistador || 0);
     const base = PENALIZACION_BASES[rangoConq];
     const mult = capped;
     const perdConq = base.conq * mult;
     const perdBerries = base.berries * mult;
-
     const nuevoConq = Math.max((user.conquistador || 0) - perdConq, 0);
     const nuevoBerries = Math.max((user.recompensa_publica || 0) - perdBerries, 0);
-
     await updateUsuario(username, {
         dias_sin_explorar: capped,
         conquistador: nuevoConq,
         recompensa_publica: nuevoBerries
     });
-
     return { dias: capped, perdConq, perdBerries };
 }
 
@@ -356,6 +346,7 @@ function obtenerMensaje(victoria, porcentaje) {
     const pool = mensajes[cat][rango] || mensajes[cat]['ajustada'];
     return pool[Math.floor(Math.random() * pool.length)];
 }
+
 // ============================================
 // SISTEMA DE EXPLORACIÓN
 // ============================================
@@ -385,16 +376,15 @@ function redondearBerries(valor) {
 function calcularRecompensasExplorar(npc, prob, victoria) {
     const baseConq = npc.recompensa_conquistador || 0;
     const baseBerries = npc.recompensa_berries || 0;
-
     let mult;
     if (victoria) {
-        mult = Math.max(1 + (0.50 - prob) * 2.5, 0.1);
+        mult = Math.max(1 + (0.50 - prob) * 2, 0.1);
         return {
             conq: Math.max(Math.round(baseConq * mult), 1),
             berries: Math.max(redondearBerries(baseBerries * mult), 0)
         };
     } else {
-        mult = Math.max(1 + (prob - 0.50) * 2.5, 0.1);
+        mult = Math.max(1 + (prob - 0.50) * 2, 0.1);
         return {
             conq: Math.max(Math.round(baseConq * mult), 1),
             berries: Math.max(redondearBerries(baseBerries * mult), 0)
@@ -513,12 +503,11 @@ function getMensajeContextualExplorar(victoria, escalon, margenKey, npcNombre) {
 }
 
 // ============================================
-// SELECCIÓN DE NPCs PARA EXPLORAR
+// SELECCIÓN DE NPCs
 // ============================================
 async function seleccionarNPCs(pcfUsuario) {
     const { data: npcs } = await supabase.from('npcs').select('*');
     if (!npcs || npcs.length === 0) return null;
-
     const elegidos = new Set();
     const resultado = {};
     const orden = ['facil', 'dificil', 'medio'];
@@ -527,10 +516,8 @@ async function seleccionarNPCs(pcfUsuario) {
         medio:   [0.21, 0.64],
         dificil: [0.03, 0.20]
     };
-
     for (const bucket of orden) {
         const [minProb, maxProb] = rangos[bucket];
-
         let candidatos = npcs.filter(npc => {
             if (elegidos.has(npc.nombre)) return false;
             const pcfNpc = npc.pcf_final || npc.pcf_calculado || 0;
@@ -538,7 +525,6 @@ async function seleccionarNPCs(pcfUsuario) {
             const prob = calcularProbabilidadVictoria(pcfUsuario, pcfNpc);
             return prob >= minProb && prob <= maxProb;
         });
-
         if (candidatos.length === 0) {
             candidatos = npcs.filter(npc => {
                 if (elegidos.has(npc.nombre)) return false;
@@ -548,29 +534,22 @@ async function seleccionarNPCs(pcfUsuario) {
                 return ratio >= 0.75 && ratio <= 1.25;
             });
         }
-
         if (candidatos.length === 0) continue;
-
         const elegido = candidatos[Math.floor(Math.random() * candidatos.length)];
         elegidos.add(elegido.nombre);
-
         const pcfNpc = elegido.pcf_final || elegido.pcf_calculado || 0;
         const prob = calcularProbabilidadVictoria(pcfUsuario, pcfNpc);
-
         const pcfUserFinal = aplicarVariacion(pcfUsuario);
         const pcfNpcFinal = aplicarVariacion(pcfNpc);
         const victoria = pcfUserFinal > pcfNpcFinal;
         const ganador = Math.max(pcfUserFinal, pcfNpcFinal);
         const perdedor = Math.min(pcfUserFinal, pcfNpcFinal);
         const margen = (ganador - perdedor) / perdedor;
-
         const ratio = pcfNpc / pcfUsuario;
         const escalon = getEscalon(ratio);
         const margenKey = margen < 0.10 ? 'bajo' : margen < 0.30 ? 'medio' : 'alto';
-
         const recompensas = calcularRecompensasExplorar(elegido, prob, true);
         const castigos = calcularRecompensasExplorar(elegido, prob, false);
-
         resultado[bucket] = {
             npc: elegido.nombre,
             nivel: elegido.nivel,
@@ -586,13 +565,12 @@ async function seleccionarNPCs(pcfUsuario) {
             castigo_berries: castigos.berries
         };
     }
-
     if (Object.keys(resultado).length < 2) return null;
     return resultado;
 }
 
 // ============================================
-// COOLDOWN DE EXPLORAR
+// COOLDOWN EXPLORAR
 // ============================================
 function getCooldownExplorarMs() {
     return MODO_COOLDOWN === 'prueba' ? COOLDOWN_EXPLORAR_PRUEBA : COOLDOWN_EXPLORAR_PRODUCCION;
@@ -636,9 +614,7 @@ const esDueño = (username) => username.toLowerCase() === DUEÑO;
 // TEXTOS DE AYUDA
 // ============================================
 const AYUDA_MENU = `📖 AYUDA - op_d_bot — ¿Qué querés ver? 💬 !ayudachat → Comandos de chat 📩 !ayudasusurro → Comandos de susurro`;
-
 const AYUDA_CHAT = `💬 COMANDOS DE CHAT 🎮 !op → Entrena Haki (3/día) 📊 !infoop → Tu info (corta) 🍎 !fruta → Busca fruta 😋 !comer → Consume ❌ !rechazar → Rechaza ⏳ !frutapendiente → Evento fruta pendiente ✅ !si / ❌ !no → Decide evento fruta ⚔️ !pelear / 🏃 !huir → Combate fruta`;
-
 const AYUDA_SUSURRO = `📩 COMANDOS DE SUSURRO 🗺️ !explorar → Explora el mundo (1/día) ➡️ !continuar / ⬅️ !retroceder → Decide exploración ⚔️ !combatir / 🏃 !retirarse → Combate exploración ⏳ !exploracionpendiente → Evento exploración 📊 !infoop → Tu info (detallada) 👤 !infoop @usuario → Info corta de otro 🔄 !actualizacion → Última actualización del bot`;
 
 // ============================================
@@ -655,75 +631,7 @@ client.connect()
     .catch(err => console.error('Error al conectar:', err));
 
 // ============================================
-// EVENTSUB WEBSOCKET
-// ============================================
-let websocketSessionId = null;
-
-function startEventSubWebSocket() {
-    const ws = new WebSocket('wss://eventsub.wss.twitch.tv/ws');
-    ws.on('open', () => console.log('🔌 Conectado a EventSub WebSocket'));
-    ws.on('message', async (data) => {
-        const message = JSON.parse(data.toString());
-        const messageType = message.metadata.message_type;
-        if (messageType === 'session_welcome') {
-            websocketSessionId = message.payload.session.id;
-            console.log(`🔑 Sesión EventSub: ${websocketSessionId}`);
-            await subscribeToWhispers();
-        } else if (messageType === 'notification') {
-            if (message.payload.subscription.type === 'user.whisper.message') {
-                await handleWhisper(message.payload.event);
-            }
-        } else if (messageType === 'session_reconnect') {
-            startEventSubWebSocket();
-        }
-    });
-    ws.on('error', (err) => console.error('❌ Error en EventSub WebSocket:', err));
-    ws.on('close', () => {
-        console.log('🔌 EventSub WebSocket cerrado. Reconectando en 5 segundos...');
-        setTimeout(startEventSubWebSocket, 5000);
-    });
-}
-
-async function subscribeToWhispers() {
-    const url = `${TWITCH_API_URL}/eventsub/subscriptions`;
-    const body = {
-        type: 'user.whisper.message', version: '1',
-        condition: { user_id: config.botUserId },
-        transport: { method: 'websocket', session_id: websocketSessionId }
-    };
-    try {
-        const response = await fetch(url, {
-            method: 'POST',
-            headers: {
-                'Client-ID': config.clientId,
-                'Authorization': `Bearer ${config.oauth.replace('oauth:', '')}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(body)
-        });
-        if (response.status === 202) console.log('✅ Suscripción a susurros creada exitosamente.');
-        else console.error('❌ Error al suscribirse:', await response.text());
-    } catch (err) { console.error('❌ Error de red al suscribirse:', err); }
-}
-
-async function sendWhisper(toUserId, message) {
-    const url = `${TWITCH_API_URL}/whispers?from_user_id=${config.botUserId}&to_user_id=${toUserId}`;
-    try {
-        const response = await fetch(url, {
-            method: 'POST',
-            headers: {
-                'Client-ID': config.clientId,
-                'Authorization': `Bearer ${config.oauth.replace('oauth:', '')}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ message })
-        });
-        if (response.status === 204) console.log(`✅ Susurro enviado a ${toUserId}`);
-        else console.error(`❌ Error al enviar susurro: ${response.status}`, await response.text());
-    } catch (err) { console.error('❌ Error de red al enviar susurro:', err); }
-}
-// ============================================
-// HANDLER DE SUSURROS POR IRC (respaldo)
+// HANDLER DE SUSURROS POR IRC
 // ============================================
 client.on('whisper', async (from, userstate, message, self) => {
     if (self) return;
@@ -740,9 +648,9 @@ client.on('whisper', async (from, userstate, message, self) => {
         console.error('❌ Error en whisper IRC:', err);
     }
 });
-setTimeout(startEventSubWebSocket, 3000);
+
 // ============================================
-// HANDLER DE SUSURROS
+// HANDLER DE SUSURROS (lógica compartida)
 // ============================================
 async function handleWhisper(event) {
     const fromUserId = event.from_user_id;
@@ -752,7 +660,10 @@ async function handleWhisper(event) {
     const command = args[0].toLowerCase();
     const username = fromUserLogin.toLowerCase();
 
-    console.log(`📩 [SUSURRO] de ${fromUserLogin}: ${messageText}`);
+    if (!fromUserId) {
+        console.warn('⚠️ Susurro sin user-id, no se puede responder');
+        return;
+    }
 
     if (command === '!testwhisper') {
         await sendWhisper(fromUserId, `¡Hola ${fromUserLogin}! Los susurros funcionan correctamente. 🎉`);
@@ -763,7 +674,6 @@ async function handleWhisper(event) {
     if (command === '!ayudachat') { await sendWhisper(fromUserId, AYUDA_CHAT); return; }
     if (command === '!ayudasusurro') { await sendWhisper(fromUserId, AYUDA_SUSURRO); return; }
 
-    // ========== !actualizacion ==========
     if (command === '!actualizacion') {
         if (!commitInfo) {
             await sendWhisper(fromUserId, `🔄 Cargando información... intentá de nuevo en unos segundos.`);
@@ -775,18 +685,15 @@ async function handleWhisper(event) {
         return;
     }
 
-    // ========== !infoop propio detallado ==========
     if (command === '!infoop' && !args[1]) {
         const user = await getUsuario(username);
         if (!user) { await sendWhisper(fromUserId, `Error al obtener tus datos. Intenta de nuevo.`); return; }
         const esSupremoUser = await esSupremo(username);
-
         let frutaTexto = '🍎 Ninguna';
         if (user.fruta) {
             const { data: frutaData } = await supabase.from('frutas').select('emoji').eq('nombre', user.fruta).single();
             frutaTexto = `🍎 ${user.fruta} ${frutaData?.emoji || ''}`.trim();
         }
-
         const rangoArm = getRangoArmadura(user.armadura || 0, esSupremoUser);
         const rangoObs = getRangoArmadura(user.observacion || 0);
         const conqPts = user.conquistador || 0;
@@ -796,20 +703,17 @@ async function handleWhisper(event) {
         else if (conqPts <= 94) rangoConq = 'Básico';
         else if (conqPts <= 100) rangoConq = 'Avanzado';
         else rangoConq = 'Supremo';
-
         let estadoExplorar = 'disponible';
         if (user.evento_explorar_estado === 'pendiente') estadoExplorar = 'pendiente. Tirá !exploracionpendiente para retomar';
         else {
             const cd = await puedeExplorar(user);
             if (!cd.ok) estadoExplorar = `usada. Próxima en ${formatTiempoRestante(cd.restante)}`;
         }
-
         const mensaje = `📊 Tus estadísticas: ${frutaTexto} | 🛡️ Armadura: ${rangoArm.nombre} (${user.armadura || 0}) ${rangoArm.emoji} | 👁️ Observación: ${rangoObs.nombre} (${user.observacion || 0}) | ⚜️ Conquistador: ${rangoConq} (${conqPts}) | 🏴‍☠️💰 $${(user.recompensa_publica || 0).toLocaleString('es-AR')} | 🗺️ Exploración: ${estadoExplorar}`;
         await sendWhisper(fromUserId, mensaje);
         return;
     }
 
-    // ========== !infoop @usuario ==========
     if (command === '!infoop' && args[1]) {
         const target = args[1].replace('@', '').toLowerCase();
         const targetUser = await getUsuario(target);
@@ -827,7 +731,6 @@ async function handleWhisper(event) {
         return;
     }
 
-    // ========== !frutapendiente ==========
     if (command === '!frutapendiente') {
         const user = await getUsuario(username);
         if (!user || user.evento_fruta_estado !== 'pendiente') {
@@ -852,14 +755,9 @@ async function handleWhisper(event) {
         return;
     }
 
-    // ============================================
-    // !explorar y subcomandos
-    // ============================================
-
     if (command === '!explorar') {
         const user = await getUsuario(username);
         if (!user) { await sendWhisper(fromUserId, `Error al obtener tus datos. Intenta de nuevo.`); return; }
-
         if (user.evento_explorar_estado === 'pendiente') {
             if (user.evento_explorar_fase === 'menu') {
                 const opciones = user.evento_explorar_opciones || {};
@@ -884,31 +782,26 @@ async function handleWhisper(event) {
             }
             return;
         }
-
         const cd = await puedeExplorar(user);
         if (!cd.ok) {
             await sendWhisper(fromUserId, `⏳ Todavía no podés explorar. Próxima en ${formatTiempoRestante(cd.restante)}.`);
             return;
         }
-
         let poderFrutaUsuario = 0;
         if (user.fruta) {
             const { data: frutaData } = await supabase.from('frutas').select('poder_fruta').eq('nombre', user.fruta).single();
             poderFrutaUsuario = frutaData?.poder_fruta || 0;
         }
-
         const esSupremoUser = await esSupremo(username);
         const pcfUsuario = Math.round(calcularPoderBase(
             poderFrutaUsuario, user.armadura || 0, user.observacion || 0,
             user.conquistador || 0, esSupremoUser
         ));
-
         const opciones = await seleccionarNPCs(pcfUsuario);
         if (!opciones) {
             await sendWhisper(fromUserId, `🗺️ No encontrás rivales a tu altura hoy. El mar está tranquilo. Volvé a intentarlo más tarde (no se consumió tu exploración).`);
             return;
         }
-
         await updateUsuario(username, {
             evento_explorar_estado: 'pendiente',
             evento_explorar_fase: 'menu',
@@ -923,7 +816,6 @@ async function handleWhisper(event) {
             ultimo_dia_exploracion: getFechaHoy(),
             dias_sin_explorar: 0
         });
-
         const f = opciones.facil, m = opciones.medio, d = opciones.dificil;
         const total = [f, m, d].filter(Boolean).length;
         const plural = total === 3 ? 'tres caminos' : total === 2 ? 'dos caminos' : 'un camino';
@@ -945,10 +837,8 @@ async function handleWhisper(event) {
         const opciones = user.evento_explorar_opciones || {};
         const op = opciones[dificultad];
         if (!op) { await sendWhisper(fromUserId, `No hay opción disponible para "${dificultad}" en tu exploración actual.`); return; }
-
         const { data: npc } = await supabase.from('npcs').select('*').eq('nombre', op.npc).single();
         if (!npc) { await sendWhisper(fromUserId, `Error al obtener al NPC.`); return; }
-
         await updateUsuario(username, {
             evento_explorar_fase: 'avistamiento',
             evento_explorar_dificultad: dificultad,
@@ -957,7 +847,6 @@ async function handleWhisper(event) {
             evento_explorar_pcf_npc: op.pcf_npc,
             evento_explorar_comandos: 'continuar_retroceder'
         });
-
         const castigoRetroceder = Math.max(Math.ceil(op.castigo_conq * 0.1), 1);
         const msg = `${npc.fase1} — Si retrocedés ahora: -${castigoRetroceder} Conquistador. Si continuás y perdés: -${op.castigo_conq} Conq / -${op.castigo_berries.toLocaleString('es-AR')} Berries. ¿Qué hacés? ➡️ !continuar o ⬅️ !retroceder`;
         await sendWhisper(fromUserId, msg);
@@ -1009,10 +898,8 @@ async function handleWhisper(event) {
         const opciones = user.evento_explorar_opciones || {};
         const op = opciones[user.evento_explorar_dificultad];
         if (!op) { await sendWhisper(fromUserId, `Error al obtener la opción.`); return; }
-
         const victoria = op.victoria;
         const msgCtx = getMensajeContextualExplorar(victoria, op.escalon, op.margen_key, op.npc);
-
         if (victoria) {
             await updateUsuario(username, {
                 conquistador: (user.conquistador || 0) + op.recompensa_conq,
@@ -1085,6 +972,26 @@ async function handleWhisper(event) {
 }
 
 // ============================================
+// ENVÍO DE SUSURROS (API Helix)
+// ============================================
+async function sendWhisper(toUserId, message) {
+    const url = `${TWITCH_API_URL}/whispers?from_user_id=${config.botUserId}&to_user_id=${toUserId}`;
+    try {
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Client-ID': config.clientId,
+                'Authorization': `Bearer ${config.oauth.replace('oauth:', '')}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ message })
+        });
+        if (response.status === 204) console.log(`✅ Susurro enviado a ${toUserId}`);
+        else console.error(`❌ Error al enviar susurro: ${response.status}`, await response.text());
+    } catch (err) { console.error('❌ Error de red al enviar susurro:', err); }
+}
+
+// ============================================
 // COMANDOS DE CHAT PÚBLICO
 // ============================================
 client.on('message', async (channel, tags, message, self) => {
@@ -1105,7 +1012,6 @@ client.on('message', async (channel, tags, message, self) => {
         return;
     }
 
-    // VERIFICAR PENALIZACIÓN POR NO EXPLORAR (con try-catch)
     try {
         const penal = await verificarPenalizacionExplorar(username);
         if (penal) {
@@ -1115,7 +1021,6 @@ client.on('message', async (channel, tags, message, self) => {
         console.error('Error en penalización:', err);
     }
 
-    // BLOQUEO SI EXPLORACIÓN PENDIENTE
     const comandosBloqueados = ['!op', '!fruta', '!comer'];
     if (comandosBloqueados.includes(command)) {
         const u = await getUsuario(username);
