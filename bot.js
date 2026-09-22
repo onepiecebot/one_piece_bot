@@ -19,7 +19,7 @@ const TWITCH_API_URL = 'https://api.twitch.tv/helix';
 const GITHUB_REPO = 'onepiecebot/one_piece_bot';
 
 const MODO_COOLDOWN = 'prueba';
-const COOLDOWN_EXPLORAR_PRUEBA = 30 * 1000;
+const COOLDOWN_EXPLORAR_PRUEBA = 10 * 60 * 1000;
 const COOLDOWN_EXPLORAR_PRODUCCION = 24 * 60 * 60 * 1000;
 
 const DUELO_DELTA_MINIMO = 100000000;
