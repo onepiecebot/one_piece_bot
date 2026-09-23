@@ -18,9 +18,10 @@ const DUEÑO = 'fan_d_larana';
 const TWITCH_API_URL = 'https://api.twitch.tv/helix';
 const GITHUB_REPO = 'onepiecebot/one_piece_bot';
 
+// MODO_COOLDOWN: 'prueba' → 10 min entre exploraciones
+//                'produccion' → 1 vez por día (reset 00:00 hora Argentina)
 const MODO_COOLDOWN = 'prueba';
 const COOLDOWN_EXPLORAR_PRUEBA = 10 * 60 * 1000;
-const COOLDOWN_EXPLORAR_PRODUCCION = 24 * 60 * 60 * 1000;
 
 const DUELO_DELTA_MINIMO = 100000000;
 const DUELO_COOLDOWN_MS = 10 * 60 * 1000;
@@ -364,7 +365,6 @@ function calcularRecompensasExplorar(npc, prob, victoria) {
     };
 }
 
-// Ahora los textos vienen de Supabase (textos_eventos, grupo='explorar')
 async function getMensajeContextualExplorar(victoria, escalon, margenKey) {
     let situacion;
     if (victoria) {
@@ -437,18 +437,32 @@ async function seleccionarNPCs(pcfUsuario) {
     return resultado;
 }
 
-function getCooldownExplorarMs() {
-    return MODO_COOLDOWN === 'prueba' ? COOLDOWN_EXPLORAR_PRUEBA : COOLDOWN_EXPLORAR_PRODUCCION;
-}
-
+// Cooldown de exploración
+// Modo 'prueba': 10 min entre exploraciones
+// Modo 'produccion': 1 vez por día, reset a las 00:00 hora Argentina
 async function puedeExplorar(user) {
+    if (MODO_COOLDOWN === 'produccion') {
+        const hoy = getFechaHoy();
+        if (!user.ultimo_dia_exploracion) return { ok: true };
+        if (user.ultimo_dia_exploracion !== hoy) return { ok: true };
+        // Ya exploró hoy → tiempo hasta las 00:00 hora Argentina
+        const ahora = new Date();
+        const offsetArg = -3 * 60;
+        const utc = ahora.getTime() + (ahora.getTimezoneOffset() * 60000);
+        const argNow = new Date(utc + (offsetArg * 60000));
+        const manana = new Date(argNow);
+        manana.setDate(manana.getDate() + 1);
+        manana.setHours(0, 0, 0, 0);
+        const restante = manana.getTime() - argNow.getTime();
+        return { ok: false, restante };
+    }
+    // Modo prueba
     if (!user.ultima_exploracion) return { ok: true };
     const ultima = new Date(user.ultima_exploracion).getTime();
     const ahora = Date.now();
     const diff = ahora - ultima;
-    const cooldown = getCooldownExplorarMs();
-    if (diff >= cooldown) return { ok: true };
-    return { ok: false, restante: cooldown - diff };
+    if (diff >= COOLDOWN_EXPLORAR_PRUEBA) return { ok: true };
+    return { ok: false, restante: COOLDOWN_EXPLORAR_PRUEBA - diff };
 }
 
 function formatTiempoRestante(ms) {
@@ -769,9 +783,9 @@ async function handleWhisper(event) {
         const total = [f, m, d].filter(Boolean).length;
         const plural = total === 3 ? 'tres caminos' : total === 2 ? 'dos caminos' : 'un camino';
         let msg = '🗺️ ¡Zarpás! Se divisan ' + plural + ':';
-        if (f) msg += ' 🟢 !facil ' + getCalaverasPorProb(f.prob) + ' → +' + f.recompensa_conq + ' Conq / +$' + f.recompensa_berries.toLocaleString('es-AR');
-        if (m) msg += ' 🟡 !medio ' + getCalaverasPorProb(m.prob) + ' → +' + m.recompensa_conq + ' Conq / +$' + m.recompensa_berries.toLocaleString('es-AR');
-        if (d) msg += ' 🔴 !dificil ' + getCalaverasPorProb(d.prob) + ' → +' + d.recompensa_conq + ' Conq / +$' + d.recompensa_berries.toLocaleString('es-AR');
+        if (f) msg += ' 🟢 !facil ' + getCalaverasPorProb(f.prob) + ' (+' + f.recompensa_conq + ' Conq / +$' + f.recompensa_berries.toLocaleString('es-AR') + ')';
+        if (m) msg += ' 🟡 !medio ' + getCalaverasPorProb(m.prob) + ' (+' + m.recompensa_conq + ' Conq / +$' + m.recompensa_berries.toLocaleString('es-AR') + ')';
+        if (d) msg += ' 🔴 !dificil ' + getCalaverasPorProb(d.prob) + ' (+' + d.recompensa_conq + ' Conq / +$' + d.recompensa_berries.toLocaleString('es-AR') + ')';
         await sendWhisper(fromUserId, msg);
         return;
     }
@@ -795,8 +809,8 @@ async function handleWhisper(event) {
             evento_explorar_pcf_npc: op.pcf_npc,
             evento_explorar_comandos: 'continuar_retroceder'
         });
-        const castigoRetro = Math.max(Math.ceil(op.castigo_conq * 0.1), 1);
-        await sendWhisper(fromUserId, npc.fase1 + ' — Retroceder: -' + castigoRetro + ' Conq. Continuar y perder: -' + op.castigo_conq + ' Conq / -$' + op.castigo_berries.toLocaleString('es-AR') + '. ➡️ !continuar o ⬅️ !retroceder');
+        // Solo texto + comandos (sin castigos/recompensas)
+        await sendWhisper(fromUserId, npc.fase1 + ' ➡️ !continuar o ⬅️ !retroceder');
         return;
     }
 
@@ -809,8 +823,8 @@ async function handleWhisper(event) {
         const { data: npc } = await supabase.from('npcs').select('*').eq('nombre', user.evento_explorar_npc).single();
         const opciones = user.evento_explorar_opciones || {};
         const op = opciones[user.evento_explorar_dificultad];
-        const castigoRet = Math.max(Math.ceil(op.castigo_conq * 0.3), 1);
-        await sendWhisper(fromUserId, npc.fase2 + ' ' + getCalaverasPorProb(op.prob) + ' — Ganar: +' + op.recompensa_conq + ' Conq / +$' + op.recompensa_berries.toLocaleString('es-AR') + '. Perder: -' + op.castigo_conq + ' Conq / -$' + op.castigo_berries.toLocaleString('es-AR') + '. Retirarse: -' + castigoRet + ' Conq. ⚔️ !combatir o 🏃 !retirarse');
+        // Solo texto + calaveras + comandos (sin recompensas)
+        await sendWhisper(fromUserId, npc.fase2 + ' ' + getCalaverasPorProb(op.prob) + ' ⚔️ !combatir o 🏃 !retirarse');
         return;
     }
 
@@ -901,11 +915,11 @@ async function handleWhisper(event) {
         const { data: npc } = await supabase.from('npcs').select('*').eq('nombre', user.evento_explorar_npc).single();
         if (!npc) { await sendWhisper(fromUserId, 'Error.'); return; }
         if (user.evento_explorar_fase === 'avistamiento') {
-            await sendWhisper(fromUserId, '📍 ' + npc.fase1 + ' — ➡️ !continuar o ⬅️ !retroceder');
+            await sendWhisper(fromUserId, '📍 ' + npc.fase1 + ' ➡️ !continuar o ⬅️ !retroceder');
         } else {
             const opciones = user.evento_explorar_opciones || {};
             const op = opciones[user.evento_explorar_dificultad];
-            await sendWhisper(fromUserId, '📍 ' + npc.fase2 + ' ' + getCalaverasPorProb(op.prob) + ' — ⚔️ !combatir o 🏃 !retirarse');
+            await sendWhisper(fromUserId, '📍 ' + npc.fase2 + ' ' + getCalaverasPorProb(op.prob) + ' ⚔️ !combatir o 🏃 !retirarse');
         }
         return;
     }
@@ -1119,9 +1133,7 @@ client.on('message', async (channel, tags, message, self) => {
         }
     }
 
-    // ============================================
     // !retar
-    // ============================================
     if (command === '!retar') {
         if (args.length < 2) { client.say(channel, '@' + tags.username + ' Uso: !retar @usuario'); return; }
         const target = args[1].replace('@', '').toLowerCase();
@@ -1216,9 +1228,7 @@ client.on('message', async (channel, tags, message, self) => {
         return;
     }
 
-    // ============================================
     // !infoop
-    // ============================================
     if (command === '!infoop') {
         if (args[1]) { client.say(channel, '@' + tags.username + ' Por susurro, máquina 📩'); return; }
         const user = await getUsuario(username);
@@ -1239,9 +1249,7 @@ client.on('message', async (channel, tags, message, self) => {
         return;
     }
 
-    // ============================================
     // !op
-    // ============================================
     if (command === '!op') {
         const user = await getUsuario(username);
         if (!user) return;
@@ -1321,9 +1329,7 @@ client.on('message', async (channel, tags, message, self) => {
         return;
     }
 
-    // ============================================
     // !fruta
-    // ============================================
     if (command === '!fruta') {
         try {
             const user = await getUsuario(username);
@@ -1544,9 +1550,7 @@ client.on('message', async (channel, tags, message, self) => {
         return;
     }
 
-    // ============================================
     // ADMIN
-    // ============================================
     if (!esDueño(username)) return;
     const ADMIN_STATS = {
         sumar1: { campo: 'armadura', nombre: 'armadura', signo: 1 },
