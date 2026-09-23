@@ -3,7 +3,7 @@ const tmi = require('tmi.js');
 const config = require('./config.js');
 const {
     getUsuario, updateUsuario, supabase,
-    getTextoDuelo, getHistorialH2H,
+    getTextoDuelo, getTextoExplorar, getHistorialH2H,
     contarDuelosHoy, contarDuelosHoyEntre, fueRechazadoHoy,
     crearDuelo, limpiarEventoDuelo, tieneEventoPendiente,
     completoExplorarHoy
@@ -364,51 +364,23 @@ function calcularRecompensasExplorar(npc, prob, victoria) {
     };
 }
 
-const MENSAJES_VICTORIA = {
-    underdog_goleada: ['El destino te daba como perdedor, pero… parece que el destino no te conocía.', 'Donde todos veían una derrota anunciada, vos viste una oportunidad.', 'La historia la escriben los que ganan. Y hoy, la pluma fue tuya.'],
-    underdog_poco: ['Casi no la contás. El rival era más fuerte, pero hoy la suerte jugó de tu lado.', 'Ganaste raspando. Pero raspando o no, la victoria es tuya.', 'El rival te superaba en fuerza. Pero en voluntad, no había comparación.'],
-    parejo: ['Cuando el poder es parejo, gana el que quiere un poco más.', 'Ni más fuerte, ni más rápido. Solo más decidido.', 'No fue suerte. Fue voluntad. Y la tuya pesó más.'],
-    favorito_poco: ['Era tu pelea. Debías ganarla fácil. Y casi la perdés.', 'Ganaste, sí. Pero el sudor en tu frente dice otra cosa.', 'El papel decía que ganabas fácil. La pelea dijo otra cosa.'],
-    favorito_goleada: ['Sin sorpresas. El más fuerte ganó.', 'No hubo batalla. Hubo trámite.', 'Ganaste sin despeinarte.']
-};
-
-const MENSAJES_DERROTA = {
-    underdog_poco: ['Casi lo lográs. Estuviste a un paso.', 'Perdiste. Sí. Pero no fue una derrota cualquiera.', 'Te faltó un suspiro.'],
-    underdog_aplastado: ['No hubo pelea. Hubo lección.', 'Te aplastaron. Sin vueltas.', 'El rival estaba en otra liga.'],
-    parejo: ['Pelea de iguales. Solo uno podía quedar en pie.', 'Los dos dieron todo. Pero el destino eligió al otro.', 'Iguales en todo. Menos en el resultado.'],
-    favorito_poco: ['Era tu pelea. Y la perdiste.', 'Se suponía que ibas a ganar. Se suponía.', 'Perdiste lo que no debías perder.'],
-    favorito_aplastado: ['No hay excusa. Perdiste feo.', 'El papel decía que ganabas. La realidad dijo que no.', 'Esto se llama fracaso.']
-};
-
-const MENSAJES_RETIRARSE = [
-    'Reconocer tus límites también es de sabios.',
-    'Mejor vivo que valiente. La próxima será.',
-    'El orgullo pesa, pero la vida pesa más. Buen instinto.'
-];
-
-const MENSAJES_RETROCEDER = [
-    'A veces, el mejor movimiento es no moverse. Hoy elegiste bien.',
-    'Te alejás sin ruido. La sombra no te vio. Y eso es una victoria.',
-    'No era el momento. No era el lugar. Y vos lo supiste.'
-];
-
-function getMensajeContextualExplorar(victoria, escalon, margenKey, npcNombre) {
-    let pool;
+// Ahora los textos vienen de Supabase (textos_eventos, grupo='explorar')
+async function getMensajeContextualExplorar(victoria, escalon, margenKey) {
+    let situacion;
     if (victoria) {
-        if ((escalon === 'mas_debil' || escalon === 'mucho_mas_debil') && margenKey === 'alto') pool = MENSAJES_VICTORIA.underdog_goleada;
-        else if ((escalon === 'mas_debil' || escalon === 'mucho_mas_debil') && margenKey !== 'alto') pool = MENSAJES_VICTORIA.underdog_poco;
-        else if (escalon === 'parejo') pool = MENSAJES_VICTORIA.parejo;
-        else if ((escalon === 'mas_fuerte' || escalon === 'mucho_mas_fuerte') && margenKey !== 'alto') pool = MENSAJES_VICTORIA.favorito_poco;
-        else pool = MENSAJES_VICTORIA.favorito_goleada;
+        if ((escalon === 'mas_debil' || escalon === 'mucho_mas_debil') && margenKey === 'alto') situacion = 'victoria_underdog_goleada';
+        else if ((escalon === 'mas_debil' || escalon === 'mucho_mas_debil') && margenKey !== 'alto') situacion = 'victoria_underdog_poco';
+        else if (escalon === 'parejo') situacion = 'victoria_parejo';
+        else if ((escalon === 'mas_fuerte' || escalon === 'mucho_mas_fuerte') && margenKey !== 'alto') situacion = 'victoria_favorito_poco';
+        else situacion = 'victoria_favorito_goleada';
     } else {
-        if ((escalon === 'mas_debil' || escalon === 'mucho_mas_debil') && margenKey !== 'alto') pool = MENSAJES_DERROTA.underdog_poco;
-        else if (escalon === 'mas_debil' || escalon === 'mucho_mas_debil') pool = MENSAJES_DERROTA.underdog_aplastado;
-        else if (escalon === 'parejo') pool = MENSAJES_DERROTA.parejo;
-        else if ((escalon === 'mas_fuerte' || escalon === 'mucho_mas_fuerte') && margenKey !== 'alto') pool = MENSAJES_DERROTA.favorito_poco;
-        else pool = MENSAJES_DERROTA.favorito_aplastado;
+        if ((escalon === 'mas_debil' || escalon === 'mucho_mas_debil') && margenKey !== 'alto') situacion = 'derrota_underdog_poco';
+        else if (escalon === 'mas_debil' || escalon === 'mucho_mas_debil') situacion = 'derrota_underdog_aplastado';
+        else if (escalon === 'parejo') situacion = 'derrota_parejo';
+        else if ((escalon === 'mas_fuerte' || escalon === 'mucho_mas_fuerte') && margenKey !== 'alto') situacion = 'derrota_favorito_poco';
+        else situacion = 'derrota_favorito_aplastado';
     }
-    const msg = pool[Math.floor(Math.random() * pool.length)];
-    return msg.replace('{npc}', npcNombre);
+    return await getTextoExplorar(situacion);
 }
 
 async function seleccionarNPCs(pcfUsuario) {
@@ -856,7 +828,7 @@ async function handleWhisper(event) {
             evento_explorar_npc: null, evento_explorar_nivel: null, evento_explorar_pcf_usuario: null,
             evento_explorar_pcf_npc: null, evento_explorar_comandos: null, evento_explorar_opciones: null
         });
-        const msgCtx = MENSAJES_RETROCEDER[Math.floor(Math.random() * MENSAJES_RETROCEDER.length)];
+        const msgCtx = await getTextoExplorar('retroceder');
         await sendWhisper(fromUserId, msgCtx + ' -' + castigo + ' Conq.');
         return;
     }
@@ -870,7 +842,7 @@ async function handleWhisper(event) {
         const op = opciones[user.evento_explorar_dificultad];
         if (!op) { await sendWhisper(fromUserId, 'Error.'); return; }
         const victoria = op.victoria;
-        const msgCtx = getMensajeContextualExplorar(victoria, op.escalon, op.margen_key, op.npc);
+        const msgCtx = await getMensajeContextualExplorar(victoria, op.escalon, op.margen_key);
         if (victoria) {
             await updateUsuario(username, {
                 conquistador: (user.conquistador || 0) + op.recompensa_conq,
@@ -907,7 +879,7 @@ async function handleWhisper(event) {
             evento_explorar_npc: null, evento_explorar_nivel: null, evento_explorar_pcf_usuario: null,
             evento_explorar_pcf_npc: null, evento_explorar_comandos: null, evento_explorar_opciones: null
         });
-        const msgCtx = MENSAJES_RETIRARSE[Math.floor(Math.random() * MENSAJES_RETIRARSE.length)];
+        const msgCtx = await getTextoExplorar('retirarse');
         await sendWhisper(fromUserId, msgCtx + ' -' + castigo + ' Conq.');
         return;
     }

@@ -1,5 +1,6 @@
 ﻿const { createClient } = require('@supabase/supabase-js');
 
+// ⚠️ Verificá que estas 2 líneas tengan TUS datos reales de Supabase
 const supabaseUrl = 'https://pditdbvzyqjvalkznpcv.supabase.co';
 const supabaseKey = 'sb_publishable_4-NeJ86heLfWJzvX3_GPYA_9KLSvLPG';
 
@@ -57,10 +58,11 @@ async function updateUsuario(username, datos) {
     return data;
 }
 
-// ==================== HELPERS DE DUELOS ====================
+// ==================== TEXTOS ====================
 async function getTextoDuelo(situacion) {
     const { data, error } = await supabase
-        .from('duelos_textos').select('texto').eq('situacion', situacion);
+        .from('textos_eventos').select('texto')
+        .eq('grupo', 'duelo').eq('situacion', situacion);
     if (error || !data || data.length === 0) {
         console.error('❌ Error getTextoDuelo:', error && error.message);
         return '⚔️ Duelo resuelto.';
@@ -68,6 +70,18 @@ async function getTextoDuelo(situacion) {
     return data[Math.floor(Math.random() * data.length)].texto;
 }
 
+async function getTextoExplorar(situacion) {
+    const { data, error } = await supabase
+        .from('textos_eventos').select('texto')
+        .eq('grupo', 'explorar').eq('situacion', situacion);
+    if (error || !data || data.length === 0) {
+        console.error('❌ Error getTextoExplorar:', error && error.message);
+        return 'El combate ha terminado.';
+    }
+    return data[Math.floor(Math.random() * data.length)].texto;
+}
+
+// ==================== HELPERS DE DUELOS ====================
 async function getHistorialH2H(userA, userB) {
     const { data, error } = await supabase
         .from('duelos')
@@ -160,6 +174,7 @@ module.exports = {
     updateUsuario,
     supabase,
     getTextoDuelo,
+    getTextoExplorar,
     getHistorialH2H,
     contarDuelosHoy,
     contarDuelosHoyEntre,
