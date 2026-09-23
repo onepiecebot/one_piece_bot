@@ -559,10 +559,8 @@ async function ejecutarTimeoutDuelos() {
             const retado = row.evento_duelo_retado;
             const canal = row.evento_duelo_canal;
             const pcfRetador = row.evento_duelo_pcf_retador;
-            // Limpiar primero para evitar doble procesamiento
             await limpiarEventoDuelo(retador);
             if (retado && retado !== retador) await limpiarEventoDuelo(retado);
-            // Insertar en historial
             const retadorUser = await getUsuario(retador);
             const retadoUser = retado ? await getUsuario(retado) : null;
             await crearDuelo({
@@ -578,13 +576,6 @@ async function ejecutarTimeoutDuelos() {
                 delta_retado: retadoUser ? (retadoUser.recompensa_delta || 0) : 0,
                 canal: canal
             });
-            // Avisar al retador por susurro
-            const textoBase = await getTextoDuelo('expiracion');
-            const texto = aplicarPlaceholders(textoBase, { retador: retador, retado: retado || '', monto: '0' });
-            const retadorFull = retadorUser;
-            if (retadorFull && retadorFull.twitch_user_id) {
-                // No tenemos user_id guardado, saltamos susurro silenciosamente
-            }
         }
     } catch (err) {
         console.error('❌ Error timeout duelos:', err);
@@ -743,10 +734,10 @@ async function handleWhisper(event) {
         const { data: fruta } = await supabase.from('frutas').select('*').eq('nombre', user.evento_fruta_nombre).single();
         if (!fruta) { await sendWhisper(fromUserId, 'Error.'); return; }
         if (user.evento_fruta_fase === 'avistamiento') {
-            await sendWhisper(fromUserId, fruta.fase1);
+            await sendWhisper(fromUserId, fruta.fase1 + ' — ✅ !si o ❌ !no');
         } else {
             const calaveras = getCalaverasPorProb(0.5);
-            await sendWhisper(fromUserId, fruta.fase2 + ' ' + calaveras + ' 🍎 ' + fruta.nombre + ' ' + (fruta.emoji || '') + ' — ¿!pelear o !huir?');
+            await sendWhisper(fromUserId, fruta.fase2 + ' ' + calaveras + ' 🍎 ' + fruta.nombre + ' ' + (fruta.emoji || '') + ' — ⚔️ !pelear o 🏃 !huir');
         }
         return;
     }
@@ -754,7 +745,6 @@ async function handleWhisper(event) {
     if (command === '!explorar') {
         const user = await getUsuario(username);
         if (!user) { await sendWhisper(fromUserId, 'Error.'); return; }
-        // Bloqueo por duelo pendiente
         if (user.evento_duelo_estado === 'pendiente') {
             const otro = user.evento_duelo_retador === username ? user.evento_duelo_retado : user.evento_duelo_retador;
             await sendWhisper(fromUserId, '⚔️ Tenés un duelo pendiente con @' + otro + '. Resolvelo antes.');
@@ -775,9 +765,9 @@ async function handleWhisper(event) {
             const opciones = user.evento_explorar_opciones || {};
             const op = opciones[user.evento_explorar_dificultad];
             if (user.evento_explorar_fase === 'avistamiento') {
-                await sendWhisper(fromUserId, '📍 Pendiente. ' + npc.fase1 + ' — !continuar o !retroceder');
+                await sendWhisper(fromUserId, '📍 Pendiente. ' + npc.fase1 + ' — ➡️ !continuar o ⬅️ !retroceder');
             } else {
-                await sendWhisper(fromUserId, '📍 Pendiente. ' + npc.fase2 + ' ' + getCalaverasPorProb(op.prob) + ' — !combatir o !retirarse');
+                await sendWhisper(fromUserId, '📍 Pendiente. ' + npc.fase2 + ' ' + getCalaverasPorProb(op.prob) + ' — ⚔️ !combatir o 🏃 !retirarse');
             }
             return;
         }
@@ -939,11 +929,11 @@ async function handleWhisper(event) {
         const { data: npc } = await supabase.from('npcs').select('*').eq('nombre', user.evento_explorar_npc).single();
         if (!npc) { await sendWhisper(fromUserId, 'Error.'); return; }
         if (user.evento_explorar_fase === 'avistamiento') {
-            await sendWhisper(fromUserId, '📍 ' + npc.fase1 + ' — !continuar o !retroceder');
+            await sendWhisper(fromUserId, '📍 ' + npc.fase1 + ' — ➡️ !continuar o ⬅️ !retroceder');
         } else {
             const opciones = user.evento_explorar_opciones || {};
             const op = opciones[user.evento_explorar_dificultad];
-            await sendWhisper(fromUserId, '📍 ' + npc.fase2 + ' ' + getCalaverasPorProb(op.prob) + ' — !combatir o !retirarse');
+            await sendWhisper(fromUserId, '📍 ' + npc.fase2 + ' ' + getCalaverasPorProb(op.prob) + ' — ⚔️ !combatir o 🏃 !retirarse');
         }
         return;
     }
@@ -1005,7 +995,7 @@ async function handleWhisper(event) {
 }
 
 // ============================================
-// ACEPTAR / RECHAZAR (compartido chat + susurro)
+// ACEPTAR / RECHAZAR
 // ============================================
 async function procesarAceptarDuelo(username, fromUserId, esSusurro, chatChannel) {
     const user = await getUsuario(username);
@@ -1042,7 +1032,6 @@ async function procesarAceptarDuelo(username, fromUserId, esSusurro, chatChannel
     const empate = res.empate;
     let monto = 0;
     if (!empate) {
-        const perdedor = ganador === retador ? retado : retador;
         const perdedorUser = ganador === retador ? retadoUser : retadorUser;
         const pcfPerdedor = ganador === retador ? pcfRetado : pcfRetador;
         const pcfGanador = ganador === retador ? pcfRetador : pcfRetado;
@@ -1142,7 +1131,6 @@ client.on('message', async (channel, tags, message, self) => {
         }
     } catch (err) { console.error('Error penal:', err); }
 
-    // Bloqueos por duelo pendiente
     const comandosBloqueados = ['!op', '!fruta', '!comer'];
     if (comandosBloqueados.includes(command)) {
         const u = await getUsuario(username);
@@ -1230,25 +1218,16 @@ client.on('message', async (channel, tags, message, self) => {
         return;
     }
 
-    // ============================================
-    // !aceptarduelo (chat)
-    // ============================================
     if (command === '!aceptarduelo') {
         await procesarAceptarDuelo(username, null, false, channel);
         return;
     }
 
-    // ============================================
-    // !rechazarduelo (chat)
-    // ============================================
     if (command === '!rechazarduelo') {
         await procesarRechazarDuelo(username, null, false, channel);
         return;
     }
 
-    // ============================================
-    // !historial (chat)
-    // ============================================
     if (command === '!historial') {
         if (!args[1]) { client.say(channel, '@' + tags.username + ' Uso: !historial @usuario'); return; }
         const target = args[1].replace('@', '').toLowerCase();
@@ -1417,7 +1396,7 @@ client.on('message', async (channel, tags, message, self) => {
                     evento_fruta_estado: 'pendiente', evento_fruta_comandos: 'si_no',
                     evento_fruta_comida_por_otro: false
                 });
-                client.say(channel, '@' + tags.username + ' ' + selectedFruit.fase1);
+                client.say(channel, '@' + tags.username + ' ' + selectedFruit.fase1 + ' — ✅ !si o ❌ !no');
             } else {
                 await updateUsuario(username, { fruta_pendiente: selectedFruit.nombre });
                 client.say(channel, '@' + tags.username + ' ¡Encontraste la ' + selectedFruit.nombre + ' ' + (selectedFruit.emoji || '') + '! !comer o !rechazar');
@@ -1445,9 +1424,9 @@ client.on('message', async (channel, tags, message, self) => {
         const { data: fruta } = await supabase.from('frutas').select('*').eq('nombre', user.evento_fruta_nombre).single();
         if (!fruta) { client.say(channel, '@' + tags.username + ' Error.'); return; }
         if (user.evento_fruta_fase === 'avistamiento') {
-            client.say(channel, '@' + tags.username + ' ' + fruta.fase1);
+            client.say(channel, '@' + tags.username + ' ' + fruta.fase1 + ' — ✅ !si o ❌ !no');
         } else {
-            client.say(channel, '@' + tags.username + ' ' + fruta.fase2 + ' ' + getCalaverasPorProb(0.5) + ' — !pelear o !huir');
+            client.say(channel, '@' + tags.username + ' ' + fruta.fase2 + ' ' + getCalaverasPorProb(0.5) + ' 🍎 ' + fruta.nombre + ' ' + (fruta.emoji || '') + ' — ⚔️ !pelear o 🏃 !huir');
         }
         return;
     }
@@ -1467,7 +1446,7 @@ client.on('message', async (channel, tags, message, self) => {
         }
         await updateUsuario(username, { evento_fruta_fase: 'encuentro', evento_fruta_comandos: 'pelear_huir' });
         const { data: fruta } = await supabase.from('frutas').select('*').eq('nombre', user.evento_fruta_nombre).single();
-        client.say(channel, '@' + tags.username + ' ' + fruta.fase2 + ' ' + getCalaverasPorProb(0.5) + ' — !pelear o !huir');
+        client.say(channel, '@' + tags.username + ' ' + fruta.fase2 + ' ' + getCalaverasPorProb(0.5) + ' 🍎 ' + fruta.nombre + ' ' + (fruta.emoji || '') + ' — ⚔️ !pelear o 🏃 !huir');
         return;
     }
 
@@ -1633,7 +1612,6 @@ client.on('message', async (channel, tags, message, self) => {
 // ============================================
 cargarCommitInfo().then(() => console.log('📦 Commit info cargado.'));
 
-// Timeout de duelos cada 60s
 setInterval(ejecutarTimeoutDuelos, 60 * 1000);
 
 console.log('Bot escuchando...');
