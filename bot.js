@@ -42,6 +42,7 @@ const LURK_LIVE_MINIMO_2H = 120;
 
 // NPC Event
 const NPC_VENTANA_MINUTOS = 10;
+const MODO_TESTEO_LURK = true; // Cambiar a false para activar NPC en producción
 
 const esDueño = (username) => username.toLowerCase() === DUEÑO;
 
@@ -125,14 +126,13 @@ function getRangoConquistador(puntos, esSupremo) {
     return { nombre: 'No despertado', emoji: '❌', idx: 0 };
 }
 
-// Puntos por posta según rango de Observación al inicio del día
 function getPtsPostasPorRango(idxRango) {
     const tabla = {
-        0: [2, 2, 4], // No despertado
-        1: [2, 2, 3], // Despertado
-        2: [1, 2, 3], // Básico
-        3: [1, 1, 3], // Avanzado
-        4: [1, 1, 2]  // Supremo
+        0: [2, 2, 4],
+        1: [2, 2, 3],
+        2: [1, 2, 3],
+        3: [1, 1, 3],
+        4: [1, 1, 2]
     };
     return tabla[idxRango] || tabla[0];
 }
@@ -256,7 +256,7 @@ async function verificarPenalizacionExplorar(username) {
 }
 
 // ============================================
-// SUPREMOS DINÁMICOS — plazas por dedicados + por puntos + empates
+// SUPREMOS DINÁMICOS
 // ============================================
 let supremosCacheArm = { data: [], timestamp: 0 };
 let supremosCacheObs = { data: [], timestamp: 0 };
@@ -292,7 +292,7 @@ async function calcularSupremos(campo, cache) {
         const topPuntos = (maxData && maxData[0]) ? (maxData[0][campo] || 0) : 0;
         const plazasPuntos = calcularPlazasPorPuntos(topPuntos);
         const totalPlazas = Math.max(plazasDedicados, plazasPuntos);
-        // Notificar si se llegó a 5 plazas de dedicados (solo la primera vez en el día)
+        // Notificar si se llegó a 5 plazas de dedicados
         const hoy = getFechaHoy();
         if (plazasDedicados >= 5 && (notif5Plazas.fecha !== hoy || !notif5Plazas.enviado)) {
             notif5Plazas.fecha = hoy;
@@ -304,7 +304,6 @@ async function calcularSupremos(campo, cache) {
                 } catch (e) {}
             }
         }
-        // Traer top con margen y aplicar empates
         const { data: topData } = await supabase
             .from('usuarios').select('username, ' + campo)
             .gt(campo, 0).order(campo, { ascending: false })
@@ -314,17 +313,14 @@ async function calcularSupremos(campo, cache) {
             cache.timestamp = ahora;
             return [];
         }
-        // Solo considerar usuarios con >= 100 puntos (para Supremo)
         const elegibles = topData.filter(u => (u[campo] || 0) >= 100);
         if (elegibles.length === 0) {
             cache.data = [];
             cache.timestamp = ahora;
             return [];
         }
-        // Corte
         const corteIdx = Math.min(totalPlazas, elegibles.length) - 1;
         const valorCorte = elegibles[corteIdx][campo];
-        // Todos con >= valorCorte (incluye empates)
         const result = elegibles
             .filter(u => (u[campo] || 0) >= valorCorte)
             .map(u => u.username.toLowerCase());
@@ -627,7 +623,7 @@ async function ejecutarTimeoutDuelos() {
 }
 
 // ============================================
-// LURK — Sistema completo
+// LURK
 // ============================================
 function canalTieneLurk(canal) {
     return CANALES_CON_LURK.includes(canal.toLowerCase());
@@ -673,7 +669,6 @@ async function lurkProcesarPostas(username) {
     const ptsRango = getPtsPostasPorRango(idxRango);
     let ptsNuevos = 0;
     for (let i = postasPrev; i < postasAlcanzadas; i++) ptsNuevos += ptsRango[i] || 0;
-    // Bonus racha al completar 3 postas
     let rachaNueva = lurk.lurk_racha || 0;
     let ultimoDiaRacha = lurk.lurk_ultimo_dia_racha;
     if (postasAlcanzadas >= LURK_POSTAS_MAX && postasPrev < LURK_POSTAS_MAX) {
@@ -684,7 +679,6 @@ async function lurkProcesarPostas(username) {
             ptsNuevos += calcularBonusRacha(rachaNueva);
             ultimoDiaRacha = hoy;
         }
-        // Acreditar +3 NPC pendiente si hay
         if (lurk.lurk_npc_pendiente > 0) {
             ptsNuevos += lurk.lurk_npc_pendiente;
             await updateLurkStats(username, { lurk_npc_pendiente: 0 });
@@ -703,7 +697,6 @@ async function lurkProcesarPostas(username) {
     if (minutosNuevos > 0) {
         await updateUsuario(username, { minutos_lurk: (user.minutos_lurk || 0) + minutosNuevos });
     }
-    // Notificar nuevo rango de Observación
     const userFresh = await getUsuario(username);
     if (userFresh) {
         const supObs = await esSupremoObservacion(username);
@@ -804,6 +797,7 @@ async function guardarEstadoNpc() {
 }
 
 async function anunciarNpc() {
+    if (MODO_TESTEO_LURK) return; // No anunciar en modo testeo
     if (npcUltimoAnuncio) {
         const desdeUlt = Date.now() - new Date(npcUltimoAnuncio).getTime();
         if (desdeUlt < 55 * 60 * 1000) return;
@@ -829,18 +823,34 @@ async function anunciarNpc() {
     console.log('👁️ NPC anunciado: ' + npcActual);
 }
 
-async function chequearNpc() {
-    const ciclo = getFechaNpc();
-    if (ciclo !== npcCicloActual) { await cargarEstadoNpc(); return; }
+// Cuántos ms faltan para el próximo :30 (hora AR)
+function msHastaProximoMedia() {
     const ahora = new Date();
     const offsetArg = -3 * 60;
     const utc = ahora.getTime() + (ahora.getTimezoneOffset() * 60000);
     const arg = new Date(utc + (offsetArg * 60000));
-    const minuto = arg.getMinutes();
-    if (minuto >= 30 && minuto <= 34) await anunciarNpc();
+    const minutos = arg.getMinutes();
+    const segundos = arg.getSeconds();
+    let minsFaltantes;
+    if (minutos < 30) minsFaltantes = 30 - minutos;
+    else minsFaltantes = 60 - minutos + 30;
+    return minsFaltantes * 60000 - segundos * 1000;
+}
+
+// Programa el próximo anuncio NPC (setTimeout auto-reprogramado)
+async function programarProximoNpc() {
+    if (MODO_TESTEO_LURK) return;
+    const ms = msHastaProximoMedia();
+    console.log('👁️ Próximo anuncio NPC en ' + Math.round(ms / 60000) + ' min');
+    setTimeout(async () => {
+        try { await anunciarNpc(); }
+        catch (e) { console.error('Error NPC:', e); }
+        programarProximoNpc();
+    }, ms);
 }
 
 async function procesarPersonaje(username, nombreIngresado, fromUserId) {
+    if (MODO_TESTEO_LURK) return;
     if (!npcActual) { await sendWhisper(fromUserId, '⏳ No hay ningún avistamiento activo ahora.'); return; }
     if (!npcVentanaHasta || new Date(npcVentanaHasta) < new Date()) {
         await sendWhisper(fromUserId, '⏳ Ya pasó la ventana de reclamo.'); return;
@@ -868,6 +878,10 @@ async function procesarPersonaje(username, nombreIngresado, fromUserId) {
         await sendWhisper(fromUserId, '❌ Ese no era. -5 de Haki de Observación.');
     }
 }
+
+// ═══════════════════════════════════════════════════════════
+// CONTINÚA EN PARTE 2
+// ═══════════════════════════════════════════════════════════
 
 // ============================================
 // AYUDA
@@ -1021,6 +1035,7 @@ async function handleWhisper(event) {
 
     // !personaje X
     if (command === '!personaje') {
+        if (MODO_TESTEO_LURK) { await sendWhisper(fromUserId, '⏳ El avistamiento todavía no está activo.'); return; }
         if (!args[1]) { await sendWhisper(fromUserId, 'Uso: !personaje <nombre>'); return; }
         await procesarPersonaje(username, args[1], fromUserId);
         return;
@@ -1538,22 +1553,16 @@ client.on('message', async (channel, tags, message, self) => {
     const twitchUserId = tags['user-id'];
     const canal = channel.replace('#', '').toLowerCase();
 
-    // Ignorar mensajes que no empiezan con !
     if (!command.startsWith('!')) return;
 
-    // Obtener estado del canal
     const canalDb = await getCanal(canal);
     const botActivo = canalDb ? canalDb.bot_activo : true;
 
-    // Si el canal está inactivo, SOLO aceptar !onop
     if (!botActivo && command !== '!onop') return;
 
-    // ============================================
     // !onop / !offop
-    // ============================================
     if (command === '!onop' || command === '!offop') {
-        if (!esModOCaster(tags)) return; // silencioso para no spamear
-        // Cooldown por canal
+        if (!esModOCaster(tags)) return;
         if (cooldownsOnOff[canal] && Date.now() - cooldownsOnOff[canal] < 5 * 60 * 1000) {
             client.say(channel, '⏳ Esperá 5 minutos antes de volver a cambiar el estado del bot.');
             return;
@@ -1566,14 +1575,11 @@ client.on('message', async (channel, tags, message, self) => {
         return;
     }
 
-    // ============================================
     // En lenno_ap solo funciona lurk (ningún otro comando de chat)
-    // ============================================
     if (canal === 'lenno_ap') return;
 
     console.log('💬 [' + canal + '] ' + username + ': ' + message);
 
-    // Guardar twitch_user_id
     if (twitchUserId) {
         try {
             const u = await getUsuario(username);
@@ -1587,12 +1593,6 @@ client.on('message', async (channel, tags, message, self) => {
         client.say(channel, '@' + tags.username + ' 📩 Mandame !ayudaop por susurro.');
         return;
     }
-
-    // ============================================
-    // MODO TESTEO vs PRODUCCIÓN para Lurk
-    // ============================================
-    // En canales normales (fan_d_larana, op_d_bot) el lurk NO se trackea
-    // y los comandos funcionan como siempre.
 
     try {
         const penal = await verificarPenalizacionExplorar(username);
@@ -2004,9 +2004,11 @@ client.on('message', async (channel, tags, message, self) => {
 // INICIALIZACIÓN
 // ============================================
 cargarCommitInfo().then(() => console.log('📦 Commit info cargado.'));
-cargarEstadoNpc().then(() => console.log('👁️ Estado NPC cargado.'));
-setInterval(ejecutarTimeoutDuelos, 60 * 1000);       // Cada 1 min
-setInterval(lurkChequeoPeriodico, 5 * 60 * 1000);    // Cada 5 min
-setInterval(chequearNpc, 60 * 1000);                 // Cada 1 min (para detectar minuto :30)
+cargarEstadoNpc().then(() => {
+    console.log('👁️ Estado NPC cargado.');
+    programarProximoNpc();
+});
+setInterval(ejecutarTimeoutDuelos, 60 * 1000);
+setInterval(lurkChequeoPeriodico, 5 * 60 * 1000);
 
 console.log('Bot escuchando...');
