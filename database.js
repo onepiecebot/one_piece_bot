@@ -168,6 +168,10 @@ async function getLurkStats(username) {
         .from('lurk_stats').select('*').eq('username', username).limit(1);
     if (error) { console.error('❌ Error getLurkStats:', error.message); return null; }
     if (!data || data.length === 0) {
+        // Verificar que el usuario exista antes de crear
+        const { data: user } = await supabase
+            .from('usuarios').select('username').eq('username', username).limit(1);
+        if (!user || user.length === 0) return null; // No crear si el usuario no está registrado
         const { data: created, error: insErr } = await supabase
             .from('lurk_stats').insert([{ username }]).select().limit(1);
         if (insErr) { console.error('❌ Error creando lurk_stats:', insErr.message); return null; }
@@ -257,6 +261,25 @@ async function aplicarPenalizacionesInactivas(username, lurkStats) {
 }
 
 // ==================== CANALES ====================
+async function sumarMinutosLurk(username, minutos) {
+    const lurk = await getLurkStats(username);
+    if (!lurk) return null;
+    const total = Math.min(LURK_POSTAS_MAX_CALC, (lurk.lurk_minutos_hoy || 0) + minutos);
+    const postas = Math.min(3, Math.floor(total / 20));
+    await updateLurkStats(username, {
+        lurk_minutos_hoy: total,
+        lurk_postas_hoy: Math.max(lurk.lurk_postas_hoy || 0, postas),
+        minutos_lurk_total: (lurk.minutos_lurk_total || 0) + minutos
+    });
+    return { total, postas };
+}
+
+const LURK_POSTAS_MAX_CALC = 60;
+
+async function getCanalesActivos() {
+    const { data } = await supabase.from('canales').select('*').eq('bot_activo', true);
+    return data || [];
+}
 async function getCanal(canal) {
     const { data, error } = await supabase.from('canales').select('*').eq('canal', canal).maybeSingle();
     if (error) { console.error('❌ Error getCanal:', error.message); return null; }
@@ -322,5 +345,6 @@ module.exports = {
     getHistorialLurk, agregarPuntosObservacion, recalcularObservacion,
     limpiarHistorialViejo, aplicarPenalizacionesInactivas,
     getCanal, getCanales, updateCanal, huboStreamEseDia,
-    inicializarDiaLurk
+    inicializarDiaLurk,
+    sumarMinutosLurk, getCanalesActivos
 };

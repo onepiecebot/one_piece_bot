@@ -33,16 +33,14 @@ const DUELO_LIMITE_DIARIO = 5;
 const DUELO_LIMITE_PAREJA = 3;
 const DUELO_TIMEOUT_MS = 2 * 60 * 1000;
 
-// Lurk
 const CANALES_CON_LURK = ['lenno_ap'];
 const LURK_POSTA_MINUTOS = 20;
 const LURK_POSTAS_MAX = 3;
 const LURK_MICRO_COOLDOWN_MS = 2 * 60 * 1000;
 const LURK_LIVE_MINIMO_2H = 120;
 
-// NPC Event
 const NPC_VENTANA_MINUTOS = 10;
-const MODO_TESTEO_LURK = true; // Cambiar a false para activar NPC en producción
+const MODO_TESTEO_LURK = true;
 
 const esDueño = (username) => username.toLowerCase() === DUEÑO;
 
@@ -55,11 +53,6 @@ const notif5Plazas = { fecha: null, enviado: false };
 // ============================================
 // HELPERS GENERALES
 // ============================================
-// Normaliza un comando: minúscula + sin tildes
-// Ej: "!observación" → "!observacion"
-function normalizarComando(cmd) {
-    return cmd.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-}
 function formatBerries(n) {
     const abs = Math.abs(n);
     if (abs >= 1e9) return (n / 1e9).toFixed(2).replace(/\.?0+$/, '') + 'B';
@@ -72,6 +65,10 @@ function esModOCaster(tags) {
     if (tags.badges && tags.badges.broadcaster === '1') return true;
     if (tags.mod === true) return true;
     return false;
+}
+
+function normalizarComando(cmd) {
+    return cmd.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 }
 
 // ============================================
@@ -156,7 +153,7 @@ function getCalaverasPorProb(prob) {
 }
 
 // ============================================
-// !op — Haki de Armadura
+// !op
 // ============================================
 function getIntervaloTirada(rango) {
     const intervalos = {
@@ -297,7 +294,6 @@ async function calcularSupremos(campo, cache) {
         const topPuntos = (maxData && maxData[0]) ? (maxData[0][campo] || 0) : 0;
         const plazasPuntos = calcularPlazasPorPuntos(topPuntos);
         const totalPlazas = Math.max(plazasDedicados, plazasPuntos);
-        // Notificar si se llegó a 5 plazas de dedicados
         const hoy = getFechaHoy();
         if (plazasDedicados >= 5 && (notif5Plazas.fecha !== hoy || !notif5Plazas.enviado)) {
             notif5Plazas.fecha = hoy;
@@ -628,7 +624,7 @@ async function ejecutarTimeoutDuelos() {
 }
 
 // ============================================
-// LURK
+// LURK — Sistema completo
 // ============================================
 function canalTieneLurk(canal) {
     return CANALES_CON_LURK.includes(canal.toLowerCase());
@@ -643,28 +639,35 @@ async function lurkJoin(username, canal) {
     if (!lurk) return;
     if (lurk.lurk_join_actual) {
         const desde = Date.now() - new Date(lurk.lurk_join_actual).getTime();
-        if (desde < LURK_MICRO_COOLDOWN_MS) return;
+        if (desde < LURK_MICRO_COOLDOWN_MS) {
+            console.log('👁️ JOIN (micro-cooldown): ' + username);
+            return;
+        }
+        // Cerrar el bloque anterior antes de abrir uno nuevo
+        await lurkCerrarBloque(username);
     }
     await updateLurkStats(username, { lurk_join_actual: new Date().toISOString() });
+    console.log('👁️ JOIN (bloque abierto): ' + username);
 }
 
 async function lurkPart(username) {
     const lurk = await getLurkStats(username);
     if (!lurk || !lurk.lurk_join_actual) return;
-    await lurkProcesarPostas(username);
-    await updateLurkStats(username, { lurk_ultimo_chequeo: new Date().toISOString() });
+    await lurkCerrarBloque(username);
+    console.log('👁️ PART (bloque cerrado): ' + username);
 }
 
-async function lurkProcesarPostas(username) {
+// Cierra un bloque: suma sus minutos al acumulado y calcula postas + puntos
+async function lurkCerrarBloque(username) {
     const lurk = await getLurkStats(username);
     if (!lurk || !lurk.lurk_join_actual) return;
     const user = await getUsuario(username);
     if (!user) return;
     const inicio = new Date(lurk.lurk_join_actual).getTime();
-    const minutos = Math.floor((Date.now() - inicio) / 60000);
-    const postasAlcanzadas = Math.min(LURK_POSTAS_MAX, Math.floor(minutos / LURK_POSTA_MINUTOS));
-    const postasPrev = lurk.lurk_postas_hoy || 0;
-    if (postasAlcanzadas <= postasPrev) return;
+    const minutosBloque = Math.max(0, Math.floor((Date.now() - inicio) / 60000));
+    const totalAntes = lurk.lurk_minutos_hoy || 0;
+    const totalDespues = Math.min(60, totalAntes + minutosBloque);
+    const minutosReales = totalDespues - totalAntes;
     let idxRango = lurk.lurk_rango_inicio;
     if (idxRango === null || idxRango === undefined) {
         const supObs = await esSupremoObservacion(username);
@@ -672,11 +675,13 @@ async function lurkProcesarPostas(username) {
         await updateLurkStats(username, { lurk_rango_inicio: idxRango });
     }
     const ptsRango = getPtsPostasPorRango(idxRango);
+    const postasPrev = lurk.lurk_postas_hoy || 0;
+    const postasNuevas = Math.min(3, Math.floor(totalDespues / 20));
     let ptsNuevos = 0;
-    for (let i = postasPrev; i < postasAlcanzadas; i++) ptsNuevos += ptsRango[i] || 0;
+    for (let i = postasPrev; i < postasNuevas; i++) ptsNuevos += ptsRango[i] || 0;
     let rachaNueva = lurk.lurk_racha || 0;
     let ultimoDiaRacha = lurk.lurk_ultimo_dia_racha;
-    if (postasAlcanzadas >= LURK_POSTAS_MAX && postasPrev < LURK_POSTAS_MAX) {
+    if (postasNuevas >= 3 && postasPrev < 3) {
         const hoy = getFechaHoy();
         if (ultimoDiaRacha !== hoy) {
             const ayer = getFechaOffset(-1);
@@ -689,18 +694,19 @@ async function lurkProcesarPostas(username) {
             await updateLurkStats(username, { lurk_npc_pendiente: 0 });
         }
     }
-    const minutosNuevos = Math.min(LURK_POSTAS_MAX * LURK_POSTA_MINUTOS, minutos) - (lurk.lurk_minutos_hoy || 0);
     await updateLurkStats(username, {
-        lurk_minutos_hoy: Math.min(LURK_POSTAS_MAX * LURK_POSTA_MINUTOS, minutos),
-        lurk_postas_hoy: postasAlcanzadas,
+        lurk_minutos_hoy: totalDespues,
+        lurk_postas_hoy: postasNuevas,
         lurk_puntos_hoy: (lurk.lurk_puntos_hoy || 0) + ptsNuevos,
         lurk_racha: rachaNueva,
         lurk_ultimo_dia_racha: ultimoDiaRacha,
-        minutos_lurk_total: (lurk.minutos_lurk_total || 0) + Math.max(0, minutosNuevos)
+        lurk_join_actual: null,
+        lurk_ultimo_chequeo: new Date().toISOString(),
+        minutos_lurk_total: (lurk.minutos_lurk_total || 0) + minutosReales
     });
-    if (ptsNuevos !== 0) await agregarPuntosObservacion(username, ptsNuevos, Math.max(0, minutosNuevos));
-    if (minutosNuevos > 0) {
-        await updateUsuario(username, { minutos_lurk: (user.minutos_lurk || 0) + minutosNuevos });
+    if (ptsNuevos !== 0) await agregarPuntosObservacion(username, ptsNuevos, minutosReales);
+    if (minutosReales > 0) {
+        await updateUsuario(username, { minutos_lurk: (user.minutos_lurk || 0) + minutosReales });
     }
     const userFresh = await getUsuario(username);
     if (userFresh) {
@@ -715,6 +721,10 @@ async function lurkProcesarPostas(username) {
             await updateLurkStats(username, { lurk_rango_notificado: rangoActual.idx });
         }
     }
+}
+
+async function lurkProcesarPostas(username) {
+    return await lurkCerrarBloque(username);
 }
 
 async function checkLiveHelix(canal) {
@@ -734,8 +744,30 @@ async function checkLiveHelix(canal) {
 
 async function lurkChequeoPeriodico() {
     try {
-        const canales = await getCanales();
         const hoy = getFechaHoy();
+        // 1. Reset diario automático para bloques abiertos de días anteriores
+        const { data: activosPre } = await supabase.from('lurk_stats')
+            .select('username, lurk_join_actual, lurk_ultimo_dia')
+            .not('lurk_join_actual', 'is', null);
+        if (activosPre) {
+            for (const a of activosPre) {
+                if (a.lurk_ultimo_dia !== hoy) {
+                    await lurkCerrarBloque(a.username);
+                    await updateLurkStats(a.username, {
+                        lurk_ultimo_dia: hoy,
+                        lurk_minutos_hoy: 0,
+                        lurk_puntos_hoy: 0,
+                        lurk_postas_hoy: 0,
+                        lurk_npc_pendiente: 0,
+                        lurk_npc_canjeado_hoy: false,
+                        lurk_rango_inicio: null
+                    });
+                    console.log('🌅 Reset diario de lurk para ' + a.username);
+                }
+            }
+        }
+        // 2. Chequeo live de canales
+        const canales = await getCanales();
         for (const c of canales) {
             if (!c.bot_activo) continue;
             const live = await checkLiveHelix(c.canal);
@@ -750,11 +782,7 @@ async function lurkChequeoPeriodico() {
             }
             await updateCanal(c.canal, updateC);
         }
-        const { data: activos } = await supabase.from('lurk_stats')
-            .select('username').not('lurk_join_actual', 'is', null);
-        if (activos) {
-            for (const a of activos) await lurkProcesarPostas(a.username);
-        }
+        // 3. Purgar historial viejo
         await limpiarHistorialViejo();
     } catch (err) { console.error('❌ Error lurk chequeo:', err); }
 }
@@ -802,7 +830,7 @@ async function guardarEstadoNpc() {
 }
 
 async function anunciarNpc() {
-    if (MODO_TESTEO_LURK) return; // No anunciar en modo testeo
+    if (MODO_TESTEO_LURK) return;
     if (npcUltimoAnuncio) {
         const desdeUlt = Date.now() - new Date(npcUltimoAnuncio).getTime();
         if (desdeUlt < 55 * 60 * 1000) return;
@@ -828,7 +856,6 @@ async function anunciarNpc() {
     console.log('👁️ NPC anunciado: ' + npcActual);
 }
 
-// Cuántos ms faltan para el próximo :30 (hora AR)
 function msHastaProximoMedia() {
     const ahora = new Date();
     const offsetArg = -3 * 60;
@@ -842,7 +869,6 @@ function msHastaProximoMedia() {
     return minsFaltantes * 60000 - segundos * 1000;
 }
 
-// Programa el próximo anuncio NPC (setTimeout auto-reprogramado)
 async function programarProximoNpc() {
     if (MODO_TESTEO_LURK) return;
     const ms = msHastaProximoMedia();
@@ -899,7 +925,7 @@ const AYUDA_SUSURRO = '📩 COMANDOS DE SUSURRO 🗺️ !explorar ➡️ !contin
 // CLIENTE
 // ============================================
 const client = new tmi.Client({
-    options: { debug: false },
+    options: { debug: false, messagesLogLevel: 'info' },
     identity: { username: config.botName, password: config.oauth },
     channels: [config.channelName, 'op_d_bot', 'lenno_ap']
 });
@@ -1364,7 +1390,13 @@ async function mostrarObservacion(username, fromUserId) {
     let faltan = '';
     if (postas < 3) faltan = 'Faltan: ' + (3 - postas) + ' posta' + (postas === 2 ? '' : 's') + ' para completar el día';
     else faltan = '¡Día completo!';
-    const msg = '📡 Haki de Observación\nPostas hoy: ' + postas + '/3 (' + minutos + ' min)\nPuntos hoy: +' + ptsHoy + '\n' + faltan + '\nRacha: ' + racha + ' días' + (bonusRacha > 0 ? ' (bonus +' + bonusRacha + ')' : '') + '\nAvistamiento: ' + avistamiento + '\nRango: ' + rango.emoji + ' ' + rango.nombre + ' (' + (user.observacion || 0) + ')';
+    const msg = '📡 Haki de Observación\n' +
+        'Postas hoy: ' + postas + '/3 (' + minutos + ' min)\n' +
+        'Puntos hoy: +' + ptsHoy + '\n' +
+        'Racha: ' + racha + ' días' + (bonusRacha > 0 ? ' (bonus +' + bonusRacha + ')' : '') + '\n' +
+        'Avistamiento: ' + avistamiento + '\n' +
+        faltan + '\n' +
+        'Rango: ' + rango.emoji + ' ' + rango.nombre + ' (' + (user.observacion || 0) + ')';
     await sendWhisper(fromUserId, msg);
 }
 
@@ -1580,7 +1612,7 @@ client.on('message', async (channel, tags, message, self) => {
         return;
     }
 
-    // En lenno_ap solo funciona lurk (ningún otro comando de chat)
+    // En lenno_ap solo funciona lurk
     if (canal === 'lenno_ap') return;
 
     console.log('💬 [' + canal + '] ' + username + ': ' + message);
