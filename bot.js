@@ -55,6 +55,11 @@ const notif5Plazas = { fecha: null, enviado: false };
 // ============================================
 // HELPERS GENERALES
 // ============================================
+// Normaliza un comando: minúscula + sin tildes
+// Ej: "!observación" → "!observacion"
+function normalizarComando(cmd) {
+    return cmd.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
 function formatBerries(n) {
     const abs = Math.abs(n);
     if (abs >= 1e9) return (n / 1e9).toFixed(2).replace(/\.?0+$/, '') + 'B';
@@ -894,7 +899,7 @@ const AYUDA_SUSURRO = '📩 COMANDOS DE SUSURRO 🗺️ !explorar ➡️ !contin
 // CLIENTE
 // ============================================
 const client = new tmi.Client({
-    options: { debug: true },
+    options: { debug: false },
     identity: { username: config.botName, password: config.oauth },
     channels: [config.channelName, 'op_d_bot', 'lenno_ap']
 });
@@ -976,7 +981,7 @@ async function handleWhisper(event) {
     const fromUserLogin = event.from_user_login;
     const messageText = event.whisper.text.trim();
     const args = messageText.split(' ');
-    const command = args[0].toLowerCase();
+    const command = normalizarComando(args[0]);
     const username = fromUserLogin.toLowerCase();
 
     if (!fromUserId) return;
@@ -1548,7 +1553,7 @@ client.on('message', async (channel, tags, message, self) => {
     if (tags['message-type'] === 'whisper') return;
 
     const args = message.trim().split(' ');
-    const command = args[0].toLowerCase();
+    const command = normalizarComando(args[0]);
     const username = tags.username.toLowerCase();
     const twitchUserId = tags['user-id'];
     const canal = channel.replace('#', '').toLowerCase();

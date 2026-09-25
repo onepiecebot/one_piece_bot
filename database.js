@@ -164,17 +164,17 @@ async function completoExplorarHoy(username) {
 
 // ==================== LURK ====================
 async function getLurkStats(username) {
-    const { data, error } = await supabase.from('lurk_stats').select('*').eq('username', username).maybeSingle();
+    const { data, error } = await supabase
+        .from('lurk_stats').select('*').eq('username', username).limit(1);
     if (error) { console.error('❌ Error getLurkStats:', error.message); return null; }
-    if (!data) {
+    if (!data || data.length === 0) {
         const { data: created, error: insErr } = await supabase
-            .from('lurk_stats').insert([{ username }]).select().single();
+            .from('lurk_stats').insert([{ username }]).select().limit(1);
         if (insErr) { console.error('❌ Error creando lurk_stats:', insErr.message); return null; }
-        return created;
+        return created && created[0];
     }
-    return data;
+    return data[0];
 }
-
 async function updateLurkStats(username, datos) {
     const { data, error } = await supabase.from('lurk_stats').update(datos).eq('username', username).select();
     if (error) { console.error('❌ Error updateLurkStats:', error.message); return null; }
