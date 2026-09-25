@@ -617,14 +617,14 @@ async function ejecutarTimeoutDuelos() {
                 try {
                     const t = await getTextoDuelo('expiracion');
                     await sendWhisper(rU.twitch_user_id, '⌛ ' + aplicarPlaceholders(t, { retador, retado: retado || '', monto: '0' }));
-                } catch (e) {}
+                } catch (e) { console.error('Error notif expiración:', e); }
             }
         }
     } catch (err) { console.error('❌ Error timeout duelos:', err); }
 }
 
 // ============================================
-// LURK — Sistema completo
+// LURK
 // ============================================
 function canalTieneLurk(canal) {
     return CANALES_CON_LURK.includes(canal.toLowerCase());
@@ -643,7 +643,6 @@ async function lurkJoin(username, canal) {
             console.log('👁️ JOIN (micro-cooldown): ' + username);
             return;
         }
-        // Cerrar el bloque anterior antes de abrir uno nuevo
         await lurkCerrarBloque(username);
     }
     await updateLurkStats(username, { lurk_join_actual: new Date().toISOString() });
@@ -657,7 +656,6 @@ async function lurkPart(username) {
     console.log('👁️ PART (bloque cerrado): ' + username);
 }
 
-// Cierra un bloque: suma sus minutos al acumulado y calcula postas + puntos
 async function lurkCerrarBloque(username) {
     const lurk = await getLurkStats(username);
     if (!lurk || !lurk.lurk_join_actual) return;
@@ -709,16 +707,16 @@ async function lurkCerrarBloque(username) {
         await updateUsuario(username, { minutos_lurk: (user.minutos_lurk || 0) + minutosReales });
     }
     console.log('📊 Lurk cerrado: ' + username + ' → ' + totalDespues + ' min, ' + postasNuevas + ' postas, +' + ptsNuevos + ' pts');
-
     const userFresh = await getUsuario(username);
     if (userFresh) {
         const supObs = await esSupremoObservacion(username);
         const rangoActual = getRangoObservacion(userFresh.observacion || 0, supObs);
         const rangoNotif = lurk.lurk_rango_notificado;
         if (rangoActual.idx > rangoNotif) {
+            console.log('⬆️ Rango: ' + username + ' → Observación ' + rangoActual.nombre);
             if (userFresh.twitch_user_id && rangoActual.idx >= 1 && rangoActual.idx <= 5) {
                 const msg = MENSAJES_RANGO_OBS[rangoActual.idx];
-                if (msg) { try { await sendWhisper(userFresh.twitch_user_id, msg); } catch (e) {} }
+                if (msg) { try { await sendWhisper(userFresh.twitch_user_id, msg); } catch (e) { console.error('Error notif rango:', e); } }
             }
             await updateLurkStats(username, { lurk_rango_notificado: rangoActual.idx });
         }
@@ -741,13 +739,12 @@ async function checkLiveHelix(canal) {
         if (!res.ok) return false;
         const data = await res.json();
         return data.data && data.data.length > 0;
-    } catch (e) { return false; }
+    } catch (e) { console.error('Error live check:', e); return false; }
 }
 
 async function lurkChequeoPeriodico() {
     try {
         const hoy = getFechaHoy();
-        // 1. Reset diario automático para bloques abiertos de días anteriores
         const { data: activosPre } = await supabase.from('lurk_stats')
             .select('username, lurk_join_actual, lurk_ultimo_dia')
             .not('lurk_join_actual', 'is', null);
@@ -768,7 +765,6 @@ async function lurkChequeoPeriodico() {
                 }
             }
         }
-        // 2. Chequeo live de canales
         const canales = await getCanales();
         for (const c of canales) {
             if (!c.bot_activo) continue;
@@ -784,7 +780,6 @@ async function lurkChequeoPeriodico() {
             }
             await updateCanal(c.canal, updateC);
         }
-        // 3. Purgar historial viejo
         await limpiarHistorialViejo();
     } catch (err) { console.error('❌ Error lurk chequeo:', err); }
 }
@@ -853,7 +848,7 @@ async function anunciarNpc() {
         if (!c.bot_activo) continue;
         const live = await checkLiveHelix(c.canal);
         if (!live) continue;
-        try { client.say(c.canal, msg); } catch (e) {}
+        try { client.say(c.canal, msg); } catch (e) { console.error('Error NPC msg:', e); }
     }
     console.log('👁️ NPC anunciado: ' + npcActual);
 }
@@ -900,14 +895,17 @@ async function procesarPersonaje(username, nombreIngresado, fromUserId) {
         if ((lurk.lurk_postas_hoy || 0) >= 3) {
             await agregarPuntosObservacion(username, 3, 0);
             await updateLurkStats(username, { lurk_puntos_hoy: (lurk.lurk_puntos_hoy || 0) + 3 });
+            console.log('👁️ NPC canjeado: ' + username + ' → acierto (+3, inmediato)');
             await sendWhisper(fromUserId, '🎯 ¡Correcto! +3 de Haki de Observación.');
         } else {
             await updateLurkStats(username, { lurk_npc_pendiente: 3 });
+            console.log('👁️ NPC canjeado: ' + username + ' → acierto (+3, pendiente)');
             await sendWhisper(fromUserId, '🎯 ¡Correcto! +3 pendientes. Se acreditan al completar tus 3 postas del día.');
         }
     } else {
         await updateLurkStats(username, { lurk_npc_canjeado_hoy: true });
         await agregarPuntosObservacion(username, -5, 0);
+        console.log('👁️ NPC canjeado: ' + username + ' → fallo (-5)');
         await sendWhisper(fromUserId, '❌ Ese no era. -5 de Haki de Observación.');
     }
 }
@@ -1037,7 +1035,6 @@ async function handleWhisper(event) {
             await sendWhisper(fromUserId, '❌ No tenés permiso para usar este comando.');
             return;
         }
-        // Cerrar todos los bloques abiertos
         const { data: abiertos } = await supabase.from('lurk_stats')
             .select('username').not('lurk_join_actual', 'is', null);
         let cerrados = 0;
@@ -1059,7 +1056,6 @@ async function handleWhisper(event) {
             await sendWhisper(fromUserId, '⏳ Esperá unos segundos.'); return;
         }
         cooldownsLurk[username].observacion = Date.now();
-        // Si no tiene bloque abierto, abrir uno (asume que está en el chat)
         const lurkCheck = await getLurkStats(username);
         if (lurkCheck && !lurkCheck.lurk_join_actual && lurkCheck.lurk_ultimo_dia === getFechaHoy()) {
             await updateLurkStats(username, { lurk_join_actual: new Date().toISOString() });
@@ -1283,6 +1279,7 @@ async function handleWhisper(event) {
         const op = o[user.evento_explorar_dificultad];
         if (!op) { await sendWhisper(fromUserId, 'Error.'); return; }
         const msgCtx = await getMensajeContextualExplorar(op.victoria, op.escalon, op.margen_key);
+        console.log('🗺️ Explorar: ' + username + ' → ' + (op.victoria ? 'victoria' : 'derrota') + ' vs ' + op.npc + ' (PCF ' + op.pcf_usuario + ' vs ' + op.pcf_npc + ')');
         if (op.victoria) {
             await updateUsuario(username, {
                 conquistador: (user.conquistador || 0) + op.recompensa_conq,
@@ -1420,12 +1417,12 @@ async function mostrarObservacion(username, fromUserId) {
     if (postas < 3) faltan = 'Faltan: ' + (3 - postas) + ' posta' + (postas === 2 ? '' : 's') + ' para completar el día';
     else faltan = '¡Día completo!';
     const msg = '📡 Haki de Observación\n' +
-        'Postas hoy: ' + postas + '/3 (' + minutos + ' min)\n' +
-        '• Puntos hoy: +' + ptsHoy + '\n' +
-        '• Racha: ' + racha + ' días' + (bonusRacha > 0 ? ' (bonus +' + bonusRacha + ')' : '') + '\n' +
-        '• Avistamiento: ' + avistamiento + '\n' +
-        '• ' + faltan + '\n' +
-        'Rango: ' + rango.emoji + ' ' + rango.nombre + ' (' + (user.observacion || 0) + ')';
+        '🚩 Postas hoy: ' + postas + '/3 (' + minutos + ' min)\n' +
+        '📈 Puntos hoy: +' + ptsHoy + '\n' +
+        '🔥 Racha: ' + racha + ' días' + (bonusRacha > 0 ? ' (bonus +' + bonusRacha + ')' : '') + '\n' +
+        '🔭 Avistamiento: ' + avistamiento + '\n' +
+        '⏳ ' + faltan + '\n' +
+        '👁️ Rango: ' + rango.emoji + ' ' + rango.nombre + ' (' + (user.observacion || 0) + ')';
     await sendWhisper(fromUserId, msg);
 }
 
@@ -1484,7 +1481,7 @@ async function procesarRetar(username, targetRaw, fromUserId, esSusurro, chatCha
     if (targetUser.twitch_user_id) {
         try {
             await sendWhisper(targetUser.twitch_user_id, '⚔️ @' + username + ' te ha retado a un duelo. Tenés 2 minutos para responder con !aceptarduelo o !rechazarduelo.');
-        } catch (e) {}
+        } catch (e) { console.error('Error notif reto:', e); }
     }
     if (esSusurro) await sendWhisper(fromUserId, '⚔️ Reto enviado a @' + target + '.');
 }
@@ -1553,6 +1550,7 @@ async function procesarAceptarDuelo(username, fromUserId, esSusurro, chatChannel
     const ahoraISO = new Date().toISOString();
     await updateUsuario(retador, { ultimo_duelo_timestamp: ahoraISO });
     await updateUsuario(retado, { ultimo_duelo_timestamp: ahoraISO });
+    console.log('⚔️ Duelo resuelto: ' + retador + ' vs ' + retado + ' → ' + (empate ? 'empate' : ganador) + ' (monto: ' + monto + ')');
     const textoBase = await getTextoDuelo(situacion);
     const perdedor = empate ? '' : (ganador === retador ? retado : retador);
     const texto = aplicarPlaceholders(textoBase, {
@@ -1560,8 +1558,8 @@ async function procesarAceptarDuelo(username, fromUserId, esSusurro, chatChannel
         monto: monto > 0 ? formatBerries(monto) : '0'
     });
     client.say('op_d_bot', texto);
-    if (retadorUser.twitch_user_id) { try { await sendWhisper(retadorUser.twitch_user_id, '⚔️ ' + texto); } catch (e) {} }
-    if (retadoUser.twitch_user_id) { try { await sendWhisper(retadoUser.twitch_user_id, '⚔️ ' + texto); } catch (e) {} }
+    if (retadorUser.twitch_user_id) { try { await sendWhisper(retadorUser.twitch_user_id, '⚔️ ' + texto); } catch (e) { console.error('Error notif duelo retador:', e); } }
+    if (retadoUser.twitch_user_id) { try { await sendWhisper(retadoUser.twitch_user_id, '⚔️ ' + texto); } catch (e) { console.error('Error notif duelo retado:', e); } }
     if (esSusurro) await sendWhisper(fromUserId, '⚔️ Duelo resuelto. ' + texto);
 }
 
@@ -1595,13 +1593,14 @@ async function procesarRechazarDuelo(username, fromUserId, esSusurro, chatChanne
     const ahoraISO = new Date().toISOString();
     await updateUsuario(retador, { ultimo_duelo_timestamp: ahoraISO });
     await updateUsuario(retado, { ultimo_duelo_timestamp: ahoraISO });
+    console.log('⚔️ Duelo rechazado: ' + retador + ' vs ' + retado);
     if (esSusurro) await sendWhisper(fromUserId, 'Rechazaste el duelo.');
     else client.say(chatChannel, '@' + username + ' Rechazaste el duelo.');
     if (retadorUser && retadorUser.twitch_user_id) {
         try {
             const t = await getTextoDuelo('rechazo');
             await sendWhisper(retadorUser.twitch_user_id, '❌ ' + aplicarPlaceholders(t, { retador, retado, monto: '0' }));
-        } catch (e) {}
+        } catch (e) { console.error('Error notif rechazo:', e); }
     }
 }
 
@@ -1636,12 +1635,16 @@ client.on('message', async (channel, tags, message, self) => {
         cooldownsOnOff[canal] = Date.now();
         const nuevoEstado = (command === '!onop');
         await updateCanal(canal, { bot_activo: nuevoEstado, fecha_ultimo_cambio: new Date().toISOString() });
-        if (nuevoEstado) client.say(channel, '🟢 Bot reactivado en este canal.');
-        else client.say(channel, '🔴 Bot desactivado en este canal. Usá !onop si querés volver a activarlo.');
+        if (nuevoEstado) {
+            console.log('🟢 ' + username + ' reactivó el bot en ' + canal);
+            client.say(channel, '🟢 Bot reactivado en este canal.');
+        } else {
+            console.log('🔴 ' + username + ' desactivó el bot en ' + canal);
+            client.say(channel, '🔴 Bot desactivado en este canal. Usá !onop si querés volver a activarlo.');
+        }
         return;
     }
 
-    // En lenno_ap solo funciona lurk
     if (canal === 'lenno_ap') return;
 
     console.log('💬 [' + canal + '] ' + username + ': ' + message);
@@ -1652,7 +1655,7 @@ client.on('message', async (channel, tags, message, self) => {
             if (u && u.twitch_user_id !== twitchUserId) {
                 await updateUsuario(username, { twitch_user_id: twitchUserId });
             }
-        } catch (e) {}
+        } catch (e) { console.error('Error guardando user_id:', e); }
     }
 
     if (command === '!ayudaop') {
@@ -1801,6 +1804,7 @@ client.on('message', async (channel, tags, message, self) => {
         if (rangoAnterior !== rangoFinal.nombre) {
             const msg = MENSAJES_RANGO_ARMADURA[rangoFinal.nombre];
             if (msg) respuesta += ' | ' + msg;
+            console.log('⬆️ Rango: ' + username + ' → Armadura ' + rangoFinal.nombre);
         }
         if (mensajesExtra.length > 0) respuesta += ' | ' + mensajesExtra.join(' | ');
         if (msgPenalizacion) respuesta = msgPenalizacion + ' | ' + respuesta;
@@ -1852,9 +1856,11 @@ client.on('message', async (channel, tags, message, self) => {
                     evento_fruta_estado: 'pendiente', evento_fruta_comandos: 'si_no',
                     evento_fruta_comida_por_otro: false
                 });
+                console.log('🍎 Fruta encontrada: ' + username + ' → ' + selectedFruit.nombre + ' (evento)');
                 client.say(channel, '@' + tags.username + ' ' + selectedFruit.fase1 + ' — ✅ !si o ❌ !no');
             } else {
                 await updateUsuario(username, { fruta_pendiente: selectedFruit.nombre });
+                console.log('🍎 Fruta encontrada: ' + username + ' → ' + selectedFruit.nombre + ' (sin evento)');
                 client.say(channel, '@' + tags.username + ' ¡Encontraste la ' + selectedFruit.nombre + ' ' + (selectedFruit.emoji || '') + '! ⚔️ ' + (selectedFruit.ataque || 0) + ' | 🛡️ ' + (selectedFruit.defensa || 0) + ' | 🧠 ' + (selectedFruit.utilidad || 0) + ' — !comer o !rechazar');
             }
         } catch (err) {
@@ -1980,7 +1986,10 @@ client.on('message', async (channel, tags, message, self) => {
                 .eq('evento_fruta_nombre', user.evento_fruta_nombre)
                 .eq('evento_fruta_estado', 'pendiente').neq('username', username);
             if (afectados && afectados.length > 0) {
-                for (const a of afectados) await updateUsuario(a.username, { evento_fruta_comida_por_otro: true });
+                for (const a of afectados) {
+                    await updateUsuario(a.username, { evento_fruta_comida_por_otro: true });
+                    console.log('🍎 Fruta perdida: ' + a.username + ' perdió evento de ' + user.evento_fruta_nombre);
+                }
             }
         } else {
             await updateUsuario(username, {
@@ -2013,6 +2022,7 @@ client.on('message', async (channel, tags, message, self) => {
         if (user && user.fruta_pendiente) {
             const { data: frutaData } = await supabase.from('frutas').select('descripcion, emoji').eq('nombre', user.fruta_pendiente).single();
             await updateUsuario(username, { fruta: user.fruta_pendiente, fruta_pendiente: null });
+            console.log('🍎 Fruta consumida: ' + username + ' → ' + user.fruta_pendiente);
             client.say(channel, '@' + tags.username + ' Consumiste la ' + user.fruta_pendiente + ' ' + ((frutaData && frutaData.emoji) || '') + '.');
         } else {
             client.say(channel, '@' + tags.username + ' FELICIDADES TE COMISTE... ESTA 🫱');
@@ -2055,6 +2065,7 @@ client.on('message', async (channel, tags, message, self) => {
         const actual = user[info.campo] || 0;
         const nuevo = info.signo > 0 ? actual + cantidad : Math.max(actual - cantidad, 0);
         await updateUsuario(target, { [info.campo]: nuevo });
+        console.log('🔧 Admin: ' + username + ' ' + (info.signo > 0 ? 'sumó' : 'restó') + ' ' + cantidad + ' ' + info.nombre + ' a ' + target);
         client.say(channel, '@' + tags.username + ' ' + (info.signo > 0 ? 'Sumado' : 'Restado') + ' ' + cantidad + ' ' + info.nombre + ' a @' + target + '. Ahora: ' + nuevo);
         return;
     }
@@ -2062,6 +2073,7 @@ client.on('message', async (channel, tags, message, self) => {
         if (args.length < 2) return client.say(channel, '@' + tags.username + ' Uso: !quitarfruta @usuario');
         const target = args[1].replace('@', '').toLowerCase();
         await updateUsuario(target, { fruta: null, fruta_pendiente: null });
+        console.log('🔧 Admin: ' + username + ' quitó fruta a ' + target);
         client.say(channel, '@' + tags.username + ' Fruta quitada a @' + target + '.'); return;
     }
 });
