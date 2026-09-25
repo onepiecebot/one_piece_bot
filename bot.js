@@ -930,6 +930,13 @@ const client = new tmi.Client({
     channels: [config.channelName, 'op_d_bot', 'lenno_ap']
 });
 
+// Wrapper: loguea TODAS las respuestas del bot en el chat
+const _originalSay = client.say.bind(client);
+client.say = (channel, message) => {
+    console.log('💬 Bot → ' + channel + ': ' + message.replace(/\n/g, ' | '));
+    return _originalSay(channel, message);
+};
+
 client.connect()
     .then(() => console.log('Bot conectado como ' + config.botName))
     .catch(err => console.error('Error al conectar:', err));
@@ -994,8 +1001,11 @@ async function sendWhisper(toUserId, message) {
             },
             body: JSON.stringify({ message })
         });
-        if (response.status === 204) console.log('✅ Susurro enviado a ' + toUserId);
-        else console.error('❌ Error susurro: ' + response.status, await response.text());
+        if (response.status === 204) {
+            console.log('✅ Susurro → ' + toUserId + ': ' + message.replace(/\n/g, ' | '));
+        } else {
+            console.error('❌ Error susurro: ' + response.status, await response.text());
+        }
     } catch (err) { console.error('❌ Error red susurro:', err); }
 }
 
