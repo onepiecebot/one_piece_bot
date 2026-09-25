@@ -708,6 +708,8 @@ async function lurkCerrarBloque(username) {
     if (minutosReales > 0) {
         await updateUsuario(username, { minutos_lurk: (user.minutos_lurk || 0) + minutosReales });
     }
+    console.log('📊 Lurk cerrado: ' + username + ' → ' + totalDespues + ' min, ' + postasNuevas + ' postas, +' + ptsNuevos + ' pts');
+
     const userFresh = await getUsuario(username);
     if (userFresh) {
         const supObs = await esSupremoObservacion(username);
@@ -925,7 +927,7 @@ const AYUDA_SUSURRO = '📩 COMANDOS DE SUSURRO 🗺️ !explorar ➡️ !contin
 // CLIENTE
 // ============================================
 const client = new tmi.Client({
-    options: { debug: false, messagesLogLevel: 'info' },
+    options: { debug: false },
     identity: { username: config.botName, password: config.oauth },
     channels: [config.channelName, 'op_d_bot', 'lenno_ap']
 });
@@ -1029,6 +1031,27 @@ async function handleWhisper(event) {
         return;
     }
 
+    // !deploy (solo dueño)
+    if (command === '!deploy') {
+        if (username !== DUEÑO) {
+            await sendWhisper(fromUserId, '❌ No tenés permiso para usar este comando.');
+            return;
+        }
+        // Cerrar todos los bloques abiertos
+        const { data: abiertos } = await supabase.from('lurk_stats')
+            .select('username').not('lurk_join_actual', 'is', null);
+        let cerrados = 0;
+        if (abiertos) {
+            for (const a of abiertos) {
+                await lurkCerrarBloque(a.username);
+                cerrados++;
+            }
+        }
+        console.log('🚀 Deploy preparado. Bloques cerrados: ' + cerrados);
+        await sendWhisper(fromUserId, '✅ Listo para el deploy. Bloques cerrados: ' + cerrados + '. Podés proceder.');
+        return;
+    }
+
     // !observacion
     if (command === '!observacion') {
         if (!cooldownsLurk[username]) cooldownsLurk[username] = {};
@@ -1036,6 +1059,12 @@ async function handleWhisper(event) {
             await sendWhisper(fromUserId, '⏳ Esperá unos segundos.'); return;
         }
         cooldownsLurk[username].observacion = Date.now();
+        // Si no tiene bloque abierto, abrir uno (asume que está en el chat)
+        const lurkCheck = await getLurkStats(username);
+        if (lurkCheck && !lurkCheck.lurk_join_actual && lurkCheck.lurk_ultimo_dia === getFechaHoy()) {
+            await updateLurkStats(username, { lurk_join_actual: new Date().toISOString() });
+            console.log('👁️ Bloque reabierto por !observacion: ' + username);
+        }
         await mostrarObservacion(username, fromUserId);
         return;
     }
@@ -1392,10 +1421,10 @@ async function mostrarObservacion(username, fromUserId) {
     else faltan = '¡Día completo!';
     const msg = '📡 Haki de Observación\n' +
         'Postas hoy: ' + postas + '/3 (' + minutos + ' min)\n' +
-        'Puntos hoy: +' + ptsHoy + '\n' +
-        'Racha: ' + racha + ' días' + (bonusRacha > 0 ? ' (bonus +' + bonusRacha + ')' : '') + '\n' +
-        'Avistamiento: ' + avistamiento + '\n' +
-        faltan + '\n' +
+        '• Puntos hoy: +' + ptsHoy + '\n' +
+        '• Racha: ' + racha + ' días' + (bonusRacha > 0 ? ' (bonus +' + bonusRacha + ')' : '') + '\n' +
+        '• Avistamiento: ' + avistamiento + '\n' +
+        '• ' + faltan + '\n' +
         'Rango: ' + rango.emoji + ' ' + rango.nombre + ' (' + (user.observacion || 0) + ')';
     await sendWhisper(fromUserId, msg);
 }
