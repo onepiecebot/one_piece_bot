@@ -741,7 +741,145 @@ async function checkLiveHelix(canal) {
         return data.data && data.data.length > 0;
     } catch (e) { console.error('Error live check:', e); return false; }
 }
+// ============================================
+// SCAN DE CHATTERS
+// ============================================
+const broadcasterIdsCache = {};
 
+async function obtenerBroadcasterId(canal) {
+    if (broadcasterIdsCache[canal]) return broadcasterIdsCache[canal];
+    try {
+        const url = TWITCH_API_URL + '/users?login=' + canal;
+        const res = await fetch(url, {
+            headers: {
+                'Client-ID': config.clientId,
+                'Authorization': 'Bearer ' + config.oauth.replace('oauth:', '')
+            }
+        });
+        if (!res.ok) return null;
+        const data = await res.json();
+        const id = (data.data && data.data[0]) ? data.data[0].id : null;
+        if (id) broadcasterIdsCache[canal] = id;
+        return id;
+    } catch (e) {
+        console.error('❌ Error obtenerBroadcasterId:', e);
+        return null;
+    }
+}
+
+async function escanearChatters(canal) {
+    try {
+        if (!canalTieneLurk(canal)) return;
+        const c = await getCanal(canal);
+        if (!c || !c.bot_activo) return;
+
+        // 1. ¿Está live el canal?
+        const live = await checkLiveHelix(canal);
+        if (!live) {
+            const { data: abiertos } = await supabase.from('lurk_stats')
+                .select('username').not('lurk_join_actual', 'is', null);
+            if (abiertos && abiertos.length > 0) {
+                for (const a of abiertos) {
+                    await lurkCerrarBloque(a.username);
+                }
+                console.log('👁️ Scan ' + canal + ': canal offline, ' + abiertos.length + ' bloques cerrados');
+            } else {
+                console.log('👁️ Scan ' + canal + ': canal offline, sin bloques abiertos');
+            }
+            return;
+        }
+
+        // 2. Canal live → pedir broadcaster ID y listar chatters
+        const broadcasterId = await obtenerBroadcasterId(canal);
+        if (!broadcasterId) {
+            console.error('❌ No se pudo obtener broadcasterId de ' + canal);
+            return;
+        }
+        const url = TWITCH_API_URL + '/chat/chatters?broadcaster_id=' + broadcasterId +
+            '&moderator_id=' + config.botUserId + '&first=1000';
+        const res = await fetch(url, {
+            headers: {
+                'Client-ID': config.clientId,
+                'Authorization': 'Bearer ' + config.oauth.replace('oauth:', '')
+            }
+        });
+        if (!res.ok) {
+            console.error('❌ Error scan chatters (' + res.status + '):', await res.text());
+            return;
+        }
+        const data = await res.json();
+        const chatters = data.data || [];
+
+        // 3. Usuarios registrados
+        const { data: usuariosDb } = await supabase.from('usuarios').select('username');
+        const usuariosSet = new Set((usuariosDb || []).map(u => u.username.toLowerCase()));
+
+        // 4. Registrados que están en el chat
+        const enChat = new Set();
+        for (const ch of chatters) {
+            const u = ch.user_login.toLowerCase();
+            if (usuariosSet.has(u)) enChat.add(u);
+        }
+
+        // 5. Reabrir bloques de los que están en el chat
+        let reabiertos = 0;
+        for (const username of enChat) {
+            const lurk = await getLurkStats(username);
+            if (!lurk) continue;
+            if (lurk.lurk_join_actual) await lurkCerrarBloque(username);
+            await inicializarDiaLurk(username);
+            await updateLurkStats(username, { lurk_join_actual: new Date().toISOString() });
+            reabiertos++;
+        }
+
+        // 6. Cerrar bloques de registrados que ya NO están en el chat
+        const { data: conBloque } = await supabase.from('lurk_stats')
+            .select('username').not('lurk_join_actual', 'is', null);
+        let cerrados = 0;
+        if (conBloque) {
+            for (const row of conBloque) {
+                if (!enChat.has(row.username) && usuariosSet.has(row.username)) {
+                    await lurkCerrarBloque(row.username);
+                    cerrados++;
+                }
+            }
+        }
+
+        console.log('👁️ Scan ' + canal + ': ' + chatters.length + ' chatters, ' +
+            enChat.size + ' registrados, ' + reabiertos + ' bloques activos, ' + cerrados + ' cerrados');
+    } catch (err) {
+        console.error('❌ Error escanearChatters:', err);
+    }
+}
+
+function msHastaProximoScan() {
+    const ahora = new Date();
+    const offsetArg = -3 * 60;
+    const utc = ahora.getTime() + (ahora.getTimezoneOffset() * 60000);
+    const arg = new Date(utc + (offsetArg * 60000));
+    const minutosTotales = arg.getHours() * 60 + arg.getMinutes() + arg.getSeconds() / 60;
+    let proximo = null;
+    for (let h = 0; h < 24 && proximo === null; h++) {
+        for (const m of [1, 21, 41]) {
+            const t = h * 60 + m;
+            if (t > minutosTotales) { proximo = t; break; }
+        }
+    }
+    if (proximo === null) proximo = 24 * 60 + 1;
+    return (proximo - minutosTotales) * 60000;
+}
+
+async function programarProximoScan() {
+    const ms = msHastaProximoScan();
+    const mins = Math.floor(ms / 60000);
+    const secs = Math.floor((ms % 60000) / 1000);
+    console.log('👁️ Próximo scan de chatters en ' + mins + 'm ' + secs + 's');
+    setTimeout(async () => {
+        try { await escanearChatters('lenno_ap'); }
+        catch (e) { console.error('Error scan:', e); }
+        programarProximoScan();
+    }, ms);
+}
 async function lurkChequeoPeriodico() {
     try {
         const hoy = getFechaHoy();
@@ -1036,6 +1174,17 @@ async function handleWhisper(event) {
         const fecha = new Date(commitInfo.fecha);
         const fechaStr = fecha.toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' });
         await sendWhisper(fromUserId, '🔄 ' + fechaStr + ' | ' + commitInfo.mensaje);
+        return;
+    }
+    // !scan (solo dueño)
+    if (command === '!scan') {
+        if (username !== DUEÑO) {
+            await sendWhisper(fromUserId, '❌ No tenés permiso para usar este comando.');
+            return;
+        }
+        await sendWhisper(fromUserId, '⏳ Escaneando chatters...');
+        await escanearChatters('lenno_ap');
+        await sendWhisper(fromUserId, '✅ Scan completado. Revisá los logs.');
         return;
     }
 
@@ -1429,7 +1578,7 @@ async function mostrarObservacion(username, fromUserId) {
     const msg = '📡 Haki de Observación\n' +
         '🚩 Postas hoy: ' + postas + '/3 (' + minutos + ' min)\n' +
         '📈 Puntos hoy: +' + ptsHoy + '\n' +
-        '🔥 Racha: ' + racha + ' días' + (bonusRacha > 0 ? ' (bonus +' + bonusRacha + ')' : '') + '\n' +
+        '🔥 Racha: ' + racha + ' día' + (racha === 1 ? '' : 's') + (bonusRacha > 0 ? ' (bonus +' + bonusRacha + ')' : '') + '\n' +
         '🔭 Avistamiento: ' + avistamiento + '\n' +
         '⏳ ' + faltan + '\n' +
         '👁️ Rango: ' + rango.emoji + ' ' + rango.nombre + ' (' + (user.observacion || 0) + ')';
@@ -2098,5 +2247,12 @@ cargarEstadoNpc().then(() => {
 });
 setInterval(ejecutarTimeoutDuelos, 60 * 1000);
 setInterval(lurkChequeoPeriodico, 5 * 60 * 1000);
+
+// Scan inicial de chatters + programación de scans :01, :21, :41
+setTimeout(async () => {
+    try { await escanearChatters('lenno_ap'); }
+    catch (e) { console.error('Error scan inicial:', e); }
+    programarProximoScan();
+}, 15000);
 
 console.log('Bot escuchando...');
