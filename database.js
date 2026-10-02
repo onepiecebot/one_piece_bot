@@ -307,6 +307,23 @@ async function huboStreamEseDia(fecha) {
 }
 
 // ==================== INICIALIZACIÓN DE DÍA ====================
+// Evalúa la racha según los días con stream desde la última racha
+async function evaluarRacha(username, lurk) {
+    const rachaDia = lurk.lurk_ultimo_dia_racha;
+    if (!rachaDia) return lurk.lurk_racha || 0;
+    const ayer = getFechaOffset(-1);
+    if (rachaDia === ayer) return lurk.lurk_racha || 0;
+    const fechaRacha = new Date(rachaDia + 'T00:00:00');
+    const fechaAyer = new Date(ayer + 'T00:00:00');
+    const diasDesde = Math.floor((fechaAyer - fechaRacha) / (1000 * 60 * 60 * 24));
+    if (diasDesde <= 0) return lurk.lurk_racha || 0;
+    for (let i = 1; i <= diasDesde; i++) {
+        const fecha = getFechaOffset(-i);
+        const hubo = await huboStreamEseDia(fecha);
+        if (hubo) return 0;
+    }
+    return lurk.lurk_racha || 0;
+}
 // Se llama al primer comando del día de un usuario.
 // Si cambió el día: aplica penalizaciones, resetea contadores diarios.
 async function inicializarDiaLurk(username) {
@@ -318,6 +335,8 @@ async function inicializarDiaLurk(username) {
     }
     // Aplicar penalizaciones de días inactivos con stream
     const penalizacion = await aplicarPenalizacionesInactivas(username, lurk);
+    // Evaluar racha
+    const rachaNueva = await evaluarRacha(username, lurk);
     // Resetear contadores diarios
     await updateLurkStats(username, {
         lurk_minutos_hoy: 0,
@@ -328,7 +347,8 @@ async function inicializarDiaLurk(username) {
         lurk_rango_inicio: null,
         lurk_ultimo_dia: hoy,
         lurk_join_actual: null,
-        lurk_ultimo_chequeo: new Date().toISOString()
+        lurk_ultimo_chequeo: new Date().toISOString(),
+        lurk_racha: rachaNueva
     });
     return { penalizacion, reseteado: true, lurk: await getLurkStats(username) };
 }
@@ -345,6 +365,6 @@ module.exports = {
     getHistorialLurk, agregarPuntosObservacion, recalcularObservacion,
     limpiarHistorialViejo, aplicarPenalizacionesInactivas,
     getCanal, getCanales, updateCanal, huboStreamEseDia,
-    inicializarDiaLurk,
+    inicializarDiaLurk, evaluarRacha,
     sumarMinutosLurk, getCanalesActivos
 };

@@ -18,14 +18,12 @@ const {
 // ============================================
 // CONSTANTES
 // ============================================
-const COOLDOWN_FRUTA = 60000;
-const PROB_FRUTA = 100;
+const COOLDOWN_FRUTA = 20 * 60 * 1000; // 20 min
+const FRUTA_LIMITE_DIARIO = 5;
+const TOTAL_PUERTAS_JUEGO = 20000;
 const DUEÑO = 'fan_d_larana';
 const TWITCH_API_URL = 'https://api.twitch.tv/helix';
 const GITHUB_REPO = 'onepiecebot/one_piece_bot';
-
-const MODO_COOLDOWN = 'prueba';
-const COOLDOWN_EXPLORAR_PRUEBA = 10 * 60 * 1000;
 
 const DUELO_DELTA_MINIMO = 100000000;
 const DUELO_COOLDOWN_MS = 10 * 60 * 1000;
@@ -33,6 +31,8 @@ const DUELO_LIMITE_DIARIO = 5;
 const DUELO_LIMITE_PAREJA = 3;
 const DUELO_TIMEOUT_MS = 2 * 60 * 1000;
 
+// Canales donde se cuenta lurk. fan_d_larana y op_d_bot NO tienen lurk
+// porque no son canales de streamer. Se agregan acá a medida que suman.
 const CANALES_CON_LURK = ['lenno_ap'];
 const LURK_POSTA_MINUTOS = 20;
 const LURK_POSTAS_MAX = 3;
@@ -40,7 +40,6 @@ const LURK_MICRO_COOLDOWN_MS = 2 * 60 * 1000;
 const LURK_LIVE_MINIMO_2H = 120;
 
 const NPC_VENTANA_MINUTOS = 10;
-const MODO_TESTEO_LURK = true;
 
 const esDueño = (username) => username.toLowerCase() === DUEÑO;
 
@@ -53,6 +52,10 @@ const notif5Plazas = { fecha: null, enviado: false };
 // ============================================
 // HELPERS GENERALES
 // ============================================
+function displayStat(valor) {
+    if (valor === 11) return '10+';
+    return String(valor);
+}
 function formatBerries(n) {
     const abs = Math.abs(n);
     if (abs >= 1e9) return (n / 1e9).toFixed(2).replace(/\.?0+$/, '') + 'B';
@@ -144,6 +147,14 @@ function calcularBonusRacha(racha) {
     return (racha % 5 === 0) ? 10 : 2;
 }
 
+// Filtro de episodio: ¿la fruta pasa el filtro del canal?
+function pasaFiltroEpisodio(fruta, filtro) {
+    if (!filtro || filtro === 'manga') return true;
+    if (filtro === 'anime') return fruta.episodio_anime !== null && fruta.episodio_anime !== undefined;
+    const limite = parseInt(filtro);
+    if (isNaN(limite)) return true;
+    return fruta.episodio_anime !== null && fruta.episodio_anime !== undefined && fruta.episodio_anime <= limite;
+}
 function getCalaverasPorProb(prob) {
     if (prob >= 0.85) return '💀';
     if (prob >= 0.60) return '💀💀';
@@ -211,8 +222,8 @@ function calcularRecompensa(user) {
     const arm = user.armadura || 0;
     const obs = user.observacion || 0;
     const conq = user.conquistador || 0;
-    const tieneFruta = user.fruta ? 1 : 0;
-    return (arm * 500000) + (obs * 500000) + (conq * 1000000) + (tieneFruta * 10000000);
+    const numFrutas = (user.fruta ? 1 : 0) + (user.fruta_2 ? 1 : 0);
+    return (arm * 500000) + (obs * 500000) + (conq * 1000000) + (numFrutas * 10000000);
 }
 
 const PENALIZACION_BASES = {
@@ -376,7 +387,11 @@ async function calcularPCFUsuario(user) {
     let poderFruta = 0;
     if (user.fruta) {
         const { data: f } = await supabase.from('frutas').select('poder_fruta').eq('nombre', user.fruta).single();
-        poderFruta = (f && f.poder_fruta) ? f.poder_fruta : 0;
+        poderFruta += (f && f.poder_fruta) ? f.poder_fruta : 0;
+    }
+    if (user.fruta_2) {
+        const { data: f2 } = await supabase.from('frutas').select('poder_fruta').eq('nombre', user.fruta_2).single();
+        poderFruta += (f2 && f2.poder_fruta) ? f2.poder_fruta : 0;
     }
     const supArm = await esSupremoArmadura(user.username);
     const supObs = await esSupremoObservacion(user.username);
@@ -518,23 +533,18 @@ async function seleccionarNPCs(pcfUsuario) {
     return resultado;
 }
 
+// Cooldown de exploración: 1 vez por día, reset a las 00:00 AR
 async function puedeExplorar(user) {
-    if (MODO_COOLDOWN === 'produccion') {
-        const hoy = getFechaHoy();
-        if (!user.ultimo_dia_exploracion || user.ultimo_dia_exploracion !== hoy) return { ok: true };
-        const ahora = new Date();
-        const offsetArg = -3 * 60;
-        const utc = ahora.getTime() + (ahora.getTimezoneOffset() * 60000);
-        const argNow = new Date(utc + (offsetArg * 60000));
-        const manana = new Date(argNow);
-        manana.setDate(manana.getDate() + 1);
-        manana.setHours(0, 0, 0, 0);
-        return { ok: false, restante: manana.getTime() - argNow.getTime() };
-    }
-    if (!user.ultima_exploracion) return { ok: true };
-    const diff = Date.now() - new Date(user.ultima_exploracion).getTime();
-    if (diff >= COOLDOWN_EXPLORAR_PRUEBA) return { ok: true };
-    return { ok: false, restante: COOLDOWN_EXPLORAR_PRUEBA - diff };
+    const hoy = getFechaHoy();
+    if (!user.ultimo_dia_exploracion || user.ultimo_dia_exploracion !== hoy) return { ok: true };
+    const ahora = new Date();
+    const offsetArg = -3 * 60;
+    const utc = ahora.getTime() + (ahora.getTimezoneOffset() * 60000);
+    const argNow = new Date(utc + (offsetArg * 60000));
+    const manana = new Date(argNow);
+    manana.setDate(manana.getDate() + 1);
+    manana.setHours(0, 0, 0, 0);
+    return { ok: false, restante: manana.getTime() - argNow.getTime() };
 }
 
 function formatTiempoRestante(ms) {
@@ -726,6 +736,23 @@ async function lurkCerrarBloque(username) {
 async function lurkProcesarPostas(username) {
     return await lurkCerrarBloque(username);
 }
+// Cache de live por canal (5 min TTL)
+const liveCache = {};
+const LIVE_CACHE_TTL = 5 * 60 * 1000;
+
+async function canalEstaActivo(canal) {
+    const c = await getCanal(canal);
+    if (!c) return true; // Canal desconocido → no bloqueamos
+    if (!c.lurk_activo) return true; // Canal sin lurk → siempre activo
+    // Canal con lurk → chequear live con cache
+    const ahora = Date.now();
+    if (liveCache[canal] && ahora - liveCache[canal].timestamp < LIVE_CACHE_TTL) {
+        return liveCache[canal].live;
+    }
+    const live = await checkLiveHelix(canal);
+    liveCache[canal] = { live, timestamp: ahora };
+    return live;
+}
 
 async function checkLiveHelix(canal) {
     try {
@@ -890,6 +917,12 @@ async function lurkChequeoPeriodico() {
             for (const a of activosPre) {
                 if (a.lurk_ultimo_dia !== hoy) {
                     await lurkCerrarBloque(a.username);
+                    const lurkFresh = await getLurkStats(a.username);
+                    let rachaNueva = lurkFresh ? (lurkFresh.lurk_racha || 0) : 0;
+                    if (lurkFresh) {
+                        const rachaEval = await db.evaluarRacha(a.username, lurkFresh);
+                        rachaNueva = rachaEval;
+                    }
                     await updateLurkStats(a.username, {
                         lurk_ultimo_dia: hoy,
                         lurk_minutos_hoy: 0,
@@ -897,9 +930,10 @@ async function lurkChequeoPeriodico() {
                         lurk_postas_hoy: 0,
                         lurk_npc_pendiente: 0,
                         lurk_npc_canjeado_hoy: false,
-                        lurk_rango_inicio: null
+                        lurk_rango_inicio: null,
+                        lurk_racha: rachaNueva
                     });
-                    console.log('🌅 Reset diario de lurk para ' + a.username);
+                    console.log('🌅 Reset diario de lurk para ' + a.username + ' (racha → ' + rachaNueva + ')');
                 }
             }
         }
@@ -965,7 +999,6 @@ async function guardarEstadoNpc() {
 }
 
 async function anunciarNpc() {
-    if (MODO_TESTEO_LURK) return;
     if (npcUltimoAnuncio) {
         const desdeUlt = Date.now() - new Date(npcUltimoAnuncio).getTime();
         if (desdeUlt < 55 * 60 * 1000) return;
@@ -1005,7 +1038,6 @@ function msHastaProximoMedia() {
 }
 
 async function programarProximoNpc() {
-    if (MODO_TESTEO_LURK) return;
     const ms = msHastaProximoMedia();
     console.log('👁️ Próximo anuncio NPC en ' + Math.round(ms / 60000) + ' min');
     setTimeout(async () => {
@@ -1016,7 +1048,6 @@ async function programarProximoNpc() {
 }
 
 async function procesarPersonaje(username, nombreIngresado, fromUserId) {
-    if (MODO_TESTEO_LURK) return;
     if (!npcActual) { await sendWhisper(fromUserId, '⏳ No hay ningún avistamiento activo ahora.'); return; }
     if (!npcVentanaHasta || new Date(npcVentanaHasta) < new Date()) {
         await sendWhisper(fromUserId, '⏳ Ya pasó la ventana de reclamo.'); return;
@@ -1055,7 +1086,64 @@ async function procesarPersonaje(username, nombreIngresado, fromUserId) {
 // ============================================
 // AYUDA
 // ============================================
-const AYUDA_MENU = '📖 AYUDA - op_d_bot — ¿Qué querés ver? 💬 !ayudachat → Comandos de chat 📩 !ayudasusurro → Comandos de susurro';
+const AYUDA_MENU = '📖 AYUDA - op_d_bot\n' +
+    '💬 !ayudachat → Comandos de chat\n' +
+    '📩 !ayudasusurro → Comandos de susurro\n' +
+    '🔍 !ayuda <tema> → Explicación detallada\n' +
+    '   Temas: observacion, armadura, conquistador, explorar, fruta, duelos, infoop, rangos, recompensas';
+
+const AYUDA_TEMAS = {
+    observacion: '📡 HAKI DE OBSERVACIÓN\n' +
+        'Se entrena estando presente en el chat del stream.\n' +
+        '• Cada 20 min seguidos = 1 posta. Máximo 3 postas por día (60 min).\n' +
+        '• Al llegar a 3 postas ganás puntos según tu rango + bonus por racha.\n' +
+        '• Si no completás la hora, tu racha se reinicia.\n' +
+        '• Mirá tu progreso con !observacion y los canales activos con !canaleson.',
+    armadura: '🛡️ HAKI DE ARMADURA\n' +
+        'Se entrena con !op (máx 3 veces por día, cooldown 10 min).\n' +
+        '• Cada !op hace una tirada según tu rango (puede sumar o restar).\n' +
+        '• Completar los 3 !op del día da bonus diario.\n' +
+        '• Días seguidos entrenando = bonus por racha.\n' +
+        '• Si un día no entrenás, al siguiente perdés puntos.',
+    conquistador: '⚜️ HAKI DE CONQUISTADOR\n' +
+        'Se entrena explorando y duelando.\n' +
+        '• Ganás Conquistador al ganar exploraciones (!explorar → !combatir).\n' +
+        '• Se gana/pierde Conquistador en duelos (!retar @usuario).\n' +
+        '• Perdés Conquistador si te retirás durante una exploración.',
+    explorar: '🗺️ EXPLORACIÓN\n' +
+        'Se usa por susurro (!explorar), 1 vez por día.\n' +
+        '• Te aparecen 3 caminos con dificultades distintas.\n' +
+        '• Elegís uno (!facil / !medio / !dificil).\n' +
+        '• Enfrentás a un NPC. Podés !continuar o !retroceder.\n' +
+        '• Al combatir ganás/perdés Conquistador y Berries según el resultado.\n' +
+        '• Si te retirás en fases posteriores, perdés Conquistador.',
+    fruta: '🍎 FRUTAS DEL DIABLO\n' +
+        'Buscás frutas con !fruta (máx 5 intentos por día).\n' +
+        '• Si encontrás una, elegís !comer o !rechazar.\n' +
+        '• Algunas tienen evento: primero !si/!no, después !pelear/!huir.\n' +
+        '• Solo podés tener 1 fruta a la vez.\n' +
+        '• Algunas frutas raras las tienen otros usuarios. ¡Competí por ellas!',
+    duelos: '⚔️ DUELOS\n' +
+        'Retás a otros con !retar @usuario (chat o susurro).\n' +
+        '• Necesitás $100M+ de recompensa y haber explorado hoy.\n' +
+        '• El retado tiene 2 min para !aceptarduelo o !rechazarduelo.\n' +
+        '• El ganador se lleva Berries del perdedor (según recompensas).\n' +
+        '• Máx 5 duelos por día, 3 contra la misma persona.',
+    infoop: '📊 TU INFO (!infoop)\n' +
+        'Muestra: 🍎 fruta | 🛡️ Armadura | 👁️ Observación | ⚜️ Conquistador | 🏴‍☠️💰 recompensa.\n' +
+        '• En chat muestra tu info resumida (actualiza tu recompensa pública).\n' +
+        '• Por susurro muestra tu info detallada.\n' +
+        '• !infoop @usuario muestra info resumida de otro.',
+    rangos: '🎖️ RANGOS DE HAKI\n' +
+        'Armadura y Observación: No despertado (0) → Despertado (20) → Básico (50) → Avanzado (80) → Supremo (100+).\n' +
+        'Conquistador: No despertado (0) → Despertado (60) → Básico (80) → Avanzado (95) → Supremo (100+).\n' +
+        'Los Supremos son solo unos pocos.',
+    recompensas: '🏴‍☠️💰 RECOMPENSAS\n' +
+        'Tu recompensa crece con tus stats y con lo que ganás (o perdés) en eventos.\n' +
+        '• En chat: se actualiza tu recompensa pública (la que ven otros).\n' +
+        '• Por susurro: ves tu recompensa real siempre actualizada.\n' +
+        '• Las pérdidas no bajan tu recompensa por debajo de tus stats.'
+};
 const AYUDA_CHAT = '💬 COMANDOS DE CHAT 🎮 !op → Entrena Haki 📊 !infoop → Tu info 🍎 !fruta → Busca fruta 😋 !comer / ❌ !rechazar ⚔️ !retar @usuario → Duelo ✅ !aceptarduelo / ❌ !rechazarduelo 🏆 !historial @usuario 🔴 !offop / 🟢 !onop';
 const AYUDA_SUSURRO = '📩 COMANDOS DE SUSURRO 🗺️ !explorar ➡️ !continuar / ⬅️ !retroceder ⚔️ !combatir / 🏃 !retirarse ⏳ !exploracionpendiente ⚔️ !duelopendiente 📊 !infoop 👤 !infoop @usuario 🔄 !actualizacion 📡 !observacion 📡 !canaleson 👁️ !personaje <nombre>';
 
@@ -1165,9 +1253,20 @@ async function handleWhisper(event) {
         await sendWhisper(fromUserId, '¡Hola ' + fromUserLogin + '! Funciona. 🎉');
         return;
     }
-    if (command === '!ayuda' || command === '!ayudaop') { await sendWhisper(fromUserId, AYUDA_MENU); return; }
+    if ((command === '!ayuda' || command === '!ayudaop') && !args[1]) { await sendWhisper(fromUserId, AYUDA_MENU); return; }
     if (command === '!ayudachat') { await sendWhisper(fromUserId, AYUDA_CHAT); return; }
     if (command === '!ayudasusurro') { await sendWhisper(fromUserId, AYUDA_SUSURRO); return; }
+
+    // !ayuda <tema>
+    if (command === '!ayuda' && args[1]) {
+        const tema = normalizarComando(args[1]);
+        if (AYUDA_TEMAS[tema]) {
+            await sendWhisper(fromUserId, AYUDA_TEMAS[tema]);
+        } else {
+            await sendWhisper(fromUserId, 'eh?');
+        }
+        return;
+    }
 
     if (command === '!actualizacion') {
         if (!commitInfo) { await sendWhisper(fromUserId, '🔄 Cargando...'); return; }
@@ -1187,6 +1286,48 @@ async function handleWhisper(event) {
         await sendWhisper(fromUserId, '✅ Scan completado. Revisá los logs.');
         return;
     }
+    // !agregarcanal xxxxx (solo dueño)
+    if (command === '!agregarcanal') {
+        if (username !== DUEÑO) {
+            await sendWhisper(fromUserId, '❌ No tenés permiso para usar este comando.');
+            return;
+        }
+        if (!args[1]) {
+            await sendWhisper(fromUserId, 'Uso: !agregarcanal nombre_del_canal');
+            return;
+        }
+        const nuevoCanal = args[1].toLowerCase().trim();
+        // Validar formato (solo letras, números, guiones bajos)
+        if (!/^[a-z0-9_]{3,25}$/.test(nuevoCanal)) {
+            await sendWhisper(fromUserId, '❌ Nombre de canal inválido. Solo letras, números y guiones bajos (3-25 caracteres).');
+            return;
+        }
+        // ¿Ya existe?
+        const canalExistente = await getCanal(nuevoCanal);
+        if (canalExistente) {
+            await sendWhisper(fromUserId, '⚠️ El canal "' + nuevoCanal + '" ya está agregado.');
+            return;
+        }
+        // Crear en DB
+        const { error: errInsert } = await supabase
+            .from('canales')
+            .insert([{ canal: nuevoCanal, bot_activo: true, lurk_activo: true, fecha_ultimo_cambio: new Date().toISOString() }]);
+        if (errInsert) {
+            console.error('❌ Error agregando canal:', errInsert.message);
+            await sendWhisper(fromUserId, '❌ Error al agregar el canal. Revisá los logs.');
+            return;
+        }
+        // Unirse al IRC
+        try {
+            await client.join(nuevoCanal);
+            console.log('📡 Canal agregado: ' + nuevoCanal + ' (con lurk)');
+            await sendWhisper(fromUserId, '✅ Canal "' + nuevoCanal + '" agregado. Lurk activo. El bot se unió al chat.');
+        } catch (e) {
+            console.error('❌ Error uniendo al IRC:', e);
+            await sendWhisper(fromUserId, '⚠️ Canal agregado a la DB, pero no se pudo unir al IRC (¿el bot tiene permiso?). Revisá los logs.');
+        }
+        return;
+    }
 
     // !deploy (solo dueño)
     if (command === '!deploy') {
@@ -1194,6 +1335,7 @@ async function handleWhisper(event) {
             await sendWhisper(fromUserId, '❌ No tenés permiso para usar este comando.');
             return;
         }
+        // Cerrar bloques abiertos
         const { data: abiertos } = await supabase.from('lurk_stats')
             .select('username').not('lurk_join_actual', 'is', null);
         let cerrados = 0;
@@ -1203,8 +1345,41 @@ async function handleWhisper(event) {
                 cerrados++;
             }
         }
-        console.log('🚀 Deploy preparado. Bloques cerrados: ' + cerrados);
-        await sendWhisper(fromUserId, '✅ Listo para el deploy. Bloques cerrados: ' + cerrados + '. Podés proceder.');
+        // Avisar a todos los canales (incluye los offop)
+        const canales = await getCanales();
+        const msg = '🔧 El bot entrará en mantenimiento. No va a funcionar hasta nuevo aviso. Disculpen las molestias.';
+        const avisados = [];
+        for (const c of canales) {
+            // Si es canal con lurk, solo avisamos si está live
+            if (canalTieneLurk(c.canal)) {
+                const live = await checkLiveHelix(c.canal);
+                if (!live) continue;
+            }
+            try { client.say(c.canal, msg); avisados.push(c.canal); } catch (e) {}
+        }
+        console.log('🚀 Deploy preparado. Bloques cerrados: ' + cerrados + '. Avisados: ' + avisados.join(', '));
+        await sendWhisper(fromUserId, '✅ Deploy preparado. Bloques: ' + cerrados + '. Avisados: ' + (avisados.join(', ') || 'ninguno'));
+        return;
+    }
+
+    // !deploylisto (solo dueño)
+    if (command === '!deploylisto') {
+        if (username !== DUEÑO) {
+            await sendWhisper(fromUserId, '❌ No tenés permiso para usar este comando.');
+            return;
+        }
+        const canales = await getCanales();
+        const msg = '✅ El bot ya está funcionando de nuevo. ¡Gracias por esperar!';
+        const avisados = [];
+        for (const c of canales) {
+            if (canalTieneLurk(c.canal)) {
+                const live = await checkLiveHelix(c.canal);
+                if (!live) continue;
+            }
+            try { client.say(c.canal, msg); avisados.push(c.canal); } catch (e) {}
+        }
+        console.log('🚀 Deploy confirmado. Avisados: ' + avisados.join(', '));
+        await sendWhisper(fromUserId, '✅ Aviso enviado a: ' + (avisados.join(', ') || 'ninguno'));
         return;
     }
 
@@ -1250,7 +1425,6 @@ async function handleWhisper(event) {
 
     // !personaje X
     if (command === '!personaje') {
-        if (MODO_TESTEO_LURK) { await sendWhisper(fromUserId, '⏳ El avistamiento todavía no está activo.'); return; }
         if (!args[1]) { await sendWhisper(fromUserId, 'Uso: !personaje <nombre>'); return; }
         await procesarPersonaje(username, args[1], fromUserId);
         return;
@@ -1266,6 +1440,10 @@ async function handleWhisper(event) {
         if (user.fruta) {
             const { data: f } = await supabase.from('frutas').select('emoji').eq('nombre', user.fruta).single();
             frutaTexto = '🍎 ' + user.fruta + ' ' + ((f && f.emoji) || '');
+        }
+        if (user.fruta_2) {
+            const { data: f2 } = await supabase.from('frutas').select('emoji').eq('nombre', user.fruta_2).single();
+            frutaTexto += ' | 🍎 ' + user.fruta_2 + ' ' + ((f2 && f2.emoji) || '');
         }
         const rangoArm = getRangoArmadura(user.armadura || 0, supArm);
         const rangoObs = getRangoObservacion(user.observacion || 0, supObs);
@@ -1318,9 +1496,10 @@ async function handleWhisper(event) {
         const { data: fruta } = await supabase.from('frutas').select('*').eq('nombre', user.evento_fruta_nombre).single();
         if (!fruta) { await sendWhisper(fromUserId, 'Error.'); return; }
         if (user.evento_fruta_fase === 'avistamiento') {
-            await sendWhisper(fromUserId, fruta.fase1 + ' — ✅ !si o ❌ !no');
+            await sendWhisper(fromUserId, fruta.fase1 + '\n\n📖 Para continuar, andá al chat del canal donde la encontraste, o al chat de op_d_bot.');
         } else {
-            await sendWhisper(fromUserId, fruta.fase2 + ' ' + getCalaverasPorProb(0.5) + ' 🍎 ' + fruta.nombre + ' ' + (fruta.emoji || '') + ' ⚔️ ' + (fruta.ataque || 0) + ' | 🛡️ ' + (fruta.defensa || 0) + ' | 🧠 ' + (fruta.utilidad || 0) + ' — ⚔️ !pelear o 🏃 !huir');
+            const calaverasFPw = await getCalaverasEventoFruta(user, fruta);
+            await sendWhisper(fromUserId, fruta.fase2 + ' ' + calaverasFPw + ' 🍎 ' + fruta.nombre + ' ' + (fruta.emoji || '') + ' ⚔️ ' + displayStat(fruta.ataque || 0) + ' | 🛡️ ' + displayStat(fruta.defensa || 0) + ' | 🧠 ' + displayStat(fruta.utilidad || 0) + '\n\n📖 Para resolverlo, andá al chat del canal donde la encontraste, o al chat de op_d_bot.');
         }
         return;
     }
@@ -1447,7 +1626,7 @@ async function handleWhisper(event) {
                 evento_explorar_npc: null, evento_explorar_nivel: null, evento_explorar_pcf_usuario: null,
                 evento_explorar_pcf_npc: null, evento_explorar_comandos: null, evento_explorar_opciones: null
             });
-            await sendWhisper(fromUserId, msgCtx + ' 🏆 ¡Victoria! +' + op.recompensa_conq + ' Conq. +$' + op.recompensa_berries.toLocaleString('es-AR'));
+            await sendWhisper(fromUserId, msgCtx + ' 🏆 ¡Victoria! Derrotaste a la sombra de ' + op.npc + '. +' + op.recompensa_conq + ' Conq. +$' + op.recompensa_berries.toLocaleString('es-AR'));
         } else {
             await updateUsuario(username, {
                 conquistador: Math.max((user.conquistador || 0) - op.castigo_conq, 0),
@@ -1456,7 +1635,7 @@ async function handleWhisper(event) {
                 evento_explorar_npc: null, evento_explorar_nivel: null, evento_explorar_pcf_usuario: null,
                 evento_explorar_pcf_npc: null, evento_explorar_comandos: null, evento_explorar_opciones: null
             });
-            await sendWhisper(fromUserId, msgCtx + ' 💀 Derrota. -' + op.castigo_conq + ' Conq. -$' + op.castigo_berries.toLocaleString('es-AR'));
+            await sendWhisper(fromUserId, msgCtx + ' 💀 Derrota. La sombra de ' + op.npc + ' te superó. -' + op.castigo_conq + ' Conq. -$' + op.castigo_berries.toLocaleString('es-AR'));
         }
         return;
     }
@@ -1644,6 +1823,25 @@ async function procesarRetar(username, targetRaw, fromUserId, esSusurro, chatCha
     }
     if (esSusurro) await sendWhisper(fromUserId, '⚔️ Reto enviado a @' + target + '.');
 }
+// Calaveras para evento de fruta (calculadas al momento de mostrar)
+async function getCalaverasEventoFruta(user, frutaData) {
+    const poderFrutaUsuario = (frutaData && frutaData.poder_fruta) ? frutaData.poder_fruta : 0;
+    const nombreSombra = (frutaData && frutaData.sombra) ? frutaData.sombra : null;
+    const supArm = await esSupremoArmadura(user.username);
+    const supObs = await esSupremoObservacion(user.username);
+    const supConq = await esSupremoConquistador(user.username);
+    const poderUsuario = poderFrutaUsuario
+        + calcularAporteArmadura(user.armadura || 0, supArm)
+        + calcularAporteObservacion(user.observacion || 0, supObs)
+        + calcularAporteConquistador(user.conquistador || 0, supConq);
+    let poderEnemigo = 80;
+    if (nombreSombra) {
+        const { data: npc } = await supabase.from('npcs').select('pcf_final, pcf_calculado').eq('nombre', nombreSombra).maybeSingle();
+        poderEnemigo = (npc && (npc.pcf_final || npc.pcf_calculado)) || 80;
+    } else poderEnemigo = 20 + (user.evento_fruta_nivel || 4) * 15;
+    const prob = 1 / (1 + Math.exp(5 * ((poderEnemigo / poderUsuario) - 1)));
+    return getCalaverasPorProb(prob);
+}
 
 // ============================================
 // ACEPTAR / RECHAZAR DUELO
@@ -1784,6 +1982,9 @@ client.on('message', async (channel, tags, message, self) => {
 
     if (!botActivo && command !== '!onop') return;
 
+    // Canal live: si tiene lurk_activo y no está live, ignorar todo
+    if (!(await canalEstaActivo(canal))) return;
+
     // !onop / !offop
     if (command === '!onop' || command === '!offop') {
         if (!esModOCaster(tags)) return;
@@ -1804,8 +2005,6 @@ client.on('message', async (channel, tags, message, self) => {
         return;
     }
 
-    if (canal === 'lenno_ap') return;
-
     console.log('💬 [' + canal + '] ' + username + ': ' + message);
 
     if (twitchUserId) {
@@ -1819,6 +2018,28 @@ client.on('message', async (channel, tags, message, self) => {
 
     if (command === '!ayudaop') {
         client.say(channel, '@' + tags.username + ' 📩 Mandame !ayudaop por susurro.');
+        return;
+    }
+    // !setepisodio
+    if (command === '!setepisodio') {
+        const esDueñoGlobal = esDueño(username);
+        const esDueñoCanal = (username === canal);
+        const esMod = tags.mod === true || (tags.badges && tags.badges.broadcaster === '1');
+        if (!esDueñoGlobal && !esDueñoCanal && !esMod) return;
+        const canalDbSetEp = await getCanal(canal);
+        if (!canalDbSetEp) return;
+        if (!args[1]) {
+            client.say(channel, '@' + tags.username + ' Filtro actual: ' + (canalDbSetEp.episodio_filtro || 'sin filtro'));
+            return;
+        }
+        const valor = args[1].toLowerCase();
+        if (valor !== 'anime' && valor !== 'manga' && isNaN(parseInt(valor))) {
+            client.say(channel, '@' + tags.username + ' Valor inválido. Usá número, "anime" o "manga".');
+            return;
+        }
+        await updateCanal(canal, { episodio_filtro: valor });
+        console.log('📺 Filtro actualizado: ' + canal + ' → ' + valor);
+        client.say(channel, '@' + tags.username + ' Filtro actualizado a: ' + valor);
         return;
     }
 
@@ -1871,6 +2092,12 @@ client.on('message', async (channel, tags, message, self) => {
 
     if (command === '!infoop') {
         if (args[1]) { client.say(channel, '@' + tags.username + ' Por susurro, máquina 📩'); return; }
+        const infoopKey = 'infoop_' + username;
+        if (cooldowns[infoopKey] && Date.now() - cooldowns[infoopKey] < 60000) {
+            client.say(channel, '@' + tags.username + ' ⏳ Esperá un ratito crack, cuánto te creés que cambió?');
+            return;
+        }
+        cooldowns[infoopKey] = Date.now();
         const user = await getUsuario(username);
         if (!user) { client.say(channel, '@' + tags.username + ' Error.'); return; }
         const supArm = await esSupremoArmadura(username);
@@ -1880,9 +2107,23 @@ client.on('message', async (channel, tags, message, self) => {
         const recompensaReal = recompensaBase + Math.max(0, user.recompensa_delta || 0);
         await updateUsuario(username, { recompensa_publica: recompensaReal });
         let frutaTexto = '🍎 Ninguna';
+        const canalDbInfo = await getCanal(canal);
+        const filtroInfo = canalDbInfo ? canalDbInfo.episodio_filtro : null;
         if (user.fruta) {
-            const { data: f } = await supabase.from('frutas').select('emoji').eq('nombre', user.fruta).single();
-            frutaTexto = '🍎 ' + user.fruta + ' ' + ((f && f.emoji) || '');
+            const { data: f } = await supabase.from('frutas').select('emoji, episodio_anime').eq('nombre', user.fruta).single();
+            if (f && !pasaFiltroEpisodio(f, filtroInfo)) {
+                frutaTexto = '🍎 SPOILER';
+            } else {
+                frutaTexto = '🍎 ' + user.fruta + ' ' + ((f && f.emoji) || '');
+            }
+        }
+        if (user.fruta_2) {
+            const { data: f2 } = await supabase.from('frutas').select('emoji, episodio_anime').eq('nombre', user.fruta_2).single();
+            if (f2 && !pasaFiltroEpisodio(f2, filtroInfo)) {
+                frutaTexto += ' | 🍎 SPOILER';
+            } else {
+                frutaTexto += ' | 🍎 ' + user.fruta_2 + ' ' + ((f2 && f2.emoji) || '');
+            }
         }
         const eArm = getRangoArmadura(user.armadura || 0, supArm).emoji;
         const eObs = getRangoObservacion(user.observacion || 0, supObs).emoji;
@@ -1975,20 +2216,49 @@ client.on('message', async (channel, tags, message, self) => {
         try {
             const user = await getUsuario(username);
             if (!user) return;
-            if (user.fruta) { client.say(channel, '@' + tags.username + ' Ya tenés fruta.'); return; }
+            const tieneYami = (user.fruta === 'Yami Yami no Mi' || user.fruta_2 === 'Yami Yami no Mi');
+            const yaTieneDos = user.fruta && user.fruta_2;
+            if (yaTieneDos) {
+                client.say(channel, '@' + tags.username + ' 😤 PARAAAAA LOCO, ¿cuántas frutas querés? Ya tenés 2, dejá alguna para los demás piratas.');
+                return;
+            }
+            if (user.fruta && !tieneYami) {
+                client.say(channel, '@' + tags.username + ' Ya tenés fruta.');
+                return;
+            }
+            if (user.fruta_pendiente) {
+                client.say(channel, '@' + tags.username + ' Tenés una fruta pendiente. Usá !comer o !rechazar primero.');
+                return;
+            }
             if (user.evento_fruta_estado === 'pendiente') {
                 client.say(channel, '@' + tags.username + ' Tenés evento de fruta pendiente.'); return;
+            }
+            // Yami Yami: descubrimiento épico (solo primera vez)
+            if (tieneYami && !user.fruta_2 && !user.yami_aviso_mostrado) {
+                await updateUsuario(username, { yami_aviso_mostrado: true });
+                client.say(channel, '@' + tags.username + ' 🌑⚡ ¡ANOMALÍA! La Yami Yami no Mi pulsa con fuerza. Las tinieblas se retuercen dentro tuyo... y una puerta se abre. ¡Podés contener una SEGUNDA fruta del diablo! Los mares temblarán con tu nombre.');
+            }
+            // Reset diario de intentos
+            const hoy = getFechaHoy();
+            let intentosHoy = user.fruta_intentos_hoy || 0;
+            if (user.ultimo_dia_fruta !== hoy) {
+                intentosHoy = 0;
+                await updateUsuario(username, { fruta_intentos_hoy: 0, ultimo_dia_fruta: hoy });
+            }
+            if (intentosHoy >= FRUTA_LIMITE_DIARIO) {
+                client.say(channel, '@' + tags.username + ' Ya usaste tus 5 intentos de hoy. Volvé mañana.');
+                return;
             }
             const ahora = Date.now();
             const ultimoUso = cooldowns['fruta_' + username] || 0;
             const tiempoRestante = COOLDOWN_FRUTA - (ahora - ultimoUso);
             if (tiempoRestante > 0) {
-                client.say(channel, '@' + tags.username + ' Esperá ' + Math.ceil(tiempoRestante / 1000) + 's.'); return;
+                const min = Math.ceil(tiempoRestante / 60000);
+                client.say(channel, '@' + tags.username + ' Esperá ' + min + ' min.');
+                return;
             }
             cooldowns['fruta_' + username] = Date.now();
-            if (Math.random() * 100 > PROB_FRUTA) {
-                client.say(channel, '@' + tags.username + ' Sin suerte.'); return;
-            }
+            await updateUsuario(username, { fruta_intentos_hoy: intentosHoy + 1, ultimo_dia_fruta: hoy });
             const { data: usuariosConFruta } = await supabase.from('usuarios').select('fruta').not('fruta', 'is', null);
             const frutasOcupadas = (usuariosConFruta || []).map(u => u.fruta).filter(Boolean);
             let query = supabase.from('frutas').select('*');
@@ -1997,17 +2267,31 @@ client.on('message', async (channel, tags, message, self) => {
             if (errFrutas || !frutasDisponibles || !frutasDisponibles.length) {
                 client.say(channel, '@' + tags.username + ' No hay frutas disponibles.'); return;
             }
-            const totalProb = frutasDisponibles.reduce((s, f) => s + (Number(f.probabilidad) || 0), 0);
-            let selectedFruit = null;
-            if (totalProb <= 0) selectedFruit = frutasDisponibles[Math.floor(Math.random() * frutasDisponibles.length)];
-            else {
-                let rp = Math.random() * totalProb;
-                for (let i = 0; i < frutasDisponibles.length; i++) {
-                    rp -= (Number(frutasDisponibles[i].probabilidad) || 0);
-                    if (rp <= 0) { selectedFruit = frutasDisponibles[i]; break; }
-                }
+            // Filtrar por episodio del canal
+            const canalDbFruta = await getCanal(canal);
+            const filtroEp = canalDbFruta ? canalDbFruta.episodio_filtro : null;
+            const frutasFiltradas = frutasDisponibles.filter(f => pasaFiltroEpisodio(f, filtroEp));
+            if (frutasFiltradas.length === 0) {
+                client.say(channel, '@' + tags.username + ' No hay frutas disponibles para este canal.'); return;
             }
-            if (!selectedFruit) selectedFruit = frutasDisponibles[0];
+            // Sistema de puertas: sortear si encontrás fruta, después cuál
+            const puertasDisponibles = frutasFiltradas.reduce((s, f) => s + (Number(f.puertas) || 0), 0);
+            if (puertasDisponibles === 0) {
+                client.say(channel, '@' + tags.username + ' No quedan frutas disponibles. Volvé más tarde.');
+                return;
+            }
+            const probExito = puertasDisponibles / TOTAL_PUERTAS_JUEGO;
+            if (Math.random() >= probExito) {
+                client.say(channel, '@' + tags.username + ' No encontraste nada esta vez. Volvé a intentar más tarde.');
+                return;
+            }
+            let selectedFruit = null;
+            let rp = Math.random() * puertasDisponibles;
+            for (let i = 0; i < frutasFiltradas.length; i++) {
+                rp -= (Number(frutasFiltradas[i].puertas) || 0);
+                if (rp <= 0) { selectedFruit = frutasFiltradas[i]; break; }
+            }
+            if (!selectedFruit) selectedFruit = frutasFiltradas[frutasFiltradas.length - 1];
             if (selectedFruit.evento) {
                 await updateUsuario(username, {
                     evento_fruta_tipo: 'fruta', evento_fruta_fase: 'avistamiento',
@@ -2020,7 +2304,7 @@ client.on('message', async (channel, tags, message, self) => {
             } else {
                 await updateUsuario(username, { fruta_pendiente: selectedFruit.nombre });
                 console.log('🍎 Fruta encontrada: ' + username + ' → ' + selectedFruit.nombre + ' (sin evento)');
-                client.say(channel, '@' + tags.username + ' ¡Encontraste la ' + selectedFruit.nombre + ' ' + (selectedFruit.emoji || '') + '! ⚔️ ' + (selectedFruit.ataque || 0) + ' | 🛡️ ' + (selectedFruit.defensa || 0) + ' | 🧠 ' + (selectedFruit.utilidad || 0) + ' — !comer o !rechazar');
+                     client.say(channel, '@' + tags.username + ' ¡Encontraste la ' + selectedFruit.nombre + ' ' + (selectedFruit.emoji || '') + '! ⚔️ ' + displayStat(selectedFruit.ataque || 0) + ' | 🛡️ ' + displayStat(selectedFruit.defensa || 0) + ' | 🧠 ' + displayStat(selectedFruit.utilidad || 0) + ' — !comer o !rechazar');
             }
         } catch (err) {
             console.error('❌ !fruta:', err);
@@ -2044,10 +2328,17 @@ client.on('message', async (channel, tags, message, self) => {
         }
         const { data: fruta } = await supabase.from('frutas').select('*').eq('nombre', user.evento_fruta_nombre).single();
         if (!fruta) { client.say(channel, '@' + tags.username + ' Error.'); return; }
+        const canalDbFP = await getCanal(canal);
+        const filtroFP = canalDbFP ? canalDbFP.episodio_filtro : null;
+        if (!pasaFiltroEpisodio(fruta, filtroFP)) {
+            client.say(channel, '@' + tags.username + ' 📖 Esta fruta todavía no se vio en este canal. Podés continuar en el chat del canal donde la encontraste, o en el chat de op_d_bot.');
+            return;
+        }
         if (user.evento_fruta_fase === 'avistamiento') {
             client.say(channel, '@' + tags.username + ' ' + fruta.fase1 + ' — ✅ !si o ❌ !no');
         } else {
-            client.say(channel, '@' + tags.username + ' ' + fruta.fase2 + ' ' + getCalaverasPorProb(0.5) + ' 🍎 ' + fruta.nombre + ' ' + (fruta.emoji || '') + ' ⚔️ ' + (fruta.ataque || 0) + ' | 🛡️ ' + (fruta.defensa || 0) + ' | 🧠 ' + (fruta.utilidad || 0) + ' — ⚔️ !pelear o 🏃 !huir');
+            const calaverasFP = await getCalaverasEventoFruta(user, fruta);
+            client.say(channel, '@' + tags.username + ' ' + fruta.fase2 + ' ' + calaverasFP + ' 🍎 ' + fruta.nombre + ' ' + (fruta.emoji || '') + ' ⚔️ ' + displayStat(fruta.ataque || 0) + ' | 🛡️ ' + displayStat(fruta.defensa || 0) + ' | 🧠 ' + displayStat(fruta.utilidad || 0) + ' — ⚔️ !pelear o 🏃 !huir');
         }
         return;
     }
@@ -2056,6 +2347,13 @@ client.on('message', async (channel, tags, message, self) => {
         const user = await getUsuario(username);
         if (!user || user.evento_fruta_estado !== 'pendiente' || user.evento_fruta_fase !== 'avistamiento') {
             client.say(channel, '@' + tags.username + ' No corresponde.'); return;
+        }
+        const { data: frutaCheckSi } = await supabase.from('frutas').select('*').eq('nombre', user.evento_fruta_nombre).single();
+        const canalDbSi = await getCanal(canal);
+        const filtroSi = canalDbSi ? canalDbSi.episodio_filtro : null;
+        if (frutaCheckSi && !pasaFiltroEpisodio(frutaCheckSi, filtroSi)) {
+            client.say(channel, '@' + tags.username + ' 📖 Esta fruta todavía no se vio en este canal. Podés continuar en el chat del canal donde la encontraste, o en el chat de op_d_bot.');
+            return;
         }
         if (user.evento_fruta_comida_por_otro) {
             await updateUsuario(username, {
@@ -2067,7 +2365,8 @@ client.on('message', async (channel, tags, message, self) => {
         }
         await updateUsuario(username, { evento_fruta_fase: 'encuentro', evento_fruta_comandos: 'pelear_huir' });
         const { data: fruta } = await supabase.from('frutas').select('*').eq('nombre', user.evento_fruta_nombre).single();
-        client.say(channel, '@' + tags.username + ' ' + fruta.fase2 + ' ' + getCalaverasPorProb(0.5) + ' 🍎 ' + fruta.nombre + ' ' + (fruta.emoji || '') + ' ⚔️ ' + (fruta.ataque || 0) + ' | 🛡️ ' + (fruta.defensa || 0) + ' | 🧠 ' + (fruta.utilidad || 0) + ' — ⚔️ !pelear o 🏃 !huir');
+        const calaverasSi = await getCalaverasEventoFruta(user, fruta);
+        client.say(channel, '@' + tags.username + ' ' + fruta.fase2 + ' ' + calaverasSi + ' 🍎 ' + fruta.nombre + ' ' + (fruta.emoji || '') + ' ⚔️ ' + displayStat(fruta.ataque || 0) + ' | 🛡️ ' + displayStat(fruta.defensa || 0) + ' | 🧠 ' + displayStat(fruta.utilidad || 0) + ' — ⚔️ !pelear o 🏃 !huir');
         return;
     }
 
@@ -2075,6 +2374,13 @@ client.on('message', async (channel, tags, message, self) => {
         const user = await getUsuario(username);
         if (!user || user.evento_fruta_estado !== 'pendiente' || user.evento_fruta_fase !== 'avistamiento') {
             client.say(channel, '@' + tags.username + ' No corresponde.'); return;
+        }
+        const { data: frutaFiltroNo } = await supabase.from('frutas').select('*').eq('nombre', user.evento_fruta_nombre).single();
+        const canalDbNo = await getCanal(canal);
+        const filtroNo = canalDbNo ? canalDbNo.episodio_filtro : null;
+        if (frutaFiltroNo && !pasaFiltroEpisodio(frutaFiltroNo, filtroNo)) {
+            client.say(channel, '@' + tags.username + ' 📖 Esta fruta todavía no se vio en este canal. Podés continuar en el chat del canal donde la encontraste, o en el chat de op_d_bot.');
+            return;
         }
         await updateUsuario(username, {
             evento_fruta_tipo: null, evento_fruta_fase: null, evento_fruta_nombre: null,
@@ -2088,6 +2394,13 @@ client.on('message', async (channel, tags, message, self) => {
         const user = await getUsuario(username);
         if (!user || user.evento_fruta_estado !== 'pendiente' || user.evento_fruta_fase !== 'encuentro') {
             client.say(channel, '@' + tags.username + ' No corresponde.'); return;
+        }
+        const { data: frutaFiltroPl } = await supabase.from('frutas').select('*').eq('nombre', user.evento_fruta_nombre).single();
+        const canalDbPl = await getCanal(canal);
+        const filtroPl = canalDbPl ? canalDbPl.episodio_filtro : null;
+        if (frutaFiltroPl && !pasaFiltroEpisodio(frutaFiltroPl, filtroPl)) {
+            client.say(channel, '@' + tags.username + ' 📖 Esta fruta todavía no se vio en este canal. Podés continuar en el chat del canal donde la encontraste, o en el chat de op_d_bot.');
+            return;
         }
         if (user.evento_fruta_comida_por_otro) {
             await updateUsuario(username, {
@@ -2121,7 +2434,9 @@ client.on('message', async (channel, tags, message, self) => {
         const recBerries = resultado.victoria ? baseBerries : -Math.floor(baseBerries / 4);
         const mensaje = obtenerMensajeCombate(resultado.victoria, resultado.porcentaje);
         if (resultado.victoria) {
-            const { data: usuarioConFruta } = await supabase.from('usuarios').select('username').eq('fruta', user.evento_fruta_nombre).maybeSingle();
+            const { data: u1 } = await supabase.from('usuarios').select('username').eq('fruta', user.evento_fruta_nombre).limit(1);
+            const { data: u2 } = await supabase.from('usuarios').select('username').eq('fruta_2', user.evento_fruta_nombre).limit(1);
+            const usuarioConFruta = (u1 && u1.length > 0) ? u1[0] : ((u2 && u2.length > 0) ? u2[0] : null);
             if (usuarioConFruta) {
                 await updateUsuario(username, {
                     conquistador: (user.conquistador || 0) + recConq,
@@ -2151,9 +2466,13 @@ client.on('message', async (channel, tags, message, self) => {
                 }
             }
         } else {
+            const updateFrutaData = user.fruta
+                ? { fruta_2: user.evento_fruta_nombre }
+                : { fruta: user.evento_fruta_nombre };
             await updateUsuario(username, {
                 conquistador: (user.conquistador || 0) + recConq,
                 recompensa_delta: (user.recompensa_delta || 0) + recBerries,
+                ...updateFrutaData,
                 evento_fruta_tipo: null, evento_fruta_fase: null, evento_fruta_nombre: null,
                 evento_fruta_nivel: null, evento_fruta_estado: null, evento_fruta_comandos: null,
                 evento_fruta_comida_por_otro: false
@@ -2168,6 +2487,13 @@ client.on('message', async (channel, tags, message, self) => {
         if (!user || user.evento_fruta_estado !== 'pendiente' || user.evento_fruta_fase !== 'encuentro') {
             client.say(channel, '@' + tags.username + ' No corresponde.'); return;
         }
+        const { data: frutaFiltroHu } = await supabase.from('frutas').select('*').eq('nombre', user.evento_fruta_nombre).single();
+        const canalDbHu = await getCanal(canal);
+        const filtroHu = canalDbHu ? canalDbHu.episodio_filtro : null;
+        if (frutaFiltroHu && !pasaFiltroEpisodio(frutaFiltroHu, filtroHu)) {
+            client.say(channel, '@' + tags.username + ' 📖 Esta fruta todavía no se vio en este canal. Podés continuar en el chat del canal donde la encontraste, o en el chat de op_d_bot.');
+            return;
+        }
         await updateUsuario(username, {
             evento_fruta_tipo: null, evento_fruta_fase: null, evento_fruta_nombre: null,
             evento_fruta_nivel: null, evento_fruta_estado: null, evento_fruta_comandos: null,
@@ -2180,8 +2506,11 @@ client.on('message', async (channel, tags, message, self) => {
         const user = await getUsuario(username);
         if (user && user.fruta_pendiente) {
             const { data: frutaData } = await supabase.from('frutas').select('descripcion, emoji').eq('nombre', user.fruta_pendiente).single();
-            await updateUsuario(username, { fruta: user.fruta_pendiente, fruta_pendiente: null });
-            console.log('🍎 Fruta consumida: ' + username + ' → ' + user.fruta_pendiente);
+            const updateData = user.fruta
+                ? { fruta_2: user.fruta_pendiente, fruta_pendiente: null }
+                : { fruta: user.fruta_pendiente, fruta_pendiente: null };
+            await updateUsuario(username, updateData);
+            console.log('🍎 Fruta consumida: ' + username + ' → ' + user.fruta_pendiente + (user.fruta ? ' (2da)' : ''));
             client.say(channel, '@' + tags.username + ' Consumiste la ' + user.fruta_pendiente + ' ' + ((frutaData && frutaData.emoji) || '') + '.');
         } else {
             client.say(channel, '@' + tags.username + ' FELICIDADES TE COMISTE... ESTA 🫱');
@@ -2231,9 +2560,9 @@ client.on('message', async (channel, tags, message, self) => {
     if (command === '!quitarfruta') {
         if (args.length < 2) return client.say(channel, '@' + tags.username + ' Uso: !quitarfruta @usuario');
         const target = args[1].replace('@', '').toLowerCase();
-        await updateUsuario(target, { fruta: null, fruta_pendiente: null });
-        console.log('🔧 Admin: ' + username + ' quitó fruta a ' + target);
-        client.say(channel, '@' + tags.username + ' Fruta quitada a @' + target + '.'); return;
+        await updateUsuario(target, { fruta: null, fruta_2: null, fruta_pendiente: null, yami_aviso_mostrado: false });
+        console.log('🔧 Admin: ' + username + ' quitó fruta(s) a ' + target);
+        client.say(channel, '@' + tags.username + ' Fruta(s) quitada(s) a @' + target + '.'); return;
     }
 });
 
