@@ -41,6 +41,14 @@ const LURK_LIVE_MINIMO_2H = 120;
 
 const NPC_VENTANA_MINUTOS = 10;
 
+// NPCs que NO salen como avistamiento (son de relleno)
+const NPCS_EXCLUIDOS_AVISTAMIENTO = [
+    'Cazarrecompensas Aprendiz', 'Marine Raso', 'Pirata Novato',
+    'Bandido De Caminos', 'Ladrón De Puerto',
+    'Borracho De Taberna', 'Pordiosero Del Puerto', 'Granjero Enfurecido',
+    'Contrabandista Torpe', 'Bandido Herido'
+];
+
 const esDueño = (username) => username.toLowerCase() === DUEÑO;
 
 const cooldowns = {};
@@ -418,6 +426,15 @@ async function calcularPCFUsuario(user) {
         + calcularAporteObservacion(user.observacion || 0, supObs)
         + calcularAporteConquistador(user.conquistador || 0, supConq);
     return Math.round(poderFruta + aporte);
+}
+
+async function formatearHakiLog(user) {
+    if (!user) return 'N/A';
+    const supArm = await esSupremoArmadura(user.username);
+    const supObs = await esSupremoObservacion(user.username);
+    const supConq = await esSupremoConquistador(user.username);
+    const fmt = (v, s) => (s ? 'S' : '') + (v || 0);
+    return fmt(user.armadura, supArm) + '/' + fmt(user.observacion, supObs) + '/' + fmt(user.conquistador, supConq);
 }
 
 function aplicarVariacion(poder) {
@@ -1039,7 +1056,9 @@ async function anunciarNpc() {
     }
     const { data: todos } = await supabase.from('npcs').select('nombre');
     if (!todos || todos.length === 0) return;
-    const disponibles = todos.filter(n => !npcUsadosCiclo.includes(n.nombre));
+    const disponibles = todos.filter(n =>
+        !npcUsadosCiclo.includes(n.nombre) && !NPCS_EXCLUIDOS_AVISTAMIENTO.includes(n.nombre)
+    );
     if (disponibles.length === 0) return;
     const elegido = disponibles[Math.floor(Math.random() * disponibles.length)];
     npcActual = elegido.nombre;
@@ -1106,10 +1125,11 @@ async function procesarPersonaje(username, nombreIngresado, fromUserId) {
             await sendWhisper(fromUserId, '🎯 ¡Correcto! +3 pendientes. Se acreditan al completar tus 3 postas del día.');
         }
     } else {
-        await updateLurkStats(username, { lurk_npc_canjeado_hoy: true });
-        await agregarPuntosObservacion(username, -5, 0);
-        console.log('👁️ NPC canjeado: ' + username + ' → fallo (-5)');
-        await sendWhisper(fromUserId, '❌ Ese no era. -5 de Haki de Observación.');
+        // Fallo: -1 inmediato. No marca canjeado (permite reintentar en la ventana).
+        await agregarPuntosObservacion(username, -1, 0);
+        await updateLurkStats(username, { lurk_puntos_hoy: Math.max(0, (lurk.lurk_puntos_hoy || 0) - 1) });
+        console.log('👁️ NPC intento fallido: ' + username + ' → -1');
+        await sendWhisper(fromUserId, '❌ Ese no era. -1 de Haki de Observación.');
     }
 }
 
@@ -1120,11 +1140,7 @@ async function procesarPersonaje(username, nombreIngresado, fromUserId) {
 // ============================================
 // AYUDA
 // ============================================
-const AYUDA_MENU = '📖 AYUDA - op_d_bot\n' +
-    '💬 !ayudachat → Comandos de chat\n' +
-    '📩 !ayudasusurro → Comandos de susurro\n' +
-    '🔍 !ayuda <tema> → Explicación detallada\n' +
-    '   Temas: observacion, armadura, conquistador, explorar, fruta, duelos, infoop, rangos, recompensas';
+const AYUDA_MENU = '📖 AYUDA op_d_bot — 💬 !ayudachat → Comandos de chat — 📩 !ayudasusurro → Comandos de susurro — 🔍 !ayuda <tema> → Detalle de un tema. Temas: observacion, armadura, conquistador, explorar, fruta, duelos, infoop, rangos, recompensas';
 
 const AYUDA_TEMAS = {
     observacion: '📡 HAKI DE OBSERVACIÓN\n' +
@@ -1155,6 +1171,7 @@ const AYUDA_TEMAS = {
         'Buscás frutas con !fruta (máx 5 intentos por día).\n' +
         '• Si encontrás una, elegís !comer o !rechazar.\n' +
         '• Algunas tienen evento: primero !si/!no, después !pelear/!huir.\n' +
+        '• Si tenés un evento pendiente, usá !frutapendiente para retomarlo.\n' +
         '• Solo podés tener 1 fruta a la vez.\n' +
         '• Algunas frutas raras las tienen otros usuarios. ¡Competí por ellas!',
     duelos: '⚔️ DUELOS\n' +
@@ -1178,8 +1195,9 @@ const AYUDA_TEMAS = {
         '• Por susurro: ves tu recompensa real siempre actualizada.\n' +
         '• Las pérdidas no bajan tu recompensa por debajo de tus stats.'
 };
-const AYUDA_CHAT = '💬 COMANDOS DE CHAT 🎮 !op → Entrena Haki 📊 !infoop → Tu info 🍎 !fruta → Busca fruta 😋 !comer / ❌ !rechazar ⚔️ !retar @usuario → Duelo ✅ !aceptarduelo / ❌ !rechazarduelo 🏆 !historial @usuario 🔴 !offop / 🟢 !onop';
-const AYUDA_SUSURRO = '📩 COMANDOS DE SUSURRO 🗺️ !explorar ➡️ !continuar / ⬅️ !retroceder ⚔️ !combatir / 🏃 !retirarse ⏳ !exploracionpendiente ⚔️ !duelopendiente 📊 !infoop 👤 !infoop @usuario 🔄 !actualizacion 📡 !observacion 📡 !canaleson 👁️ !personaje <nombre>';
+const AYUDA_CHAT = '💬 COMANDOS DE CHAT 🎮 !op → Entrena Haki 📊 !infoop → Tu info 🍎 !fruta → Busca fruta ⚔️ !retar @usuario → Duelo 🏆 !historial @usuario';
+const AYUDA_CHAT_STREAMER = '💬 COMANDOS DE CHAT 🎮 !op → Entrena Haki 📊 !infoop → Tu info 🍎 !fruta → Busca fruta ⚔️ !retar @usuario → Duelo 🏆 !historial @usuario 🔴 !offop / 🟢 !onop';
+const AYUDA_SUSURRO = '📩 COMANDOS DE SUSURRO 🗺️ !explorar ⏳ !exploracionpendiente ⚔️ !duelopendiente 📊 !infoop 👤 !infoop @usuario 🔄 !actualizacion 📡 !observacion 📡 !canaleson 👁️ !personaje <nombre>';
 
 // ============================================
 // CLIENTE
@@ -1288,7 +1306,11 @@ async function handleWhisper(event) {
         return;
     }
     if ((command === '!ayuda' || command === '!ayudaop') && !args[1]) { await sendWhisper(fromUserId, AYUDA_MENU); return; }
-    if (command === '!ayudachat') { await sendWhisper(fromUserId, AYUDA_CHAT); return; }
+    if (command === '!ayudachat') {
+        const esStreamer = !!(await getCanal(username));
+        await sendWhisper(fromUserId, esStreamer ? AYUDA_CHAT_STREAMER : AYUDA_CHAT);
+        return;
+    }
     if (command === '!ayudasusurro') { await sendWhisper(fromUserId, AYUDA_SUSURRO); return; }
 
     // !ayuda <tema>
@@ -1652,7 +1674,8 @@ async function handleWhisper(event) {
         const op = o[user.evento_explorar_dificultad];
         if (!op) { await sendWhisper(fromUserId, 'Error.'); return; }
         const msgCtx = await getMensajeContextualExplorar(op.victoria, op.escalon, op.margen_key);
-        console.log('🗺️ Explorar: ' + username + ' → ' + (op.victoria ? 'victoria' : 'derrota') + ' vs ' + op.npc + ' (PCF ' + op.pcf_usuario + ' vs ' + op.pcf_npc + ')');
+        const hakiUExpl = await formatearHakiLog(user);
+        console.log('[EXPLORAR] ' + username + ' vs ' + op.npc + ' | PCF ' + op.pcf_usuario + ' vs ' + op.pcf_npc + ' | Haki U: ' + hakiUExpl + ' | ' + (op.victoria ? 'VICTORIA' : 'DERROTA'));
         if (op.victoria) {
             await updateUsuario(username, {
                 conquistador: (user.conquistador || 0) + op.recompensa_conq,
@@ -1956,7 +1979,9 @@ async function procesarAceptarDuelo(username, fromUserId, esSusurro, chatChannel
     const ahoraISO = new Date().toISOString();
     await updateUsuario(retador, { ultimo_duelo_timestamp: ahoraISO });
     await updateUsuario(retado, { ultimo_duelo_timestamp: ahoraISO });
-    console.log('⚔️ Duelo resuelto: ' + retador + ' vs ' + retado + ' → ' + (empate ? 'empate' : ganador) + ' (monto: ' + monto + ')');
+    const hakiRetLog = await formatearHakiLog(retadorUser);
+    const hakiRetadoLog = await formatearHakiLog(retadoUser);
+    console.log('[DUELO] ' + retador + ' vs ' + retado + ' | PCF ' + pcfRetador + ' vs ' + pcfRetado + ' | Haki: ' + hakiRetLog + ' vs ' + hakiRetadoLog + ' | ' + (empate ? 'EMPATE' : 'Ganador: ' + ganador) + ' | Monto: ' + monto);
     const textoBase = await getTextoDuelo(situacion);
     const perdedor = empate ? '' : (ganador === retador ? retado : retador);
     const texto = aplicarPlaceholders(textoBase, {
@@ -2045,8 +2070,8 @@ async function procesarMensajeChat(channel, tags, message, self) {
     // !onop / !offop
     if (command === '!onop' || command === '!offop') {
         if (!esModOCaster(tags)) return;
-        if (cooldownsOnOff[canal] && Date.now() - cooldownsOnOff[canal] < 5 * 60 * 1000) {
-            client.say(channel, '⏳ Esperá 5 minutos antes de volver a cambiar el estado del bot.');
+        if (cooldownsOnOff[canal] && Date.now() - cooldownsOnOff[canal] < 60 * 1000) {
+            client.say(channel, '⏳ Esperá 1 minuto antes de volver a cambiar el estado del bot.');
             return;
         }
         cooldownsOnOff[canal] = Date.now();
@@ -2084,7 +2109,7 @@ async function procesarMensajeChat(channel, tags, message, self) {
     }
 
     if (command === '!ayudaop') {
-        client.say(channel, '@' + tags.username + ' 📩 Mandame !ayudaop por susurro.');
+        client.say(channel, '👈 Mandame !ayudaop por susurro');
         return;
     }
     // !setepisodio
@@ -2501,6 +2526,9 @@ async function procesarMensajeChat(channel, tags, message, self) {
         const resultado = calcularCombate(poderUsuario, poderEnemigoBase);
         const nivel = user.evento_fruta_nivel || 4;
         const mensaje = obtenerMensajeCombate(resultado.victoria, resultado.porcentaje);
+        const hakiUFrut = await formatearHakiLog(user);
+        const rivalLogFruta = nombreSombra ? (nombreSombra + ' (sombra)') : ('sombra nivel ' + nivel);
+        console.log('[FRUTA] ' + username + ' vs ' + rivalLogFruta + ' | PCF ' + poderUsuario + ' vs ' + poderEnemigoBase + ' | Haki U: ' + hakiUFrut + ' | ' + (resultado.victoria ? 'VICTORIA' : 'DERROTA'));
         if (resultado.victoria) {
             const recConq = nivel * 5;
             const recBerries = nivel * 1000000;
