@@ -246,8 +246,13 @@ async function verificarPenalizacionExplorar(username) {
     const user = await getUsuario(username);
     if (!user) return null;
     const hoy = getFechaHoy();
+    // Si ya chequeé hoy la penalización, no hacer nada
+    if (user.ultimo_dia_penalizacion === hoy) return null;
+    // Marcar que chequeé hoy (independiente de si exploró o no)
+    await updateUsuario(username, { ultimo_dia_penalizacion: hoy });
+    // Si nunca exploró, no penalizar
     if (!user.ultimo_dia_exploracion) {
-        await updateUsuario(username, { ultimo_dia_exploracion: hoy, dias_sin_explorar: 0 });
+        await updateUsuario(username, { dias_sin_explorar: 0 });
         return null;
     }
     const ultimo = new Date(user.ultimo_dia_exploracion);
@@ -1647,15 +1652,27 @@ async function handleWhisper(event) {
         }
         const o = user.evento_explorar_opciones || {};
         const op = o[user.evento_explorar_dificultad];
-        const castigo = Math.max(Math.ceil(op.castigo_conq * 0.3), 1);
-        await updateUsuario(username, {
-            conquistador: Math.max((user.conquistador || 0) - castigo, 0),
+        const { data: npcData } = await supabase.from('npcs')
+            .select('texto_huida, huida_sin_penalizacion')
+            .eq('nombre', op.npc).single();
+        const tieneHuidaEspecial = npcData && npcData.texto_huida;
+        const sinPenalizacion = npcData && npcData.huida_sin_penalizacion;
+        const castigo = sinPenalizacion ? 0 : Math.max(Math.ceil(op.castigo_conq * 0.3), 1);
+        const updateData = {
             evento_explorar_estado: null, evento_explorar_fase: null, evento_explorar_dificultad: null,
             evento_explorar_npc: null, evento_explorar_nivel: null, evento_explorar_pcf_usuario: null,
             evento_explorar_pcf_npc: null, evento_explorar_comandos: null, evento_explorar_opciones: null
-        });
-        const msg = await getTextoExplorar('retirarse');
-        await sendWhisper(fromUserId, msg + ' -' + castigo + ' Conq.');
+        };
+        if (castigo > 0) {
+            updateData.conquistador = Math.max((user.conquistador || 0) - castigo, 0);
+        }
+        await updateUsuario(username, updateData);
+        if (tieneHuidaEspecial) {
+            await sendWhisper(fromUserId, npcData.texto_huida);
+        } else {
+            const msg = await getTextoExplorar('retirarse');
+            await sendWhisper(fromUserId, msg + ' -' + castigo + ' Conq.');
+        }
         return;
     }
 
