@@ -1457,10 +1457,11 @@ async function handleWhisper(event) {
         return;
     }
 
-    // !personaje X
+    // !personaje X (nombre completo, puede tener espacios)
     if (command === '!personaje') {
         if (!args[1]) { await sendWhisper(fromUserId, 'Uso: !personaje <nombre>'); return; }
-        await procesarPersonaje(username, args[1], fromUserId);
+        const nombreCompleto = args.slice(1).join(' ');
+        await procesarPersonaje(username, nombreCompleto, fromUserId);
         return;
     }
 
@@ -2370,9 +2371,10 @@ async function procesarMensajeChat(channel, tags, message, self) {
                 console.log('🍎 Fruta encontrada: ' + username + ' → ' + selectedFruit.nombre + ' (evento)');
                 client.say(channel, '@' + tags.username + ' ' + selectedFruit.fase1 + ' — ✅ !si o ❌ !no');
             } else {
-                await updateUsuario(username, { fruta_pendiente: selectedFruit.nombre });
+                                await updateUsuario(username, { fruta_pendiente: selectedFruit.nombre });
                 console.log('🍎 Fruta encontrada: ' + username + ' → ' + selectedFruit.nombre + ' (sin evento)');
-                     client.say(channel, '@' + tags.username + ' ¡Encontraste la ' + selectedFruit.nombre + ' ' + (selectedFruit.emoji || '') + '! ⚔️ ' + displayStat(selectedFruit.ataque || 0) + ' | 🛡️ ' + displayStat(selectedFruit.defensa || 0) + ' | 🧠 ' + displayStat(selectedFruit.utilidad || 0) + ' — !comer o !rechazar');
+                const descSinEvento = (selectedFruit.descripcion || '').replace(/\n/g, ' ').trim();
+                client.say(channel, '@' + tags.username + ' ¡Encontraste la ' + selectedFruit.nombre + ' ' + (selectedFruit.emoji || '') + '! ' + descSinEvento + ' ⚔️ ' + displayStat(selectedFruit.ataque || 0) + ' | 🛡️ ' + displayStat(selectedFruit.defensa || 0) + ' | 🧠 ' + displayStat(selectedFruit.utilidad || 0) + ' — !comer o !rechazar');
             }
         } catch (err) {
             console.error('❌ !fruta:', err);
@@ -2590,7 +2592,8 @@ async function procesarMensajeChat(channel, tags, message, self) {
                 : { fruta: user.fruta_pendiente, fruta_pendiente: null };
             await updateUsuario(username, updateData);
             console.log('🍎 Fruta consumida: ' + username + ' → ' + user.fruta_pendiente + (user.fruta ? ' (2da)' : ''));
-            client.say(channel, '@' + tags.username + ' Consumiste la ' + user.fruta_pendiente + ' ' + ((frutaData && frutaData.emoji) || '') + '.');
+            const descConsumida = (frutaData && frutaData.descripcion) ? frutaData.descripcion.replace(/\n/g, ' ').trim() : '';
+            client.say(channel, '@' + tags.username + ' Consumiste la ' + user.fruta_pendiente + ' ' + ((frutaData && frutaData.emoji) || '') + '. ' + descConsumida);
 
         } else {
             client.say(channel, '@' + tags.username + ' FELICIDADES TE COMISTE... ESTA 🫱');
