@@ -242,13 +242,20 @@ function getRangoConquistadorTexto(puntos) {
     return 'supremo';
 }
 
+const penalCache = {};
+
 async function verificarPenalizacionExplorar(username) {
+    const hoy = getFechaHoy();
+    // Cache en memoria: si ya chequeamos a este usuario hoy, salir sin tocar la DB
+    if (penalCache[username] === hoy) return null;
     const user = await getUsuario(username);
     if (!user) return null;
-    const hoy = getFechaHoy();
-    // Si ya chequeé hoy la penalización, no hacer nada
-    if (user.ultimo_dia_penalizacion === hoy) return null;
+    if (user.ultimo_dia_penalizacion === hoy) {
+        penalCache[username] = hoy;
+        return null;
+    }
     // Marcar que chequeé hoy (independiente de si exploró o no)
+    penalCache[username] = hoy;
     await updateUsuario(username, { ultimo_dia_penalizacion: hoy });
     // Si nunca exploró, no penalizar
     if (!user.ultimo_dia_exploracion) {
@@ -368,23 +375,29 @@ async function esSupremoConquistador(username) {
 // ============================================
 function calcularAporteArmadura(puntos, esSupremo) {
     if (esSupremo) return 250;
+    if (puntos >= 100) return 250;
     if (puntos >= 80) return 200;
     if (puntos >= 50) return 125;
     if (puntos >= 20) return 50;
+    if (puntos >= 1) return Math.floor(puntos * 1.2);
     return 0;
 }
 function calcularAporteObservacion(puntos, esSupremo) {
     if (esSupremo) return 180;
+    if (puntos >= 100) return 180;
     if (puntos >= 80) return 144;
     if (puntos >= 50) return 90;
     if (puntos >= 20) return 36;
+    if (puntos >= 1) return Math.floor(puntos * 0.9);
     return 0;
 }
 function calcularAporteConquistador(puntos, esSupremo) {
     if (esSupremo) return 400;
+    if (puntos > 100) return 400;
     if (puntos >= 95) return 250;
     if (puntos >= 80) return 150;
     if (puntos >= 60) return 100;
+    if (puntos >= 1) return Math.floor(puntos / 8);
     return 0;
 }
 
@@ -446,7 +459,8 @@ function obtenerMensajeCombate(victoria, porcentaje) {
 // EXPLORAR
 // ============================================
 function calcularProbabilidadVictoria(pcfU, pcfN) {
-    return 1 / (1 + Math.exp(5 * ((pcfN / pcfU) - 1)));
+    const r = pcfN / pcfU;
+    return 1 / (1 + Math.pow(r, 5.75));
 }
 function getEscalon(ratio) {
     if (ratio <= 0.5) return 'mucho_mas_fuerte';
@@ -760,8 +774,8 @@ async function lurkProcesarPostas(username) {
 const liveCache = {};
 const LIVE_CACHE_TTL = 5 * 60 * 1000;
 
-async function canalEstaActivo(canal) {
-    const c = await getCanal(canal);
+async function canalEstaActivo(canal, canalDb) {
+    const c = canalDb !== undefined ? canalDb : await getCanal(canal);
     if (!c) return true; // Canal desconocido → no bloqueamos
     if (!c.lurk_activo) return true; // Canal sin lurk → siempre activo
     // Canal con lurk → chequear live con cache
@@ -1871,7 +1885,8 @@ async function getCalaverasEventoFruta(user, frutaData) {
         const { data: npc } = await supabase.from('npcs').select('pcf_final, pcf_calculado').eq('nombre', nombreSombra).maybeSingle();
         poderEnemigo = (npc && (npc.pcf_final || npc.pcf_calculado)) || 80;
     } else poderEnemigo = 20 + (user.evento_fruta_nivel || 4) * 15;
-    const prob = 1 / (1 + Math.exp(5 * ((poderEnemigo / poderUsuario) - 1)));
+    const r = poderEnemigo / poderUsuario;
+    const prob = 1 / (1 + Math.pow(r, 5.75));
     return getCalaverasPorProb(prob);
 }
 
@@ -1905,7 +1920,8 @@ async function procesarAceptarDuelo(username, fromUserId, esSusurro, chatChannel
         return;
     }
     const pcfRetado = await calcularPCFUsuario(retadoUser);
-    const probRetador = 1 / (1 + Math.exp(3 * ((pcfRetado / pcfRetador) - 1)));
+    const r = pcfRetado / pcfRetador;
+    const probRetador = 1 / (1 + Math.pow(r, 5.75));
     const res = resolverDuelo(probRetador, retador, retado);
     const ganador = res.ganador;
     const empate = res.empate;
@@ -1997,6 +2013,14 @@ async function procesarRechazarDuelo(username, fromUserId, esSusurro, chatChanne
 // COMANDOS DE CHAT
 // ============================================
 client.on('message', async (channel, tags, message, self) => {
+    try {
+        await procesarMensajeChat(channel, tags, message, self);
+    } catch (err) {
+        console.error('❌ Error en handler de chat:', err);
+    }
+});
+
+async function procesarMensajeChat(channel, tags, message, self) {
     if (self) return;
     if (channel.startsWith('##')) return;
     if (tags['message-type'] === 'whisper') return;
@@ -2015,7 +2039,7 @@ client.on('message', async (channel, tags, message, self) => {
     if (!botActivo && command !== '!onop') return;
 
     // Canal live: si tiene lurk_activo y no está live, ignorar todo
-    if (!(await canalEstaActivo(canal))) return;
+    if (!(await canalEstaActivo(canal, canalDb))) return;
 
     // !onop / !offop
     if (command === '!onop' || command === '!offop') {
@@ -2036,10 +2060,20 @@ client.on('message', async (channel, tags, message, self) => {
         }
         return;
     }
-
     console.log('💬 [' + canal + '] ' + username + ': ' + message);
 
-    if (twitchUserId) {
+    // Solo crear usuarios para comandos que realmente los usan.
+    // Cualquier otro !comando (por ej. para otros bots) NO toca la DB.
+    const COMANDOS_CON_USUARIO = [
+        '!op', '!fruta', '!comer', '!rechazar', '!frutapendiente',
+        '!retar', '!aceptarduelo', '!rechazarduelo', '!historial',
+        '!infoop', '!si', '!no', '!pelear', '!huir',
+        '!sumar1', '!sumar2', '!sumar3', '!restar1', '!restar2', '!restar3',
+        '!quitarfruta'
+    ];
+    const usaUsuario = COMANDOS_CON_USUARIO.includes(command);
+
+    if (usaUsuario && twitchUserId) {
         try {
             const u = await getUsuario(username);
             if (u && u.twitch_user_id !== twitchUserId) {
@@ -2075,12 +2109,14 @@ client.on('message', async (channel, tags, message, self) => {
         return;
     }
 
-    try {
-        const penal = await verificarPenalizacionExplorar(username);
-        if (penal) {
-            client.say(channel, '@' + tags.username + ' 💤 No exploraste por ' + penal.dias + ' día(s). Perdiste ' + penal.perdConq + ' Conq y $' + penal.perdBerries.toLocaleString('es-AR'));
-        }
-    } catch (err) { console.error('Error penal:', err); }
+    if (usaUsuario) {
+        try {
+            const penal = await verificarPenalizacionExplorar(username);
+            if (penal) {
+                client.say(channel, '@' + tags.username + ' 💤 No exploraste por ' + penal.dias + ' día(s). Perdiste ' + penal.perdConq + ' Conq y $' + penal.perdBerries.toLocaleString('es-AR'));
+            }
+        } catch (err) { console.error('Error penal:', err); }
+    }
 
     const comandosBloqueados = ['!op', '!fruta', '!comer'];
     if (comandosBloqueados.includes(command)) {
@@ -2454,21 +2490,21 @@ client.on('message', async (channel, tags, message, self) => {
             + calcularAporteObservacion(user.observacion || 0, supObs)
             + calcularAporteConquistador(user.conquistador || 0, supConq);
         let poderEnemigoBase = 80;
+        let npcSombra = null;
         if (nombreSombra) {
-            const { data: npc } = await supabase.from('npcs').select('pcf_final, pcf_calculado').eq('nombre', nombreSombra).maybeSingle();
+            const { data: npc } = await supabase.from('npcs').select('pcf_final, pcf_calculado, recompensa_conquistador, recompensa_berries').eq('nombre', nombreSombra).maybeSingle();
+            npcSombra = npc;
             poderEnemigoBase = (npc && (npc.pcf_final || npc.pcf_calculado)) || 80;
         } else poderEnemigoBase = 20 + (user.evento_fruta_nivel || 4) * 15;
         const resultado = calcularCombate(poderUsuario, poderEnemigoBase);
         const nivel = user.evento_fruta_nivel || 4;
-        const baseConq = nivel * 5;
-        const baseBerries = nivel * 1000000;
-        const recConq = resultado.victoria ? baseConq : -Math.floor(baseConq / 2);
-        const recBerries = resultado.victoria ? baseBerries : -Math.floor(baseBerries / 4);
         const mensaje = obtenerMensajeCombate(resultado.victoria, resultado.porcentaje);
         if (resultado.victoria) {
-            const { data: u1 } = await supabase.from('usuarios').select('username').eq('fruta', user.evento_fruta_nombre).limit(1);
-            const { data: u2 } = await supabase.from('usuarios').select('username').eq('fruta_2', user.evento_fruta_nombre).limit(1);
-            const usuarioConFruta = (u1 && u1.length > 0) ? u1[0] : ((u2 && u2.length > 0) ? u2[0] : null);
+            const recConq = nivel * 5;
+            const recBerries = nivel * 1000000;
+            const { data: usuariosConFrutaLista } = await supabase.from('usuarios').select('username')
+                .or('fruta.eq."' + user.evento_fruta_nombre + '",fruta_2.eq."' + user.evento_fruta_nombre + '"').limit(1);
+            const usuarioConFruta = (usuariosConFrutaLista && usuariosConFrutaLista.length > 0) ? usuariosConFrutaLista[0] : null;
             if (usuarioConFruta) {
                 await updateUsuario(username, {
                     conquistador: (user.conquistador || 0) + recConq,
@@ -2479,10 +2515,13 @@ client.on('message', async (channel, tags, message, self) => {
                 });
                 client.say(channel, '@' + tags.username + ' ' + mensaje + ' Pero ya fue consumida.'); return;
             }
+            const updateFrutaData = user.fruta
+                ? { fruta_2: user.evento_fruta_nombre }
+                : { fruta: user.evento_fruta_nombre };
             await updateUsuario(username, {
                 conquistador: (user.conquistador || 0) + recConq,
                 recompensa_delta: (user.recompensa_delta || 0) + recBerries,
-                fruta: user.evento_fruta_nombre,
+                ...updateFrutaData,
                 evento_fruta_tipo: null, evento_fruta_fase: null, evento_fruta_nombre: null,
                 evento_fruta_nivel: null, evento_fruta_estado: null, evento_fruta_comandos: null,
                 evento_fruta_comida_por_otro: false
@@ -2498,18 +2537,26 @@ client.on('message', async (channel, tags, message, self) => {
                 }
             }
         } else {
-            const updateFrutaData = user.fruta
-                ? { fruta_2: user.evento_fruta_nombre }
-                : { fruta: user.evento_fruta_nombre };
+            let castigoConq = 1;
+            let castigoBerries = 2000000;
+            if (npcSombra && (npcSombra.pcf_final || npcSombra.pcf_calculado)) {
+                const pcfNpc = npcSombra.pcf_final || npcSombra.pcf_calculado;
+                const prob = calcularProbabilidadVictoria(poderUsuario, pcfNpc);
+                const castExplorar = calcularRecompensasExplorar(
+                    { recompensa_conquistador: npcSombra.recompensa_conquistador, recompensa_berries: npcSombra.recompensa_berries },
+                    prob, false
+                );
+                castigoConq = Math.max(Math.round(castExplorar.conq * 0.35), 1);
+                castigoBerries = Math.max(redondearBerries(castExplorar.berries * 0.35), 100000);
+            }
             await updateUsuario(username, {
-                conquistador: (user.conquistador || 0) + recConq,
-                recompensa_delta: (user.recompensa_delta || 0) + recBerries,
-                ...updateFrutaData,
+                conquistador: Math.max((user.conquistador || 0) - castigoConq, 0),
+                recompensa_delta: (user.recompensa_delta || 0) - castigoBerries,
                 evento_fruta_tipo: null, evento_fruta_fase: null, evento_fruta_nombre: null,
                 evento_fruta_nivel: null, evento_fruta_estado: null, evento_fruta_comandos: null,
                 evento_fruta_comida_por_otro: false
             });
-            client.say(channel, '@' + tags.username + ' ' + mensaje);
+            client.say(channel, '@' + tags.username + ' ' + mensaje + ' 💀 -' + castigoConq + ' Conq. -$' + castigoBerries.toLocaleString('es-AR'));
         }
         return;
     }
@@ -2544,6 +2591,7 @@ client.on('message', async (channel, tags, message, self) => {
             await updateUsuario(username, updateData);
             console.log('🍎 Fruta consumida: ' + username + ' → ' + user.fruta_pendiente + (user.fruta ? ' (2da)' : ''));
             client.say(channel, '@' + tags.username + ' Consumiste la ' + user.fruta_pendiente + ' ' + ((frutaData && frutaData.emoji) || '') + '.');
+
         } else {
             client.say(channel, '@' + tags.username + ' FELICIDADES TE COMISTE... ESTA 🫱');
         }
@@ -2596,7 +2644,7 @@ client.on('message', async (channel, tags, message, self) => {
         console.log('🔧 Admin: ' + username + ' quitó fruta(s) a ' + target);
         client.say(channel, '@' + tags.username + ' Fruta(s) quitada(s) a @' + target + '.'); return;
     }
-});
+}
 
 // ============================================
 // INICIALIZACIÓN
