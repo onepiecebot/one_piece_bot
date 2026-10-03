@@ -512,6 +512,21 @@ async function seleccionarNPCs(pcfUsuario) {
                 return r >= 0.75 && r <= 1.25;
             });
         }
+        // Fallback 2: usuarios muy débiles (PCF < 15) → dar los NPCs más débiles disponibles
+        if (cand.length === 0 && pcfUsuario < 15) {
+            cand = npcs
+                .filter(n => {
+                    if (elegidos.has(n.nombre)) return false;
+                    const p = n.pcf_final || n.pcf_calculado || 0;
+                    return p > 0;
+                })
+                .sort((a, b) => {
+                    const pa = a.pcf_final || a.pcf_calculado || 0;
+                    const pb = b.pcf_final || b.pcf_calculado || 0;
+                    return pa - pb;
+                })
+                .slice(0, 3);
+        }
         if (cand.length === 0) continue;
         const el = cand[Math.floor(Math.random() * cand.length)];
         elegidos.add(el.nombre);
@@ -1541,7 +1556,7 @@ async function handleWhisper(event) {
         if (!cd.ok) { await sendWhisper(fromUserId, '⏳ Próxima en ' + formatTiempoRestante(cd.restante)); return; }
         const pcfUsuario = await calcularPCFUsuario(user);
         const opciones = await seleccionarNPCs(pcfUsuario);
-        if (!opciones) { await sendWhisper(fromUserId, '🗺️ No encontrás rivales. Volvé más tarde.'); return; }
+        if (!opciones) { await sendWhisper(fromUserId, '🗺️ No encontrás rivales a tu altura todavía. Entrená con !op o mirá el stream para ganar stats y volvé a intentar.'); return; }
         await updateUsuario(username, {
             evento_explorar_estado: 'pendiente', evento_explorar_fase: 'menu',
             evento_explorar_dificultad: null, evento_explorar_npc: null, evento_explorar_nivel: null,
