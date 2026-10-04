@@ -763,7 +763,7 @@ async function lurkCerrarBloque(username) {
         lurk_ultimo_chequeo: new Date().toISOString(),
         minutos_lurk_total: (lurk.minutos_lurk_total || 0) + minutosReales
     });
-    if (ptsNuevos !== 0) await agregarPuntosObservacion(username, ptsNuevos, minutosReales);
+    if (ptsNuevos !== 0 || minutosReales > 0) await agregarPuntosObservacion(username, ptsNuevos, minutosReales);
     if (minutosReales > 0) {
         await updateUsuario(username, { minutos_lurk: (user.minutos_lurk || 0) + minutosReales });
     }

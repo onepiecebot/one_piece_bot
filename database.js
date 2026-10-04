@@ -208,7 +208,9 @@ async function agregarPuntosObservacion(username, puntos, minutos) {
     } else {
         await supabase.from('lurk_historial').insert([{ username, fecha: hoy, puntos, minutos }]);
     }
-    await recalcularObservacion(username);
+    // Solo recalcular si los puntos cambiaron. Si puntos === 0, la observación
+    // no cambia y ahorramos el SELECT + UPDATE de recalcularObservacion.
+    if (puntos !== 0) await recalcularObservacion(username);
 }
 
 // Recalcula usuarios.observacion = suma de últimos 20 días de historial
