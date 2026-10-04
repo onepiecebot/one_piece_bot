@@ -1,5 +1,6 @@
 ﻿require('dotenv').config();
 const tmi = require('tmi.js');
+const { AsyncLocalStorage } = require('async_hooks');
 const config = require('./config.js');
 const db = require('./database.js');
 const {
@@ -21,6 +22,8 @@ const {
 const COOLDOWN_FRUTA = 20 * 60 * 1000; // 20 min
 const FRUTA_LIMITE_DIARIO = 5;
 const TOTAL_PUERTAS_JUEGO = 20000;
+const FACTOR_RECOMPENSA = 3614500; // berries por punto de aporte de haki
+const TOPE_DELTA_MULT = 1.8; // tope delta = 1.8 × max base histórica
 const DUEÑO = 'fan_d_larana';
 const TWITCH_API_URL = 'https://api.twitch.tv/helix';
 const GITHUB_REPO = 'onepiecebot/one_piece_bot';
@@ -56,6 +59,27 @@ const cooldownsLurk = {};
 const cooldownsCanaleson = {};
 const cooldownsOnOff = {};
 const notif5Plazas = { fecha: null, enviado: false };
+
+// Cuando un comando de susurro se tira en el chat de op_d_bot,
+// guardamos acá el contexto para redirigir las respuestas a chat con @username.
+const contextoOpDBot = new AsyncLocalStorage();
+
+// Comandos que funcionan también por chat en op_d_bot (redirigidos al handler de susurro).
+const COMANDOS_SUSURRO_EN_OP_D_BOT = [
+    '!explorar',
+    '!facil', '!medio', '!dificil',
+    '!continuar', '!retroceder',
+    '!combatir', '!retirarse',
+    '!exploracionpendiente',
+    '!duelopendiente',
+    '!actualizacion',
+    '!observacion',
+    '!canaleson',
+    '!personaje',
+    '!ayuda', '!ayudadchat', '!ayudasusurro', '!ayudaop',
+    '!testwhisper',
+    '!infoop'
+];
 
 // ============================================
 // HELPERS GENERALES
@@ -117,17 +141,17 @@ const getFechaAyer = () => getFechaOffset(-1);
 // ============================================
 function getRangoArmadura(puntos, esSupremo) {
     if (esSupremo) return { nombre: 'Supremo', emoji: '👑', idx: 4 };
-    if (puntos >= 80) return { nombre: 'Avanzado', emoji: '🔥', idx: 3 };
-    if (puntos >= 50) return { nombre: 'Básico', emoji: '💪', idx: 2 };
-    if (puntos >= 20) return { nombre: 'Despertado', emoji: '💡', idx: 1 };
+    if (puntos >= 90) return { nombre: 'Avanzado', emoji: '🔥', idx: 3 };
+    if (puntos >= 70) return { nombre: 'Básico', emoji: '💪', idx: 2 };
+    if (puntos >= 40) return { nombre: 'Despertado', emoji: '💡', idx: 1 };
     return { nombre: 'No despertado', emoji: '❌', idx: 0 };
 }
 
 function getRangoObservacion(puntos, esSupremo) {
     if (esSupremo) return { nombre: 'Supremo', emoji: '👑', idx: 4 };
-    if (puntos >= 80) return { nombre: 'Avanzado', emoji: '🔥', idx: 3 };
-    if (puntos >= 50) return { nombre: 'Básico', emoji: '💪', idx: 2 };
-    if (puntos >= 20) return { nombre: 'Despertado', emoji: '💡', idx: 1 };
+    if (puntos >= 90) return { nombre: 'Avanzado', emoji: '🔥', idx: 3 };
+    if (puntos >= 70) return { nombre: 'Básico', emoji: '💪', idx: 2 };
+    if (puntos >= 40) return { nombre: 'Despertado', emoji: '💡', idx: 1 };
     return { nombre: 'No despertado', emoji: '❌', idx: 0 };
 }
 
@@ -226,12 +250,50 @@ const MENSAJES_RANGO_OBS = {
 // ============================================
 // RECOMPENSA Y PENALIZACIÓN
 // ============================================
-function calcularRecompensa(user) {
-    const arm = user.armadura || 0;
-    const obs = user.observacion || 0;
-    const conq = user.conquistador || 0;
-    const numFrutas = (user.fruta ? 1 : 0) + (user.fruta_2 ? 1 : 0);
-    return (arm * 500000) + (obs * 500000) + (conq * 1000000) + (numFrutas * 10000000);
+function calcularRecompensaFruta(fruta, fruta2, pcf1, pcf2) {
+    // Yami sola o con segunda: valores fijos
+    const tieneYami = (fruta === 'Yami Yami no Mi') || (fruta2 === 'Yami Yami no Mi');
+    if (tieneYami && (fruta && fruta2)) return 600000000;
+    if (tieneYami) return 400000000;
+    // Fruta normal: fórmula exponencial con el PCF
+    let pcf = 0;
+    if (fruta && pcf1) pcf = Math.max(pcf, pcf1);
+    if (fruta2 && pcf2) pcf = Math.max(pcf, pcf2);
+    if (pcf <= 0) return 0;
+    return Math.round(((pcf * pcf) / 150 + (pcf / 3)) * 1000000);
+}
+
+async function getRecompensaReal(user) {
+    if (!user) return 0;
+    const supArm = await esSupremoArmadura(user.username);
+    const supObs = await esSupremoObservacion(user.username);
+    const supConq = await esSupremoConquistador(user.username);
+    const valorArm = calcularAporteArmadura(user.armadura || 0, supArm) * FACTOR_RECOMPENSA;
+    const valorObs = calcularAporteObservacion(user.observacion || 0, supObs) * FACTOR_RECOMPENSA;
+    const valorConq = calcularAporteConquistador(user.conquistador || 0, supConq) * FACTOR_RECOMPENSA;
+    // PCFs de frutas
+    let pcf1 = 0, pcf2 = 0;
+    if (user.fruta) {
+        const { data: f1 } = await supabase.from('frutas').select('poder_fruta').eq('nombre', user.fruta).single();
+        pcf1 = (f1 && f1.poder_fruta) ? Number(f1.poder_fruta) : 0;
+    }
+    if (user.fruta_2) {
+        const { data: f2 } = await supabase.from('frutas').select('poder_fruta').eq('nombre', user.fruta_2).single();
+        pcf2 = (f2 && f2.poder_fruta) ? Number(f2.poder_fruta) : 0;
+    }
+    const valorFruta = calcularRecompensaFruta(user.fruta, user.fruta_2, pcf1, pcf2);
+    const base = valorArm + valorObs + valorConq + valorFruta;
+    // Actualizar max histórico si subió
+    const maxHist = user.max_base_historica || 0;
+    let maxActualizado = maxHist;
+    if (base > maxHist) {
+        maxActualizado = Math.round(base);
+        await updateUsuario(user.username, { max_base_historica: maxActualizado });
+    }
+    // Delta activo con tope
+    const tope = Math.round(maxActualizado * TOPE_DELTA_MULT);
+    const deltaActivo = Math.min(Math.max(0, user.recompensa_delta || 0), tope);
+    return Math.round(base + deltaActivo);
 }
 
 const PENALIZACION_BASES = {
@@ -309,6 +371,30 @@ function calcularPlazasPorPuntos(topPuntos) {
     return 6 + Math.floor((topPuntos - 100) / 50);
 }
 
+async function marcarDiaPerfecto(username) {
+    const hoy = getFechaHoy();
+    await supabase.from('lurk_historial')
+        .update({ dia_perfecto: true })
+        .eq('username', username).eq('fecha', hoy);
+}
+
+async function getSupremosObservacionGarantizados() {
+    const hace20 = getFechaOffset(-20);
+    const ayer = getFechaOffset(-1);
+    const { data } = await supabase.from('lurk_historial')
+        .select('username')
+        .eq('dia_perfecto', true)
+        .gte('fecha', hace20)
+        .lte('fecha', ayer)
+        .limit(10000);
+    if (!data || data.length === 0) return [];
+    const counts = {};
+    for (const r of data) {
+        counts[r.username] = (counts[r.username] || 0) + 1;
+    }
+    return Object.keys(counts).filter(u => counts[u] >= 20);
+}
+
 async function getDedicadosHoy() {
     const { data } = await supabase.from('usuarios').select('username').gt('op_usos_hoy', 0);
     return (data || []).length;
@@ -340,22 +426,26 @@ async function calcularSupremos(campo, cache) {
             .from('usuarios').select('username, ' + campo)
             .gt(campo, 0).order(campo, { ascending: false })
             .limit(Math.max(totalPlazas * 3, 30));
-        if (!topData || topData.length === 0) {
-            cache.data = [];
-            cache.timestamp = ahora;
-            return [];
+        let result = [];
+        if (topData && topData.length > 0) {
+            const elegibles = topData.filter(u => (u[campo] || 0) >= 100);
+            if (elegibles.length > 0) {
+                const corteIdx = Math.min(totalPlazas, elegibles.length) - 1;
+                const valorCorte = elegibles[corteIdx][campo];
+                result = elegibles
+                    .filter(u => (u[campo] || 0) >= valorCorte)
+                    .map(u => u.username.toLowerCase());
+            }
         }
-        const elegibles = topData.filter(u => (u[campo] || 0) >= 100);
-        if (elegibles.length === 0) {
-            cache.data = [];
-            cache.timestamp = ahora;
-            return [];
+        // Supremos garantizados por 20 días perfectos (solo Observación)
+        if (campo === 'observacion') {
+            const garantizados = await getSupremosObservacionGarantizados();
+            if (garantizados.length > 0) {
+                const setResult = new Set(result);
+                for (const g of garantizados) setResult.add(g.toLowerCase());
+                result = Array.from(setResult);
+            }
         }
-        const corteIdx = Math.min(totalPlazas, elegibles.length) - 1;
-        const valorCorte = elegibles[corteIdx][campo];
-        const result = elegibles
-            .filter(u => (u[campo] || 0) >= valorCorte)
-            .map(u => u.username.toLowerCase());
         cache.data = result;
         cache.timestamp = ahora;
         return result;
@@ -487,6 +577,24 @@ function getEscalon(ratio) {
     return 'mucho_mas_debil';
 }
 function redondearBerries(v) { return Math.round(v / 10000) * 10000; }
+
+async function calcularBonusRachaExplorar(user) {
+    const hoy = getFechaHoy();
+    const ayer = getFechaOffset(-1);
+    const ultimoDia = user.ultimo_dia_racha_explorar;
+    if (ultimoDia === hoy) {
+        return { bonus: 0, racha: user.racha_explorar || 0, yaContado: true };
+    }
+    let racha = user.racha_explorar || 0;
+    if (ultimoDia === ayer) {
+        racha += 1;
+    } else {
+        racha = 1;
+    }
+    const bonus = racha <= 10 ? 1 : 2;
+    await updateUsuario(user.username, { racha_explorar: racha, ultimo_dia_racha_explorar: hoy });
+    return { bonus, racha, yaContado: false };
+}
 
 function calcularRecompensasExplorar(npc, prob, victoria) {
     const baseConq = npc.recompensa_conquistador || 0;
@@ -621,13 +729,22 @@ function resolverDuelo(probRetador, retador, retado) {
     return { ganador: probRetador > probRetado ? retador : retado, empate: false };
 }
 
-function calcularMontoDuelo(deltaPerdedor, pcfPerdedor, pcfGanador) {
-    const deltaPos = Math.max(0, deltaPerdedor);
-    if (deltaPos <= 0) return 0;
-    const base = 0.30 * deltaPos;
+function calcularMontoDuelo(recompensaRetador, recompensaRetado, pcfRetador, pcfRetado, deltaPerdedor, ganadorEsRetador) {
+    // Pot = décimo de la suma de recompensas reales
+    const pot = (recompensaRetador + recompensaRetado) / 10;
+    const pcfPerdedor = ganadorEsRetador ? pcfRetado : pcfRetador;
+    const pcfGanador = ganadorEsRetador ? pcfRetador : pcfRetado;
+    const recompensaGanador = ganadorEsRetador ? recompensaRetador : recompensaRetado;
+    // Multiplicador por diferencia de PCF
     const ratio = pcfPerdedor / pcfGanador;
     const mult = Math.max(0.1, Math.min(5, ratio * ratio));
-    return Math.min(base * mult, deltaPos);
+    let monto = pot * mult;
+    // Cap 1: nunca más del 50% de la recompensa del ganador
+    monto = Math.min(monto, recompensaGanador * 0.5);
+    // Cap 2: si el perdedor tiene delta positivo, nunca más de ese delta
+    const deltaPos = Math.max(0, deltaPerdedor);
+    if (deltaPos > 0) monto = Math.min(monto, deltaPos);
+    return Math.round(monto);
 }
 
 function getSituacionDuelo(ganador, empate, retador, retado, probRetador) {
@@ -767,6 +884,11 @@ async function lurkCerrarBloque(username) {
     if (minutosReales > 0) {
         await updateUsuario(username, { minutos_lurk: (user.minutos_lurk || 0) + minutosReales });
     }
+    // Si acaba de llegar a 3 postas y ya canjeó el avistamiento → día perfecto
+    if (postasNuevas >= 3 && postasPrev < 3 && lurk.lurk_npc_canjeado_hoy) {
+        await marcarDiaPerfecto(username);
+        console.log('🌟 Día perfecto marcado: ' + username);
+    }
     console.log('📊 Lurk cerrado: ' + username + ' → ' + totalDespues + ' min, ' + postasNuevas + ' postas, +' + ptsNuevos + ' pts');
     const userFresh = await getUsuario(username);
     if (userFresh) {
@@ -823,9 +945,13 @@ async function checkLiveHelix(canal) {
 // SCAN DE CHATTERS
 // ============================================
 const broadcasterIdsCache = {};
+const BROADCASTER_CACHE_TTL = 60 * 60 * 1000; // 1 hora
 
 async function obtenerBroadcasterId(canal) {
-    if (broadcasterIdsCache[canal]) return broadcasterIdsCache[canal];
+    const cached = broadcasterIdsCache[canal];
+    if (cached && Date.now() - cached.timestamp < BROADCASTER_CACHE_TTL) {
+        return cached.id;
+    }
     try {
         const url = TWITCH_API_URL + '/users?login=' + canal;
         const res = await fetch(url, {
@@ -837,7 +963,7 @@ async function obtenerBroadcasterId(canal) {
         if (!res.ok) return null;
         const data = await res.json();
         const id = (data.data && data.data[0]) ? data.data[0].id : null;
-        if (id) broadcasterIdsCache[canal] = id;
+        if (id) broadcasterIdsCache[canal] = { id, timestamp: Date.now() };
         return id;
     } catch (e) {
         console.error('❌ Error obtenerBroadcasterId:', e);
@@ -1067,7 +1193,7 @@ async function anunciarNpc() {
     npcVentanaHasta = new Date(Date.now() + NPC_VENTANA_MINUTOS * 60000).toISOString();
     await guardarEstadoNpc();
     const canales = await getCanales();
-    const msg = '👁️ Tu Haki de Observación percibe algo... ¡Es ' + npcActual + '! Susurrá !personaje ' + npcActual.toLowerCase() + ' en los próximos ' + NPC_VENTANA_MINUTOS + ' minutos.';
+    const msg = '👁️ ¡' + npcActual + ' apareció! Susurrá !personaje ' + npcActual.toLowerCase() + ' (' + NPC_VENTANA_MINUTOS + ' min)';
     for (const c of canales) {
         if (!c.bot_activo) continue;
         const live = await checkLiveHelix(c.canal);
@@ -1117,7 +1243,8 @@ async function procesarPersonaje(username, nombreIngresado, fromUserId) {
         if ((lurk.lurk_postas_hoy || 0) >= 3) {
             await agregarPuntosObservacion(username, 3, 0);
             await updateLurkStats(username, { lurk_puntos_hoy: (lurk.lurk_puntos_hoy || 0) + 3 });
-            console.log('👁️ NPC canjeado: ' + username + ' → acierto (+3, inmediato)');
+            await marcarDiaPerfecto(username);
+            console.log('🌟 Día perfecto marcado: ' + username);
             await sendWhisper(fromUserId, '🎯 ¡Correcto! +3 de Haki de Observación.');
         } else {
             await updateLurkStats(username, { lurk_npc_pendiente: 3 });
@@ -1197,7 +1324,7 @@ const AYUDA_TEMAS = {
 };
 const AYUDA_CHAT = '💬 COMANDOS DE CHAT 🎮 !op → Entrena Haki 📊 !infoop → Tu info 🍎 !fruta → Busca fruta ⚔️ !retar @usuario → Duelo 🏆 !historial @usuario';
 const AYUDA_CHAT_STREAMER = '💬 COMANDOS DE CHAT 🎮 !op → Entrena Haki 📊 !infoop → Tu info 🍎 !fruta → Busca fruta ⚔️ !retar @usuario → Duelo 🏆 !historial @usuario 🔴 !offop / 🟢 !onop';
-const AYUDA_SUSURRO = '📩 COMANDOS DE SUSURRO 🗺️ !explorar ⏳ !exploracionpendiente ⚔️ !duelopendiente 📊 !infoop 👤 !infoop @usuario 🔄 !actualizacion 📡 !observacion 📡 !canaleson 👁️ !personaje <nombre>';
+const AYUDA_SUSURRO = '📩 COMANDOS DE SUSURRO (o chat de op_d_bot) 🗺️ !explorar ⏳ !exploracionpendiente ⚔️ !duelopendiente 📊 !infoop 👤 !infoop @usuario 🔄 !actualizacion 📡 !observacion 📡 !canaleson 👁️ !personaje <nombre>';
 
 // ============================================
 // CLIENTE
@@ -1268,6 +1395,11 @@ client.on('whisper', async (from, userstate, message, self) => {
 // ENVIAR SUSURRO
 // ============================================
 async function sendWhisper(toUserId, message) {
+    const ctx = contextoOpDBot.getStore();
+    if (ctx && ctx.fromUserId === toUserId) {
+        client.say('op_d_bot', '@' + ctx.username + ' ' + message);
+        return;
+    }
     const url = TWITCH_API_URL + '/whispers?from_user_id=' + config.botUserId + '&to_user_id=' + toUserId;
     try {
         const response = await fetch(url, {
@@ -1511,8 +1643,8 @@ async function handleWhisper(event) {
             const cd = await puedeExplorar(user);
             if (!cd.ok) estadoExplorar = 'usada. Próxima en ' + formatTiempoRestante(cd.restante);
         }
-        const recompensaBase = calcularRecompensa(user);
-        const recompensaReal = recompensaBase + Math.max(0, user.recompensa_delta || 0);
+        const recompensaReal = await getRecompensaReal(user);
+        await updateUsuario(username, { recompensa_publica: recompensaReal });
         const mensaje = '📊 Tus stats: ' + frutaTexto + ' | 🛡️ ' + rangoArm.nombre + ' (' + (user.armadura || 0) + ') ' + rangoArm.emoji + ' | 👁️ ' + rangoObs.nombre + ' (' + (user.observacion || 0) + ') ' + rangoObs.emoji + ' | ⚜️ ' + rangoConq.nombre + ' (' + (user.conquistador || 0) + ') ' + rangoConq.emoji + ' | 🏴‍☠️💰 $' + recompensaReal.toLocaleString('es-AR') + ' | 🗺️ ' + estadoExplorar;
         await sendWhisper(fromUserId, mensaje);
         return;
@@ -1653,15 +1785,17 @@ async function handleWhisper(event) {
         }
         const o = user.evento_explorar_opciones || {};
         const op = o[user.evento_explorar_dificultad];
+        const rachaExpl = await calcularBonusRachaExplorar(user);
+        const msgRachaExpl = rachaExpl.yaContado ? '' : ' | 🔥 Racha ' + rachaExpl.racha + 'd: +' + rachaExpl.bonus;
         const castigo = Math.max(Math.ceil(op.castigo_conq * 0.1), 1);
         await updateUsuario(username, {
-            conquistador: Math.max((user.conquistador || 0) - castigo, 0),
+            conquistador: Math.max((user.conquistador || 0) - castigo, 0) + rachaExpl.bonus,
             evento_explorar_estado: null, evento_explorar_fase: null, evento_explorar_dificultad: null,
             evento_explorar_npc: null, evento_explorar_nivel: null, evento_explorar_pcf_usuario: null,
             evento_explorar_pcf_npc: null, evento_explorar_comandos: null, evento_explorar_opciones: null
         });
         const msg = await getTextoExplorar('retroceder');
-        await sendWhisper(fromUserId, msg + ' -' + castigo + ' Conq.');
+        await sendWhisper(fromUserId, msg + ' -' + castigo + ' Conq.' + msgRachaExpl);
         return;
     }
 
@@ -1676,24 +1810,26 @@ async function handleWhisper(event) {
         const msgCtx = await getMensajeContextualExplorar(op.victoria, op.escalon, op.margen_key);
         const hakiUExpl = await formatearHakiLog(user);
         console.log('[EXPLORAR] ' + username + ' vs ' + op.npc + ' | PCF ' + op.pcf_usuario + ' vs ' + op.pcf_npc + ' | Haki U: ' + hakiUExpl + ' | ' + (op.victoria ? 'VICTORIA' : 'DERROTA'));
+        const rachaExpl = await calcularBonusRachaExplorar(user);
+        const msgRachaExpl = rachaExpl.yaContado ? '' : ' | 🔥 Racha ' + rachaExpl.racha + 'd: +' + rachaExpl.bonus;
         if (op.victoria) {
             await updateUsuario(username, {
-                conquistador: (user.conquistador || 0) + op.recompensa_conq,
+                conquistador: (user.conquistador || 0) + op.recompensa_conq + rachaExpl.bonus,
                 recompensa_delta: (user.recompensa_delta || 0) + op.recompensa_berries,
                 evento_explorar_estado: null, evento_explorar_fase: null, evento_explorar_dificultad: null,
                 evento_explorar_npc: null, evento_explorar_nivel: null, evento_explorar_pcf_usuario: null,
                 evento_explorar_pcf_npc: null, evento_explorar_comandos: null, evento_explorar_opciones: null
             });
-            await sendWhisper(fromUserId, msgCtx + ' 🏆 ¡Victoria! Derrotaste a la sombra de ' + op.npc + '. +' + op.recompensa_conq + ' Conq. +$' + op.recompensa_berries.toLocaleString('es-AR'));
+            await sendWhisper(fromUserId, msgCtx + ' 🏆 ¡Victoria! Derrotaste a la sombra de ' + op.npc + '. +' + op.recompensa_conq + ' Conq. +$' + op.recompensa_berries.toLocaleString('es-AR') + msgRachaExpl);
         } else {
             await updateUsuario(username, {
-                conquistador: Math.max((user.conquistador || 0) - op.castigo_conq, 0),
+                conquistador: Math.max((user.conquistador || 0) - op.castigo_conq, 0) + rachaExpl.bonus,
                 recompensa_delta: (user.recompensa_delta || 0) - op.castigo_berries,
                 evento_explorar_estado: null, evento_explorar_fase: null, evento_explorar_dificultad: null,
                 evento_explorar_npc: null, evento_explorar_nivel: null, evento_explorar_pcf_usuario: null,
                 evento_explorar_pcf_npc: null, evento_explorar_comandos: null, evento_explorar_opciones: null
             });
-            await sendWhisper(fromUserId, msgCtx + ' 💀 Derrota. La sombra de ' + op.npc + ' te superó. -' + op.castigo_conq + ' Conq. -$' + op.castigo_berries.toLocaleString('es-AR'));
+            await sendWhisper(fromUserId, msgCtx + ' 💀 Derrota. La sombra de ' + op.npc + ' te superó. -' + op.castigo_conq + ' Conq. -$' + op.castigo_berries.toLocaleString('es-AR') + msgRachaExpl);
         }
         return;
     }
@@ -1710,21 +1846,21 @@ async function handleWhisper(event) {
             .eq('nombre', op.npc).single();
         const tieneHuidaEspecial = npcData && npcData.texto_huida;
         const sinPenalizacion = npcData && npcData.huida_sin_penalizacion;
+        const rachaExpl = await calcularBonusRachaExplorar(user);
+        const msgRachaExpl = rachaExpl.yaContado ? '' : ' | 🔥 Racha ' + rachaExpl.racha + 'd: +' + rachaExpl.bonus;
         const castigo = sinPenalizacion ? 0 : Math.max(Math.ceil(op.castigo_conq * 0.3), 1);
         const updateData = {
             evento_explorar_estado: null, evento_explorar_fase: null, evento_explorar_dificultad: null,
             evento_explorar_npc: null, evento_explorar_nivel: null, evento_explorar_pcf_usuario: null,
             evento_explorar_pcf_npc: null, evento_explorar_comandos: null, evento_explorar_opciones: null
         };
-        if (castigo > 0) {
-            updateData.conquistador = Math.max((user.conquistador || 0) - castigo, 0);
-        }
+        updateData.conquistador = Math.max((user.conquistador || 0) - castigo, 0) + rachaExpl.bonus;
         await updateUsuario(username, updateData);
         if (tieneHuidaEspecial) {
-            await sendWhisper(fromUserId, npcData.texto_huida);
+            await sendWhisper(fromUserId, npcData.texto_huida + msgRachaExpl);
         } else {
             const msg = await getTextoExplorar('retirarse');
-            await sendWhisper(fromUserId, msg + ' -' + castigo + ' Conq.');
+            await sendWhisper(fromUserId, msg + ' -' + castigo + ' Conq.' + msgRachaExpl);
         }
         return;
     }
@@ -1856,7 +1992,6 @@ async function procesarRetar(username, targetRaw, fromUserId, esSusurro, chatCha
         await responder('Tenés un evento pendiente. Resolvelo antes.'); return;
     }
     if (!(await completoExplorarHoy(username))) { await responder('Necesitás completar tu !explorar del día.'); return; }
-    if ((user.recompensa_delta || 0) < DUELO_DELTA_MINIMO) { await responder('Necesitás $100M+ de recompensa para retar.'); return; }
     if (user.ultimo_duelo_timestamp) {
         const diff = Date.now() - new Date(user.ultimo_duelo_timestamp).getTime();
         if (diff < DUELO_COOLDOWN_MS) { await responder('Esperá ' + Math.ceil((DUELO_COOLDOWN_MS - diff) / 60000) + ' min.'); return; }
@@ -1868,7 +2003,6 @@ async function procesarRetar(username, targetRaw, fromUserId, esSusurro, chatCha
     if (targetUser.evento_explorar_estado === 'pendiente' || targetUser.evento_fruta_estado === 'pendiente') {
         await responder('@' + target + ' está en medio de un evento.'); return;
     }
-    if ((targetUser.recompensa_delta || 0) < DUELO_DELTA_MINIMO) { await responder('@' + target + ' no tiene $100M+ para duelar.'); return; }
     if (!(await completoExplorarHoy(target))) { await responder('@' + target + ' no completó su !explorar del día.'); return; }
     const pcfRetador = await calcularPCFUsuario(user);
     const expiraISO = new Date(Date.now() + DUELO_TIMEOUT_MS).toISOString();
@@ -1952,15 +2086,20 @@ async function procesarAceptarDuelo(username, fromUserId, esSusurro, chatChannel
     let monto = 0;
     if (!empate) {
         const perdedorUser = ganador === retador ? retadoUser : retadorUser;
-        const pcfPerd = ganador === retador ? pcfRetado : pcfRetador;
-        const pcfGan = ganador === retador ? pcfRetador : pcfRetado;
-        monto = Math.round(calcularMontoDuelo(perdedorUser.recompensa_delta || 0, pcfPerd, pcfGan));
-        if (ganador === retador) {
+        const ganadorEsRetador = (ganador === retador);
+        // Recompensas reales con tope delta
+        const recRet = await getRecompensaReal(retadorUser);
+        const recRetado = await getRecompensaReal(retadoUser);
+        const deltaPerd = perdedorUser.recompensa_delta || 0;
+        monto = calcularMontoDuelo(recRet, recRetado, pcfRetador, pcfRetado, deltaPerd, ganadorEsRetador);
+        // Cuánto pierde realmente el perdedor (nunca más de lo que tiene, mínimo 0)
+        const perdidaReal = Math.min(monto, Math.max(0, deltaPerd));
+        if (ganadorEsRetador) {
             await updateUsuario(retador, { recompensa_delta: (retadorUser.recompensa_delta || 0) + monto });
-            await updateUsuario(retado, { recompensa_delta: (retadoUser.recompensa_delta || 0) - monto });
+            await updateUsuario(retado, { recompensa_delta: (retadoUser.recompensa_delta || 0) - perdidaReal });
         } else {
             await updateUsuario(retado, { recompensa_delta: (retadoUser.recompensa_delta || 0) + monto });
-            await updateUsuario(retador, { recompensa_delta: (retadorUser.recompensa_delta || 0) - monto });
+            await updateUsuario(retador, { recompensa_delta: (retadorUser.recompensa_delta || 0) - perdidaReal });
         }
     }
     const situacion = getSituacionDuelo(ganador, empate, retador, retado, probRetador);
@@ -2090,13 +2229,18 @@ async function procesarMensajeChat(channel, tags, message, self) {
 
     // Solo crear usuarios para comandos que realmente los usan.
     // Cualquier otro !comando (por ej. para otros bots) NO toca la DB.
-    const COMANDOS_CON_USUARIO = [
-        '!op', '!fruta', '!comer', '!rechazar', '!frutapendiente',
-        '!retar', '!aceptarduelo', '!rechazarduelo', '!historial',
-        '!infoop', '!si', '!no', '!pelear', '!huir',
-        '!sumar1', '!sumar2', '!sumar3', '!restar1', '!restar2', '!restar3',
-        '!quitarfruta'
-    ];
+const COMANDOS_CON_USUARIO = [
+    '!op', '!fruta', '!comer', '!rechazar', '!frutapendiente',
+    '!retar', '!aceptarduelo', '!rechazarduelo', '!historial',
+    '!infoop', '!si', '!no', '!pelear', '!huir',
+    '!sumar1', '!sumar2', '!sumar3', '!restar1', '!restar2', '!restar3',
+    '!quitarfruta',
+    // Comandos de susurro (también funcionales en op_d_bot)
+    '!explorar', '!facil', '!medio', '!dificil',
+    '!continuar', '!retroceder', '!combatir', '!retirarse',
+    '!exploracionpendiente', '!duelopendiente',
+    '!observacion', '!personaje'
+];
     const usaUsuario = COMANDOS_CON_USUARIO.includes(command);
 
     if (usaUsuario && twitchUserId) {
@@ -2108,7 +2252,7 @@ async function procesarMensajeChat(channel, tags, message, self) {
         } catch (e) { console.error('Error guardando user_id:', e); }
     }
 
-    if (command === '!ayudaop') {
+    if (command === '!ayudaop' && canal !== 'op_d_bot') {
         client.say(channel, '👈 Mandame !ayudaop por susurro');
         return;
     }
@@ -2142,6 +2286,47 @@ async function procesarMensajeChat(channel, tags, message, self) {
                 client.say(channel, '@' + tags.username + ' 💤 No exploraste por ' + penal.dias + ' día(s). Perdiste ' + penal.perdConq + ' Conq y $' + penal.perdBerries.toLocaleString('es-AR'));
             }
         } catch (err) { console.error('Error penal:', err); }
+    }
+
+    // Si el usuario perdió una fruta pendiente, avisarle y limpiar la marca.
+    // Para !fruta NO se cancela (se aplica el premio consuelo en ese comando).
+    const COMANDOS_FRUTA_PERDIDA = ['!comer', '!rechazar', '!si', '!no', '!pelear', '!huir', '!frutapendiente', '!fruta'];
+    if (COMANDOS_FRUTA_PERDIDA.includes(command)) {
+        const userFP = await getUsuario(username);
+        if (userFP && userFP.fruta_perdida_por) {
+            const perdidaPor = userFP.fruta_perdida_por;
+            let msgFP;
+            if (command === '!rechazar' || command === '!no' || command === '!huir') {
+                msgFP = '¡Que bueno... no había fruta! @' + perdidaPor + ' ya le hizo la digestión y todo';
+            } else {
+                msgFP = '¿Y tu fruta? ¿Habría jurado que había una fruta aquí... Nooo, pestañaste, y @' + perdidaPor + ' te la primereó';
+            }
+            if (command === '!frutapendiente') {
+                msgFP += ' (Tenés una tirada extra garantizada de una fruta con poder similar)';
+            }
+            client.say(channel, '@' + tags.username + ' ' + msgFP);
+            await updateUsuario(username, { fruta_perdida_por: null });
+            if (command !== '!fruta') return;
+        }
+    }
+
+    // En op_d_bot, comandos de susurro funcionan también por chat con @username adelante.
+    if (canal === 'op_d_bot' && COMANDOS_SUSURRO_EN_OP_D_BOT.includes(command)) {
+        if (twitchUserId && await usuarioExiste(username)) {
+            const u = await getUsuario(username);
+            if (u && u.twitch_user_id !== twitchUserId) {
+                await updateUsuario(username, { twitch_user_id: twitchUserId });
+            }
+        }
+        await contextoOpDBot.run({ username: tags.username, fromUserId: twitchUserId }, async () => {
+            const fakeEvent = {
+                from_user_id: twitchUserId,
+                from_user_login: tags.username,
+                whisper: { text: message }
+            };
+            await handleWhisper(fakeEvent);
+        });
+        return;
     }
 
     const comandosBloqueados = ['!op', '!fruta', '!comer'];
@@ -2197,8 +2382,7 @@ async function procesarMensajeChat(channel, tags, message, self) {
         const supArm = await esSupremoArmadura(username);
         const supObs = await esSupremoObservacion(username);
         const supConq = await esSupremoConquistador(username);
-        const recompensaBase = calcularRecompensa(user);
-        const recompensaReal = recompensaBase + Math.max(0, user.recompensa_delta || 0);
+        const recompensaReal = await getRecompensaReal(user);
         await updateUsuario(username, { recompensa_publica: recompensaReal });
         let frutaTexto = '🍎 Ninguna';
         const canalDbInfo = await getCanal(canal);
@@ -2294,10 +2478,11 @@ async function procesarMensajeChat(channel, tags, message, self) {
         const rangoFinal = getRangoArmadura(updateData.armadura, ahoraSupremo);
         const texto = getTextoResultadoOp(rangoFinal.nombre, delta);
         let respuesta = '@' + tags.username + ' ' + texto + ' ' + (delta > 0 ? '+' : '') + delta + ' Armadura ' + rangoFinal.emoji;
-        const rangoAnterior = eraSupremo ? 'Supremo' : getRangoArmadura(armActual).nombre;
-        if (rangoAnterior !== rangoFinal.nombre) {
+        const rangoNotifArm = (userAct.armadura_rango_notificado === null || userAct.armadura_rango_notificado === undefined) ? -1 : userAct.armadura_rango_notificado;
+        if (rangoFinal.idx > rangoNotifArm) {
             const msg = MENSAJES_RANGO_ARMADURA[rangoFinal.nombre];
             if (msg) respuesta += ' | ' + msg;
+            await updateUsuario(username, { armadura_rango_notificado: rangoFinal.idx });
             console.log('⬆️ Rango: ' + username + ' → Armadura ' + rangoFinal.nombre);
         }
         if (mensajesExtra.length > 0) respuesta += ' | ' + mensajesExtra.join(' | ');
@@ -2332,6 +2517,9 @@ async function procesarMensajeChat(channel, tags, message, self) {
                 await updateUsuario(username, { yami_aviso_mostrado: true });
                 client.say(channel, '@' + tags.username + ' 🌑⚡ ¡ANOMALÍA! La Yami Yami no Mi pulsa con fuerza. Las tinieblas se retuercen dentro tuyo... y una puerta se abre. ¡Podés contener una SEGUNDA fruta del diablo! Los mares temblarán con tu nombre.');
             }
+            // ¿Tiene premio consuelo pendiente? Si sí, esta tirada es extra: no cuenta para el límite diario ni consume cooldown.
+            const tienePremioConsuelo = !!user.fruta_perdida_pcf;
+
             // Reset diario de intentos
             const hoy = getFechaHoy();
             let intentosHoy = user.fruta_intentos_hoy || 0;
@@ -2339,22 +2527,30 @@ async function procesarMensajeChat(channel, tags, message, self) {
                 intentosHoy = 0;
                 await updateUsuario(username, { fruta_intentos_hoy: 0, ultimo_dia_fruta: hoy });
             }
-            if (intentosHoy >= FRUTA_LIMITE_DIARIO) {
+            if (!tienePremioConsuelo && intentosHoy >= FRUTA_LIMITE_DIARIO) {
                 client.say(channel, '@' + tags.username + ' Ya usaste tus 5 intentos de hoy. Volvé mañana.');
                 return;
             }
-            const ahora = Date.now();
-            const ultimoUso = cooldowns['fruta_' + username] || 0;
-            const tiempoRestante = COOLDOWN_FRUTA - (ahora - ultimoUso);
-            if (tiempoRestante > 0) {
-                const min = Math.ceil(tiempoRestante / 60000);
-                client.say(channel, '@' + tags.username + ' Esperá ' + min + ' min.');
-                return;
+            if (!tienePremioConsuelo) {
+                const ahora = Date.now();
+                const ultimoUso = cooldowns['fruta_' + username] || 0;
+                const tiempoRestante = COOLDOWN_FRUTA - (ahora - ultimoUso);
+                if (tiempoRestante > 0) {
+                    const min = Math.ceil(tiempoRestante / 60000);
+                    client.say(channel, '@' + tags.username + ' Esperá ' + min + ' min.');
+                    return;
+                }
+                cooldowns['fruta_' + username] = Date.now();
+                await updateUsuario(username, { fruta_intentos_hoy: intentosHoy + 1, ultimo_dia_fruta: hoy });
             }
-            cooldowns['fruta_' + username] = Date.now();
-            await updateUsuario(username, { fruta_intentos_hoy: intentosHoy + 1, ultimo_dia_fruta: hoy });
-            const { data: usuariosConFruta } = await supabase.from('usuarios').select('fruta').not('fruta', 'is', null);
-            const frutasOcupadas = (usuariosConFruta || []).map(u => u.fruta).filter(Boolean);
+            // Excluir frutas en posesión de cualquier usuario: fruta y fruta_2
+            const { data: usuariosConFruta } = await supabase.from('usuarios').select('fruta, fruta_2');
+            const setFrutasOcupadas = new Set();
+            for (const u of (usuariosConFruta || [])) {
+                if (u.fruta) setFrutasOcupadas.add(u.fruta);
+                if (u.fruta_2) setFrutasOcupadas.add(u.fruta_2);
+            }
+            const frutasOcupadas = Array.from(setFrutasOcupadas);
             let query = supabase.from('frutas').select('*');
             if (frutasOcupadas.length > 0) query = query.not('nombre', 'in', "('" + frutasOcupadas.join("','") + "')");
             const { data: frutasDisponibles, error: errFrutas } = await query;
@@ -2368,24 +2564,41 @@ async function procesarMensajeChat(channel, tags, message, self) {
             if (frutasFiltradas.length === 0) {
                 client.say(channel, '@' + tags.username + ' No hay frutas disponibles para este canal.'); return;
             }
-            // Sistema de puertas: sortear si encontrás fruta, después cuál
-            const puertasDisponibles = frutasFiltradas.reduce((s, f) => s + (Number(f.puertas) || 0), 0);
-            if (puertasDisponibles === 0) {
-                client.say(channel, '@' + tags.username + ' No quedan frutas disponibles. Volvé más tarde.');
-                return;
-            }
-            const probExito = puertasDisponibles / TOTAL_PUERTAS_JUEGO;
-            if (Math.random() >= probExito) {
-                client.say(channel, '@' + tags.username + ' No encontraste nada esta vez. Volvé a intentar más tarde.');
-                return;
-            }
             let selectedFruit = null;
-            let rp = Math.random() * puertasDisponibles;
-            for (let i = 0; i < frutasFiltradas.length; i++) {
-                rp -= (Number(frutasFiltradas[i].puertas) || 0);
-                if (rp <= 0) { selectedFruit = frutasFiltradas[i]; break; }
+            if (tienePremioConsuelo) {
+                // Premio consuelo: elegir la fruta con PCF más cercano al perdido. Sin sortear, sin gastar intento.
+                const pcfObjetivo = user.fruta_perdida_pcf || 0;
+                let mejorDistancia = Infinity;
+                for (const f of frutasFiltradas) {
+                    const dist = Math.abs((f.poder_fruta || 0) - pcfObjetivo);
+                    if (dist < mejorDistancia) {
+                        mejorDistancia = dist;
+                        selectedFruit = f;
+                    }
+                }
+                if (selectedFruit) {
+                    await updateUsuario(username, { fruta_perdida_pcf: null });
+                    console.log('🍎 Premio consuelo: ' + username + ' → ' + selectedFruit.nombre + ' (PCF objetivo ' + pcfObjetivo + ')');
+                }
+            } else {
+                // Sistema de puertas: sortear si encontrás fruta, después cuál
+                const puertasDisponibles = frutasFiltradas.reduce((s, f) => s + (Number(f.puertas) || 0), 0);
+                if (puertasDisponibles === 0) {
+                    client.say(channel, '@' + tags.username + ' No quedan frutas disponibles. Volvé más tarde.');
+                    return;
+                }
+                const probExito = puertasDisponibles / TOTAL_PUERTAS_JUEGO;
+                if (Math.random() >= probExito) {
+                    client.say(channel, '@' + tags.username + ' No encontraste nada esta vez. Volvé a intentar más tarde.');
+                    return;
+                }
+                let rp = Math.random() * puertasDisponibles;
+                for (let i = 0; i < frutasFiltradas.length; i++) {
+                    rp -= (Number(frutasFiltradas[i].puertas) || 0);
+                    if (rp <= 0) { selectedFruit = frutasFiltradas[i]; break; }
+                }
+                if (!selectedFruit) selectedFruit = frutasFiltradas[frutasFiltradas.length - 1];
             }
-            if (!selectedFruit) selectedFruit = frutasFiltradas[frutasFiltradas.length - 1];
             if (selectedFruit.evento) {
                 await updateUsuario(username, {
                     evento_fruta_tipo: 'fruta', evento_fruta_fase: 'avistamiento',
@@ -2557,12 +2770,24 @@ async function procesarMensajeChat(channel, tags, message, self) {
                 evento_fruta_comida_por_otro: false
             });
             client.say(channel, '@' + tags.username + ' ' + mensaje + ' 🍎 ¡Obtuviste la ' + user.evento_fruta_nombre + ' ' + emojiFruta + '!');
-            const { data: afectados } = await supabase.from('usuarios').select('username')
+            const { data: afectados } = await supabase.from('usuarios').select('username, twitch_user_id')
                 .eq('evento_fruta_nombre', user.evento_fruta_nombre)
                 .eq('evento_fruta_estado', 'pendiente').neq('username', username);
             if (afectados && afectados.length > 0) {
+                const pcfFruta = Math.round(poderFrutaUsuario);
                 for (const a of afectados) {
-                    await updateUsuario(a.username, { evento_fruta_comida_por_otro: true });
+                    await updateUsuario(a.username, {
+                        evento_fruta_tipo: null, evento_fruta_fase: null, evento_fruta_nombre: null,
+                        evento_fruta_nivel: null, evento_fruta_estado: null, evento_fruta_comandos: null,
+                        evento_fruta_comida_por_otro: false,
+                        fruta_perdida_por: username,
+                        fruta_perdida_pcf: pcfFruta
+                    });
+                    if (a.twitch_user_id) {
+                        try {
+                            await sendWhisper(a.twitch_user_id, '¿Y tu fruta? ¿Habría jurado que había una fruta aquí... Nooo, pestañaste, y @' + username + ' te la primereó');
+                        } catch (e) { console.error('Error whisper fruta perdida:', e); }
+                    }
                     console.log('🍎 Fruta perdida: ' + a.username + ' perdió evento de ' + user.evento_fruta_nombre);
                 }
             }
@@ -2614,15 +2839,35 @@ async function procesarMensajeChat(channel, tags, message, self) {
     if (command === '!comer') {
         const user = await getUsuario(username);
         if (user && user.fruta_pendiente) {
-            const { data: frutaData } = await supabase.from('frutas').select('descripcion, emoji').eq('nombre', user.fruta_pendiente).single();
+            const frutaConsumida = user.fruta_pendiente;
+            const { data: frutaData } = await supabase.from('frutas').select('descripcion, emoji, poder_fruta').eq('nombre', frutaConsumida).single();
             const updateData = user.fruta
-                ? { fruta_2: user.fruta_pendiente, fruta_pendiente: null }
-                : { fruta: user.fruta_pendiente, fruta_pendiente: null };
+                ? { fruta_2: frutaConsumida, fruta_pendiente: null }
+                : { fruta: frutaConsumida, fruta_pendiente: null };
             await updateUsuario(username, updateData);
-            console.log('🍎 Fruta consumida: ' + username + ' → ' + user.fruta_pendiente + (user.fruta ? ' (2da)' : ''));
-            const descConsumida = (frutaData && frutaData.descripcion) ? frutaData.descripcion.replace(/\n/g, ' ').trim() : '';
-            client.say(channel, '@' + tags.username + ' Consumiste la ' + user.fruta_pendiente + ' ' + ((frutaData && frutaData.emoji) || '') + '. ' + descConsumida);
+            console.log('🍎 Fruta consumida: ' + username + ' → ' + frutaConsumida + (user.fruta ? ' (2da)' : ''));
+            client.say(channel, '@' + tags.username + ' Consumiste la ' + frutaConsumida + ' ' + ((frutaData && frutaData.emoji) || '') + '.');
 
+            // Marcar a otros usuarios que tenían la misma fruta pendiente
+            const pcfFruta = (frutaData && frutaData.poder_fruta) ? Math.round(frutaData.poder_fruta) : 0;
+            const { data: otrosPendientes } = await supabase.from('usuarios')
+                .select('username, twitch_user_id')
+                .eq('fruta_pendiente', frutaConsumida)
+                .neq('username', username);
+            if (otrosPendientes && otrosPendientes.length > 0) {
+                for (const otro of otrosPendientes) {
+                    await updateUsuario(otro.username, {
+                        fruta_pendiente: null,
+                        fruta_perdida_por: username,
+                        fruta_perdida_pcf: pcfFruta
+                    });
+                    if (otro.twitch_user_id) {
+                        try {
+                            await sendWhisper(otro.twitch_user_id, '¿Y tu fruta? ¿Habrías jurado que había una fruta aquí?... Nooo, pestañaste, y @' + username + ' te la primereó');
+                        } catch (e) { console.error('Error whisper fruta perdida:', e); }
+                    }
+                }
+            }
         } else {
             client.say(channel, '@' + tags.username + ' FELICIDADES TE COMISTE... ESTA 🫱');
         }
