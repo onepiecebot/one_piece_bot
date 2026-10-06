@@ -2784,7 +2784,7 @@ async function procesarMensajeChat(channel, tags, message, self) {
                 evento_fruta_nivel: null, evento_fruta_estado: null, evento_fruta_comandos: null,
                 evento_fruta_comida_por_otro: false
             });
-            await supabase.from('frutas').update({ disponible: false }).eq('nombre',             await supabase.from('frutas').update({ disponible: false }).eq('nombre', user.evento_fruta_nombre);
+            await supabase.from('frutas').update({ disponible: false }).eq('nombre', user.evento_fruta_nombre);
             const msgGanada = '@' + tags.username + ' ' + mensaje + ' 🍎 ¡Obtuviste la ' + user.evento_fruta_nombre + ' ' + emojiFruta + '!';
             client.say(channel, msgGanada);
             if (canal !== 'op_d_bot') client.say('op_d_bot', msgGanada);
