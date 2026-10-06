@@ -521,18 +521,18 @@ async function esSupremoConquistador(username) {
 function calcularAporteArmadura(puntos, esSupremo) {
     if (esSupremo) return 250;
     if (puntos >= 100) return 250;
-    if (puntos >= 80) return 200;
-    if (puntos >= 50) return 125;
-    if (puntos >= 20) return 50;
+    if (puntos >= 90) return 200;
+    if (puntos >= 70) return 125;
+    if (puntos >= 40) return 50;
     if (puntos >= 1) return Math.floor(puntos * 1.2);
     return 0;
 }
 function calcularAporteObservacion(puntos, esSupremo) {
     if (esSupremo) return 180;
     if (puntos >= 100) return 180;
-    if (puntos >= 80) return 144;
-    if (puntos >= 50) return 90;
-    if (puntos >= 20) return 36;
+    if (puntos >= 90) return 144;
+    if (puntos >= 70) return 90;
+    if (puntos >= 40) return 36;
     if (puntos >= 1) return Math.floor(puntos * 0.9);
     return 0;
 }
