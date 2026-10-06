@@ -2839,7 +2839,8 @@ const COMANDOS_CON_USUARIO = [
             await updateUsuario(username, updateData);
             await supabase.from('frutas').update({ disponible: false }).eq('nombre', frutaConsumida);
             console.log('🍎 Fruta consumida: ' + username + ' → ' + frutaConsumida + (user.fruta ? ' (2da)' : ''));
-            client.say(channel, '@' + tags.username + ' Consumiste la ' + frutaConsumida + ' ' + ((frutaData && frutaData.emoji) || '') + '.');((frutaData && frutaData.emoji) || '') + '.');
+            client.say(channel, '@' + tags.username + ' Consumiste la ' + frutaConsumida + ' ' + ((frutaData && frutaData.emoji) || '') + '.');
+
 
             // Marcar a otros usuarios que tenían la misma fruta pendiente
             const pcfFruta = (frutaData && frutaData.poder_fruta) ? Math.round(frutaData.poder_fruta) : 0;
