@@ -21,7 +21,7 @@ const {
 // ============================================
 const COOLDOWN_FRUTA = 10 * 60 * 1000; // 10 min
 const FRUTA_LIMITE_DIARIO = 5;
-const TOTAL_PUERTAS_JUEGO = 10000;
+const TOTAL_PUERTAS_JUEGO = 12000;
 const FACTOR_RECOMPENSA = 3614500; // berries por punto de aporte de haki
 const TOPE_DELTA_MULT = 1.8; // tope delta = 1.8 × max base histórica
 const DUEÑO = 'fan_d_larana';
@@ -1303,7 +1303,7 @@ const AYUDA_TEMAS = {
         '• Algunas frutas raras las tienen otros usuarios. ¡Competí por ellas!',
     duelos: '⚔️ DUELOS\n' +
         'Retás a otros con !retar @usuario (chat o susurro).\n' +
-        '• Necesitás $100M+ de recompensa y haber explorado hoy.\n' +
+        '• Necesitás haber explorado ese día.\n' +
         '• El retado tiene 2 min para !aceptarduelo o !rechazarduelo.\n' +
         '• El ganador se lleva Berries del perdedor (según recompensas).\n' +
         '• Máx 5 duelos por día, 3 contra la misma persona.',
@@ -2543,17 +2543,8 @@ const COMANDOS_CON_USUARIO = [
                 cooldowns['fruta_' + username] = Date.now();
                 await updateUsuario(username, { fruta_intentos_hoy: intentosHoy + 1, ultimo_dia_fruta: hoy });
             }
-            // Excluir frutas en posesión de cualquier usuario: fruta y fruta_2
-            const { data: usuariosConFruta } = await supabase.from('usuarios').select('fruta, fruta_2');
-            const setFrutasOcupadas = new Set();
-            for (const u of (usuariosConFruta || [])) {
-                if (u.fruta) setFrutasOcupadas.add(u.fruta);
-                if (u.fruta_2) setFrutasOcupadas.add(u.fruta_2);
-            }
-            const frutasOcupadas = Array.from(setFrutasOcupadas);
-            let query = supabase.from('frutas').select('*');
-            if (frutasOcupadas.length > 0) query = query.not('nombre', 'in', "('" + frutasOcupadas.join("','") + "')");
-            const { data: frutasDisponibles, error: errFrutas } = await query;
+            // Traer solo frutas con disponible = true (excluye las que ya comió alguien)
+            const { data: frutasDisponibles, error: errFrutas } = await supabase.from('frutas').select('*').eq('disponible', true);
             if (errFrutas || !frutasDisponibles || !frutasDisponibles.length) {
                 client.say(channel, '@' + tags.username + ' No hay frutas disponibles.'); return;
             }
@@ -2769,6 +2760,7 @@ const COMANDOS_CON_USUARIO = [
                 evento_fruta_nivel: null, evento_fruta_estado: null, evento_fruta_comandos: null,
                 evento_fruta_comida_por_otro: false
             });
+            await supabase.from('frutas').update({ disponible: false }).eq('nombre', user.evento_fruta_nombre);
             client.say(channel, '@' + tags.username + ' ' + mensaje + ' 🍎 ¡Obtuviste la ' + user.evento_fruta_nombre + ' ' + emojiFruta + '!');
             const { data: afectados } = await supabase.from('usuarios').select('username, twitch_user_id')
                 .eq('evento_fruta_nombre', user.evento_fruta_nombre)
@@ -2845,8 +2837,9 @@ const COMANDOS_CON_USUARIO = [
                 ? { fruta_2: frutaConsumida, fruta_pendiente: null }
                 : { fruta: frutaConsumida, fruta_pendiente: null };
             await updateUsuario(username, updateData);
+            await supabase.from('frutas').update({ disponible: false }).eq('nombre', frutaConsumida);
             console.log('🍎 Fruta consumida: ' + username + ' → ' + frutaConsumida + (user.fruta ? ' (2da)' : ''));
-            client.say(channel, '@' + tags.username + ' Consumiste la ' + frutaConsumida + ' ' + ((frutaData && frutaData.emoji) || '') + '.');
+            client.say(channel, '@' + tags.username + ' Consumiste la ' + frutaConsumida + ' ' + ((frutaData && frutaData.emoji) || '') + '.');((frutaData && frutaData.emoji) || '') + '.');
 
             // Marcar a otros usuarios que tenían la misma fruta pendiente
             const pcfFruta = (frutaData && frutaData.poder_fruta) ? Math.round(frutaData.poder_fruta) : 0;
@@ -2916,8 +2909,14 @@ const COMANDOS_CON_USUARIO = [
     if (command === '!quitarfruta') {
         if (args.length < 2) return client.say(channel, '@' + tags.username + ' Uso: !quitarfruta @usuario');
         const target = args[1].replace('@', '').toLowerCase();
+        const targetUser = await getUsuario(target);
+        if (!targetUser) return;
+        const frutasQuitadas = [targetUser.fruta, targetUser.fruta_2].filter(Boolean);
         await updateUsuario(target, { fruta: null, fruta_2: null, fruta_pendiente: null, yami_aviso_mostrado: false });
-        console.log('🔧 Admin: ' + username + ' quitó fruta(s) a ' + target);
+        if (frutasQuitadas.length > 0) {
+            await supabase.from('frutas').update({ disponible: true }).in('nombre', frutasQuitadas);
+        }
+        console.log('🔧 Admin: ' + username + ' quitó fruta(s) a ' + target + ': ' + frutasQuitadas.join(', '));
         client.say(channel, '@' + tags.username + ' Fruta(s) quitada(s) a @' + target + '.'); return;
     }
 }
