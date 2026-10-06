@@ -19,9 +19,9 @@ const {
 // ============================================
 // CONSTANTES
 // ============================================
-const COOLDOWN_FRUTA = 20 * 60 * 1000; // 20 min
+const COOLDOWN_FRUTA = 10 * 60 * 1000; // 10 min
 const FRUTA_LIMITE_DIARIO = 5;
-const TOTAL_PUERTAS_JUEGO = 20000;
+const TOTAL_PUERTAS_JUEGO = 10000;
 const FACTOR_RECOMPENSA = 3614500; // berries por punto de aporte de haki
 const TOPE_DELTA_MULT = 1.8; // tope delta = 1.8 × max base histórica
 const DUEÑO = 'fan_d_larana';
