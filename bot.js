@@ -864,6 +864,8 @@ async function lurkJoin(username, canal) {
     if (!(await usuarioExiste(username))) return;
     const c = await getCanal(canal);
     if (!c || !c.bot_activo) return;
+    // No abrir bloque si el canal está offline (con cache de 5 min)
+    if (!(await canalEstaActivo(canal, c))) return;
     await inicializarDiaLurk(username);
     const lurk = await getLurkStats(username);
     if (!lurk) return;
