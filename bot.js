@@ -28,7 +28,6 @@ const DUEÑO = 'fan_d_larana';
 const TWITCH_API_URL = 'https://api.twitch.tv/helix';
 const GITHUB_REPO = 'onepiecebot/one_piece_bot';
 
-const DUELO_DELTA_MINIMO = 100000000;
 const DUELO_COOLDOWN_MS = 10 * 60 * 1000;
 const DUELO_LIMITE_DIARIO = 5;
 const DUELO_LIMITE_PAREJA = 3;
@@ -37,8 +36,6 @@ const DUELO_TIMEOUT_MS = 2 * 60 * 1000;
 // Canales donde se cuenta lurk. fan_d_larana y op_d_bot NO tienen lurk
 // porque no son canales de streamer. Se agregan acá a medida que suman.
 const CANALES_CON_LURK = ['lenno_ap'];
-const LURK_POSTA_MINUTOS = 20;
-const LURK_POSTAS_MAX = 3;
 const LURK_MICRO_COOLDOWN_MS = 2 * 60 * 1000;
 const LURK_LIVE_MINIMO_2H = 120;
 
@@ -60,9 +57,27 @@ const cooldownsCanaleson = {};
 const cooldownsOnOff = {};
 const notif5Plazas = { fecha: null, enviado: false };
 
+// Cache de PCF/recompensa por usuario (10s TTL). Evita repetir queries dentro del mismo comando.
+const pcfCache = {};      // { username: { data, timestamp } }
+const recompCache = {};   // { username: { data, timestamp } }
+const PCF_RECOMP_CACHE_TTL = 10 * 1000;
+
 // Cuando un comando de susurro se tira en el chat de op_d_bot,
 // guardamos acá el contexto para redirigir las respuestas a chat con @username.
 const contextoOpDBot = new AsyncLocalStorage();
+
+// Comandos que usan el usuario (crean en DB si no existe, guardan twitch_user_id).
+const COMANDOS_CON_USUARIO = [
+    '!op', '!fruta', '!comer', '!rechazar', '!frutapendiente',
+    '!retar', '!aceptarduelo', '!rechazarduelo', '!historial',
+    '!infoop', '!si', '!no', '!pelear', '!huir',
+    '!sumar1', '!sumar2', '!sumar3', '!restar1', '!restar2', '!restar3',
+    '!quitarfruta',
+    '!explorar', '!facil', '!medio', '!dificil',
+    '!continuar', '!retroceder', '!combatir', '!retirarse',
+    '!exploracionpendiente', '!duelopendiente',
+    '!observacion', '!personaje'
+];
 
 // Comandos que funcionan también por chat en op_d_bot (redirigidos al handler de susurro).
 const COMANDOS_SUSURRO_EN_OP_D_BOT = [
@@ -76,7 +91,7 @@ const COMANDOS_SUSURRO_EN_OP_D_BOT = [
     '!observacion',
     '!canaleson',
     '!personaje',
-    '!ayuda', '!ayudadchat', '!ayudasusurro', '!ayudaop',
+    '!ayuda', '!ayudachat', '!ayudasusurro', '!ayudaop',
     '!testwhisper',
     '!infoop'
 ];
@@ -189,8 +204,8 @@ function pasaFiltroEpisodio(fruta, filtro) {
 }
 function getCalaverasPorProb(prob) {
     if (prob >= 0.85) return '💀';
-    if (prob >= 0.60) return '💀💀';
-    if (prob >= 0.40) return '💀💀💀';
+    if (prob >= 0.63) return '💀💀';
+    if (prob >= 0.37) return '💀💀💀';
     if (prob >= 0.15) return '💀💀💀💀';
     return '💀💀💀💀💀';
 }
@@ -265,6 +280,10 @@ function calcularRecompensaFruta(fruta, fruta2, pcf1, pcf2) {
 
 async function getRecompensaReal(user) {
     if (!user) return 0;
+    const cached = recompCache[user.username];
+    if (cached && Date.now() - cached.timestamp < PCF_RECOMP_CACHE_TTL) {
+        return cached.data;
+    }
     const supArm = await esSupremoArmadura(user.username);
     const supObs = await esSupremoObservacion(user.username);
     const supConq = await esSupremoConquistador(user.username);
@@ -293,7 +312,9 @@ async function getRecompensaReal(user) {
     // Delta activo con tope
     const tope = Math.round(maxActualizado * TOPE_DELTA_MULT);
     const deltaActivo = Math.min(Math.max(0, user.recompensa_delta || 0), tope);
-    return Math.round(base + deltaActivo);
+    const result = Math.round(base + deltaActivo);
+    recompCache[user.username] = { data: result, timestamp: Date.now() };
+    return result;
 }
 
 const PENALIZACION_BASES = {
@@ -357,6 +378,8 @@ let supremosCacheArm = { data: [], timestamp: 0 };
 let supremosCacheObs = { data: [], timestamp: 0 };
 let supremosCacheConq = { data: [], timestamp: 0 };
 const SUPREMOS_CACHE_TTL = 30000;
+const GARANTIZADOS_CACHE_TTL = 5 * 60 * 1000;
+let garantizadosCache = { data: [], timestamp: 0 };
 
 function calcularPlazasPorDedicados(dedicados) {
     if (dedicados <= 10) return 1;
@@ -379,6 +402,9 @@ async function marcarDiaPerfecto(username) {
 }
 
 async function getSupremosObservacionGarantizados() {
+    if (Date.now() - garantizadosCache.timestamp < GARANTIZADOS_CACHE_TTL) {
+        return garantizadosCache.data;
+    }
     const hace20 = getFechaOffset(-20);
     const ayer = getFechaOffset(-1);
     const { data } = await supabase.from('lurk_historial')
@@ -387,12 +413,17 @@ async function getSupremosObservacionGarantizados() {
         .gte('fecha', hace20)
         .lte('fecha', ayer)
         .limit(10000);
-    if (!data || data.length === 0) return [];
+    if (!data || data.length === 0) {
+        garantizadosCache = { data: [], timestamp: Date.now() };
+        return [];
+    }
     const counts = {};
     for (const r of data) {
         counts[r.username] = (counts[r.username] || 0) + 1;
     }
-    return Object.keys(counts).filter(u => counts[u] >= 20);
+    const result = Object.keys(counts).filter(u => counts[u] >= 20);
+    garantizadosCache = { data: result, timestamp: Date.now() };
+    return result;
 }
 
 async function getDedicadosHoy() {
@@ -500,14 +531,17 @@ function calcularAporteConquistador(puntos, esSupremo) {
 }
 
 async function calcularPCFUsuario(user) {
-    let poderFruta = 0;
-    if (user.fruta) {
-        const { data: f } = await supabase.from('frutas').select('poder_fruta').eq('nombre', user.fruta).single();
-        poderFruta += (f && f.poder_fruta) ? f.poder_fruta : 0;
+    // Cache
+    const cached = pcfCache[user.username];
+    if (cached && Date.now() - cached.timestamp < PCF_RECOMP_CACHE_TTL) {
+        return cached.data;
     }
-    if (user.fruta_2) {
-        const { data: f2 } = await supabase.from('frutas').select('poder_fruta').eq('nombre', user.fruta_2).single();
-        poderFruta += (f2 && f2.poder_fruta) ? f2.poder_fruta : 0;
+    // PCF de frutas (una sola query para 1 o 2 frutas)
+    let poderFruta = 0;
+    const frutasUser = [user.fruta, user.fruta_2].filter(Boolean);
+    if (frutasUser.length > 0) {
+        const { data: frutasData } = await supabase.from('frutas').select('poder_fruta').in('nombre', frutasUser);
+        for (const f of (frutasData || [])) poderFruta += (f.poder_fruta || 0);
     }
     const supArm = await esSupremoArmadura(user.username);
     const supObs = await esSupremoObservacion(user.username);
@@ -515,7 +549,9 @@ async function calcularPCFUsuario(user) {
     const aporte = calcularAporteArmadura(user.armadura || 0, supArm)
         + calcularAporteObservacion(user.observacion || 0, supObs)
         + calcularAporteConquistador(user.conquistador || 0, supConq);
-    return Math.round(poderFruta + aporte);
+    const result = Math.round(poderFruta + aporte);
+    pcfCache[user.username] = { data: result, timestamp: Date.now() };
+    return result;
 }
 
 async function formatearHakiLog(user) {
@@ -1014,8 +1050,8 @@ async function escanearChatters(canal) {
         const data = await res.json();
         const chatters = data.data || [];
 
-        // 3. Usuarios registrados
-        const { data: usuariosDb } = await supabase.from('usuarios').select('username');
+        // 3. Usuarios registrados (solo los que alguna vez interactuaron con el bot)
+        const { data: usuariosDb } = await supabase.from('lurk_stats').select('username');
         const usuariosSet = new Set((usuariosDb || []).map(u => u.username.toLowerCase()));
 
         // 4. Registrados que están en el chat
@@ -2229,18 +2265,6 @@ async function procesarMensajeChat(channel, tags, message, self) {
 
     // Solo crear usuarios para comandos que realmente los usan.
     // Cualquier otro !comando (por ej. para otros bots) NO toca la DB.
-const COMANDOS_CON_USUARIO = [
-    '!op', '!fruta', '!comer', '!rechazar', '!frutapendiente',
-    '!retar', '!aceptarduelo', '!rechazarduelo', '!historial',
-    '!infoop', '!si', '!no', '!pelear', '!huir',
-    '!sumar1', '!sumar2', '!sumar3', '!restar1', '!restar2', '!restar3',
-    '!quitarfruta',
-    // Comandos de susurro (también funcionales en op_d_bot)
-    '!explorar', '!facil', '!medio', '!dificil',
-    '!continuar', '!retroceder', '!combatir', '!retirarse',
-    '!exploracionpendiente', '!duelopendiente',
-    '!observacion', '!personaje'
-];
     const usaUsuario = COMANDOS_CON_USUARIO.includes(command);
 
     if (usaUsuario && twitchUserId) {
@@ -2262,7 +2286,7 @@ const COMANDOS_CON_USUARIO = [
         const esDueñoCanal = (username === canal);
         const esMod = tags.mod === true || (tags.badges && tags.badges.broadcaster === '1');
         if (!esDueñoGlobal && !esDueñoCanal && !esMod) return;
-        const canalDbSetEp = await getCanal(canal);
+        const canalDbSetEp = canalDb;
         if (!canalDbSetEp) return;
         if (!args[1]) {
             client.say(channel, '@' + tags.username + ' Filtro actual: ' + (canalDbSetEp.episodio_filtro || 'sin filtro'));
@@ -2385,7 +2409,7 @@ const COMANDOS_CON_USUARIO = [
         const recompensaReal = await getRecompensaReal(user);
         await updateUsuario(username, { recompensa_publica: recompensaReal });
         let frutaTexto = '🍎 Ninguna';
-        const canalDbInfo = await getCanal(canal);
+        const canalDbInfo = canalDb;
         const filtroInfo = canalDbInfo ? canalDbInfo.episodio_filtro : null;
         if (user.fruta) {
             const { data: f } = await supabase.from('frutas').select('emoji, episodio_anime').eq('nombre', user.fruta).single();
@@ -2549,7 +2573,7 @@ const COMANDOS_CON_USUARIO = [
                 client.say(channel, '@' + tags.username + ' No hay frutas disponibles.'); return;
             }
             // Filtrar por episodio del canal
-            const canalDbFruta = await getCanal(canal);
+            const canalDbFruta = canalDb;
             const filtroEp = canalDbFruta ? canalDbFruta.episodio_filtro : null;
             const frutasFiltradas = frutasDisponibles.filter(f => pasaFiltroEpisodio(f, filtroEp));
             if (frutasFiltradas.length === 0) {
@@ -2627,7 +2651,7 @@ const COMANDOS_CON_USUARIO = [
         }
         const { data: fruta } = await supabase.from('frutas').select('*').eq('nombre', user.evento_fruta_nombre).single();
         if (!fruta) { client.say(channel, '@' + tags.username + ' Error.'); return; }
-        const canalDbFP = await getCanal(canal);
+        const canalDbSi = canalDb;
         const filtroFP = canalDbFP ? canalDbFP.episodio_filtro : null;
         if (!pasaFiltroEpisodio(fruta, filtroFP)) {
             client.say(channel, '@' + tags.username + ' 📖 Esta fruta todavía no se vio en este canal. Podés continuar en el chat del canal donde la encontraste, o en el chat de op_d_bot.');
@@ -2675,7 +2699,7 @@ const COMANDOS_CON_USUARIO = [
             client.say(channel, '@' + tags.username + ' No corresponde.'); return;
         }
         const { data: frutaFiltroNo } = await supabase.from('frutas').select('*').eq('nombre', user.evento_fruta_nombre).single();
-        const canalDbNo = await getCanal(canal);
+        const canalDbNo = canalDb;
         const filtroNo = canalDbNo ? canalDbNo.episodio_filtro : null;
         if (frutaFiltroNo && !pasaFiltroEpisodio(frutaFiltroNo, filtroNo)) {
             client.say(channel, '@' + tags.username + ' 📖 Esta fruta todavía no se vio en este canal. Podés continuar en el chat del canal donde la encontraste, o en el chat de op_d_bot.');
@@ -2695,7 +2719,7 @@ const COMANDOS_CON_USUARIO = [
             client.say(channel, '@' + tags.username + ' No corresponde.'); return;
         }
         const { data: frutaFiltroPl } = await supabase.from('frutas').select('*').eq('nombre', user.evento_fruta_nombre).single();
-        const canalDbPl = await getCanal(canal);
+        const canalDbPl = canalDb;
         const filtroPl = canalDbPl ? canalDbPl.episodio_filtro : null;
         if (frutaFiltroPl && !pasaFiltroEpisodio(frutaFiltroPl, filtroPl)) {
             client.say(channel, '@' + tags.username + ' 📖 Esta fruta todavía no se vio en este canal. Podés continuar en el chat del canal donde la encontraste, o en el chat de op_d_bot.');
@@ -2760,8 +2784,10 @@ const COMANDOS_CON_USUARIO = [
                 evento_fruta_nivel: null, evento_fruta_estado: null, evento_fruta_comandos: null,
                 evento_fruta_comida_por_otro: false
             });
-            await supabase.from('frutas').update({ disponible: false }).eq('nombre', user.evento_fruta_nombre);
-            client.say(channel, '@' + tags.username + ' ' + mensaje + ' 🍎 ¡Obtuviste la ' + user.evento_fruta_nombre + ' ' + emojiFruta + '!');
+            await supabase.from('frutas').update({ disponible: false }).eq('nombre',             await supabase.from('frutas').update({ disponible: false }).eq('nombre', user.evento_fruta_nombre);
+            const msgGanada = '@' + tags.username + ' ' + mensaje + ' 🍎 ¡Obtuviste la ' + user.evento_fruta_nombre + ' ' + emojiFruta + '!';
+            client.say(channel, msgGanada);
+            if (canal !== 'op_d_bot') client.say('op_d_bot', msgGanada);
             const { data: afectados } = await supabase.from('usuarios').select('username, twitch_user_id')
                 .eq('evento_fruta_nombre', user.evento_fruta_nombre)
                 .eq('evento_fruta_estado', 'pendiente').neq('username', username);
@@ -2814,7 +2840,7 @@ const COMANDOS_CON_USUARIO = [
             client.say(channel, '@' + tags.username + ' No corresponde.'); return;
         }
         const { data: frutaFiltroHu } = await supabase.from('frutas').select('*').eq('nombre', user.evento_fruta_nombre).single();
-        const canalDbHu = await getCanal(canal);
+        const canalDbHu = canalDb;
         const filtroHu = canalDbHu ? canalDbHu.episodio_filtro : null;
         if (frutaFiltroHu && !pasaFiltroEpisodio(frutaFiltroHu, filtroHu)) {
             client.say(channel, '@' + tags.username + ' 📖 Esta fruta todavía no se vio en este canal. Podés continuar en el chat del canal donde la encontraste, o en el chat de op_d_bot.');
@@ -2839,7 +2865,9 @@ const COMANDOS_CON_USUARIO = [
             await updateUsuario(username, updateData);
             await supabase.from('frutas').update({ disponible: false }).eq('nombre', frutaConsumida);
             console.log('🍎 Fruta consumida: ' + username + ' → ' + frutaConsumida + (user.fruta ? ' (2da)' : ''));
-            client.say(channel, '@' + tags.username + ' Consumiste la ' + frutaConsumida + ' ' + ((frutaData && frutaData.emoji) || '') + '.');
+            const msgComida = '@' + tags.username + ' Consumiste la ' + frutaConsumida + ' ' + ((frutaData && frutaData.emoji) || '') + '.';
+            client.say(channel, msgComida);
+            if (canal !== 'op_d_bot') client.say('op_d_bot', msgComida);
 
 
             // Marcar a otros usuarios que tenían la misma fruta pendiente
@@ -2857,7 +2885,7 @@ const COMANDOS_CON_USUARIO = [
                     });
                     if (otro.twitch_user_id) {
                         try {
-                            await sendWhisper(otro.twitch_user_id, '¿Y tu fruta? ¿Habrías jurado que había una fruta aquí?... Nooo, pestañaste, y @' + username + ' te la primereó');
+                            await sendWhisper(otro.twitch_user_id, '¿Y tu fruta? ¿Habría jurado que había una fruta aquí... Nooo, pestañaste, y @' + username + ' te la primereó');
                         } catch (e) { console.error('Error whisper fruta perdida:', e); }
                     }
                 }
