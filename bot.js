@@ -29,7 +29,7 @@ const TWITCH_API_URL = 'https://api.twitch.tv/helix';
 const GITHUB_REPO = 'onepiecebot/one_piece_bot';
 
 const DUELO_COOLDOWN_MS = 10 * 60 * 1000;
-const DUELO_LIMITE_DIARIO = 5;
+const DUELO_LIMITE_DIARIO = 10;
 const DUELO_LIMITE_PAREJA = 3;
 const DUELO_TIMEOUT_MS = 2 * 60 * 1000;
 
@@ -56,6 +56,22 @@ const cooldownsLurk = {};
 const cooldownsCanaleson = {};
 const cooldownsOnOff = {};
 const notif5Plazas = { fecha: null, enviado: false };
+
+// Estado de mantenimiento (se lee de bot_config al arrancar, se actualiza al !deploy/!deploylisto)
+let mantenimientoActivo = false;
+
+async function cargarEstadoMantenimiento() {
+    try {
+        const { data } = await supabase.from('bot_config').select('valor').eq('clave', 'mantenimiento').maybeSingle();
+        mantenimientoActivo = (data && data.valor === 'true');
+        console.log('🔧 Estado mantenimiento: ' + (mantenimientoActivo ? 'ACTIVO' : 'inactivo'));
+    } catch (e) { console.error('Error cargando mantenimiento:', e); }
+}
+
+async function setMantenimiento(valor) {
+    mantenimientoActivo = valor;
+    await supabase.from('bot_config').upsert({ clave: 'mantenimiento', valor: valor ? 'true' : 'false' });
+}
 
 // Cache de PCF/recompensa por usuario (10s TTL). Evita repetir queries dentro del mismo comando.
 const pcfCache = {};      // { username: { data, timestamp } }
@@ -1342,7 +1358,7 @@ const AYUDA_TEMAS = {
         '• Necesitás haber explorado ese día.\n' +
         '• El retado tiene 2 min para !aceptarduelo o !rechazarduelo.\n' +
         '• El ganador se lleva Berries del perdedor (según recompensas).\n' +
-        '• Máx 5 duelos por día, 3 contra la misma persona.',
+        '• Máx 10 duelos por día, 3 contra la misma persona.',
     infoop: '📊 TU INFO (!infoop)\n' +
         'Muestra: 🍎 fruta | 🛡️ Armadura | 👁️ Observación | ⚜️ Conquistador | 🏴‍☠️💰 recompensa.\n' +
         '• En chat muestra tu info resumida (actualiza tu recompensa pública).\n' +
@@ -1469,6 +1485,9 @@ async function handleWhisper(event) {
     if (!fromUserId) return;
     if (!command.startsWith('!')) return;
 
+    // Modo mantenimiento: solo !deploylisto funciona
+    if (mantenimientoActivo && command !== '!deploylisto') return;
+
     if (command === '!testwhisper') {
         await sendWhisper(fromUserId, '¡Hola ' + fromUserLogin + '! Funciona. 🎉');
         return;
@@ -1559,9 +1578,15 @@ async function handleWhisper(event) {
             await sendWhisper(fromUserId, '❌ No tenés permiso para usar este comando.');
             return;
         }
-        // Cerrar bloques abiertos
+        // Snapshot: guardar quiénes tienen bloque abierto y timestamp
         const { data: abiertos } = await supabase.from('lurk_stats')
             .select('username').not('lurk_join_actual', 'is', null);
+        const snapshotList = (abiertos || []).map(a => a.username);
+        await supabase.from('bot_config').upsert({ clave: 'deploy_timestamp', valor: new Date().toISOString() });
+        await supabase.from('bot_config').upsert({ clave: 'deploy_snapshot', valor: JSON.stringify(snapshotList) });
+        // Activar mantenimiento
+        await setMantenimiento(true);
+        // Cerrar bloques abiertos
         let cerrados = 0;
         if (abiertos) {
             for (const a of abiertos) {
@@ -1592,6 +1617,42 @@ async function handleWhisper(event) {
             await sendWhisper(fromUserId, '❌ No tenés permiso para usar este comando.');
             return;
         }
+        // Leer snapshot
+        const { data: snapData } = await supabase.from('bot_config').select('valor').eq('clave', 'deploy_snapshot').maybeSingle();
+        const { data: tsData } = await supabase.from('bot_config').select('valor').eq('clave', 'deploy_timestamp').maybeSingle();
+        const snapshot = snapData ? JSON.parse(snapData.valor || '[]') : [];
+        const deployTs = tsData ? tsData.valor : '';
+        // Escanear chatters actuales (abre bloques de los que están ahora)
+        await escanearChatters('lenno_ap');
+        // Para cada uno del snapshot que tiene bloque abierto ahora → sumar minutos del deploy
+        if (snapshot.length > 0 && deployTs) {
+            const minutosDeploy = Math.max(0, Math.floor((Date.now() - new Date(deployTs).getTime()) / 60000));
+            for (const u of snapshot) {
+                const lurk = await getLurkStats(u);
+                if (!lurk || !lurk.lurk_join_actual) continue;
+                if (minutosDeploy > 0) {
+                    await agregarPuntosObservacion(u, 0, minutosDeploy);
+                    const userFresh = await getUsuario(u);
+                    if (userFresh) {
+                        await updateUsuario(u, { minutos_lurk: (userFresh.minutos_lurk || 0) + minutosDeploy });
+                    }
+                    // Sumar minutos al lurk_stats
+                    const totalAntes = lurk.lurk_minutos_hoy || 0;
+                    const totalDespues = Math.min(60, totalAntes + minutosDeploy);
+                    const minReales = totalDespues - totalAntes;
+                    await updateLurkStats(u, {
+                        lurk_minutos_hoy: totalDespues,
+                        minutos_lurk_total: (lurk.minutos_lurk_total || 0) + minReales
+                    });
+                    console.log('🔧 Snapshot lurk: ' + u + ' +' + minReales + ' min (deploy)');
+                }
+            }
+        }
+        // Limpiar snapshot y desactivar mantenimiento
+        await supabase.from('bot_config').upsert({ clave: 'deploy_snapshot', valor: '' });
+        await supabase.from('bot_config').upsert({ clave: 'deploy_timestamp', valor: '' });
+        await setMantenimiento(false);
+        // Avisar a canales
         const canales = await getCanales();
         const msg = '✅ El bot ya está funcionando de nuevo. ¡Gracias por esperar!';
         const avisados = [];
@@ -1760,6 +1821,10 @@ async function handleWhisper(event) {
         const cd = await puedeExplorar(user);
         if (!cd.ok) { await sendWhisper(fromUserId, '⏳ Próxima en ' + formatTiempoRestante(cd.restante)); return; }
         const pcfUsuario = await calcularPCFUsuario(user);
+        if (pcfUsuario <= 0) {
+            await sendWhisper(fromUserId, '🗺️ El mar es peligroso para alguien sin experiencia. Probá con !op o mirando un stream (podés usar !canaleson para ver si hay alguien activo con el bot)');
+            return;
+        }
         const opciones = await seleccionarNPCs(pcfUsuario);
         if (!opciones) { await sendWhisper(fromUserId, '🗺️ No encontrás rivales a tu altura todavía. Entrená con !op o mirá el stream para ganar stats y volvé a intentar.'); return; }
         await updateUsuario(username, {
@@ -1856,7 +1921,7 @@ async function handleWhisper(event) {
                 evento_explorar_npc: null, evento_explorar_nivel: null, evento_explorar_pcf_usuario: null,
                 evento_explorar_pcf_npc: null, evento_explorar_comandos: null, evento_explorar_opciones: null
             });
-            await sendWhisper(fromUserId, msgCtx + ' 🏆 ¡Victoria! Derrotaste a la sombra de ' + op.npc + '. +' + op.recompensa_conq + ' Conq. +$' + op.recompensa_berries.toLocaleString('es-AR') + msgRachaExpl);
+            await sendWhisper(fromUserId, msgCtx + '🏆 ¡Victoria! Derrotaste a ' + op.npc + '. +' + op.recompensa_conq + ' Conq. +$' + op.recompensa_berries.toLocaleString('es-AR') + msgRachaExpl);
         } else {
             await updateUsuario(username, {
                 conquistador: Math.max((user.conquistador || 0) - op.castigo_conq, 0) + rachaExpl.bonus,
@@ -1865,7 +1930,7 @@ async function handleWhisper(event) {
                 evento_explorar_npc: null, evento_explorar_nivel: null, evento_explorar_pcf_usuario: null,
                 evento_explorar_pcf_npc: null, evento_explorar_comandos: null, evento_explorar_opciones: null
             });
-            await sendWhisper(fromUserId, msgCtx + ' 💀 Derrota. La sombra de ' + op.npc + ' te superó. -' + op.castigo_conq + ' Conq. -$' + op.castigo_berries.toLocaleString('es-AR') + msgRachaExpl);
+            await sendWhisper(fromUserId, msgCtx + '💀 Derrota. ' + op.npc + ' te superó. -' + op.castigo_conq + ' Conq. -$' + op.castigo_berries.toLocaleString('es-AR') + msgRachaExpl);
         }
         return;
     }
@@ -2032,7 +2097,7 @@ async function procesarRetar(username, targetRaw, fromUserId, esSusurro, chatCha
         const diff = Date.now() - new Date(user.ultimo_duelo_timestamp).getTime();
         if (diff < DUELO_COOLDOWN_MS) { await responder('Esperá ' + Math.ceil((DUELO_COOLDOWN_MS - diff) / 60000) + ' min.'); return; }
     }
-    if ((await contarDuelosHoy(username)) >= DUELO_LIMITE_DIARIO) { await responder('Ya usaste tus 5 duelos de hoy.'); return; }
+    if ((await contarDuelosHoy(username)) >= DUELO_LIMITE_DIARIO) { await responder('Ya usaste tus 10 duelos de hoy.'); return; }
     if ((await contarDuelosHoyEntre(username, target)) >= DUELO_LIMITE_PAREJA) { await responder('Ya se enfrentaron 3 veces hoy.'); return; }
     if (await fueRechazadoHoy(username, target)) { await responder('@' + target + ' ya te rechazó hoy.'); return; }
     if (targetUser.evento_duelo_estado === 'pendiente') { await responder('@' + target + ' ya tiene duelo pendiente.'); return; }
@@ -2041,6 +2106,17 @@ async function procesarRetar(username, targetRaw, fromUserId, esSusurro, chatCha
     }
     if (!(await completoExplorarHoy(target))) { await responder('@' + target + ' no completó su !explorar del día.'); return; }
     const pcfRetador = await calcularPCFUsuario(user);
+    const pcfRetado = await calcularPCFUsuario(targetUser);
+    const rProb = pcfRetado / pcfRetador;
+    const probRetador = (rProb === 0) ? 1 : (rProb === Infinity || isNaN(rProb) ? 0 : 1 / (1 + Math.pow(rProb, 5.75)));
+    if (probRetador < 0.05) {
+        await responder('⚔️ No podés retar a @' + target + '. Respetá los rangos.');
+        return;
+    }
+    if (probRetador > 0.80) {
+        await responder('⚔️ @' + target + ' no es rival para vos. Buscate a alguien de tu nivel, ¿o tenés miedo de perder?');
+        return;
+    }
     const expiraISO = new Date(Date.now() + DUELO_TIMEOUT_MS).toISOString();
     const canalReto = esSusurro ? 'op_d_bot' : chatChannel.replace('#', '');
     const evento = {
@@ -2054,7 +2130,7 @@ async function procesarRetar(username, targetRaw, fromUserId, esSusurro, chatCha
     await updateUsuario(username, evento);
     await updateUsuario(target, evento);
     if (!esSusurro) {
-        client.say(chatChannel, '⚔️ @' + target + ', @' + username + ' te ha retado. Tenés 2 minutos para !aceptarduelo o !rechazarduelo.');
+        client.say(chatChannel, '⚔️ @' + target + ', @' + username + ' te ha retado a un duelo.');
     }
     if (targetUser.twitch_user_id) {
         try {
@@ -2106,6 +2182,7 @@ async function procesarAceptarDuelo(username, fromUserId, esSusurro, chatChannel
     const retador = user.evento_duelo_retador;
     const retado = user.evento_duelo_retado;
     const pcfRetador = user.evento_duelo_pcf_retador;
+    const canalDuelo = user.evento_duelo_canal;
     const retadorUser = await getUsuario(retador);
     const retadoUser = await getUsuario(retado);
     if (!retadorUser || !retadoUser) {
@@ -2120,7 +2197,14 @@ async function procesarAceptarDuelo(username, fromUserId, esSusurro, chatChannel
     const ganador = res.ganador;
     const empate = res.empate;
     let monto = 0;
+    let conqCambio = 0;
     if (!empate) {
+        // Conq según probabilidad del ganador
+        const winnerProb = (ganador === retador) ? probRetador : (1 - probRetador);
+        if (winnerProb < 0.35) conqCambio = 3;
+        else if (winnerProb > 0.65) conqCambio = 1;
+        else conqCambio = 2;
+        
         const perdedorUser = ganador === retador ? retadoUser : retadorUser;
         const ganadorEsRetador = (ganador === retador);
         // Recompensas reales con tope delta
@@ -2131,11 +2215,23 @@ async function procesarAceptarDuelo(username, fromUserId, esSusurro, chatChannel
         // Cuánto pierde realmente el perdedor (nunca más de lo que tiene, mínimo 0)
         const perdidaReal = Math.min(monto, Math.max(0, deltaPerd));
         if (ganadorEsRetador) {
-            await updateUsuario(retador, { recompensa_delta: (retadorUser.recompensa_delta || 0) + monto });
-            await updateUsuario(retado, { recompensa_delta: (retadoUser.recompensa_delta || 0) - perdidaReal });
+            await updateUsuario(retador, {
+                recompensa_delta: (retadorUser.recompensa_delta || 0) + monto,
+                conquistador: (retadorUser.conquistador || 0) + conqCambio
+            });
+            await updateUsuario(retado, {
+                recompensa_delta: (retadoUser.recompensa_delta || 0) - perdidaReal,
+                conquistador: Math.max((retadoUser.conquistador || 0) - conqCambio, 0)
+            });
         } else {
-            await updateUsuario(retado, { recompensa_delta: (retadoUser.recompensa_delta || 0) + monto });
-            await updateUsuario(retador, { recompensa_delta: (retadorUser.recompensa_delta || 0) - perdidaReal });
+            await updateUsuario(retado, {
+                recompensa_delta: (retadoUser.recompensa_delta || 0) + monto,
+                conquistador: (retadoUser.conquistador || 0) + conqCambio
+            });
+            await updateUsuario(retador, {
+                recompensa_delta: (retadorUser.recompensa_delta || 0) - perdidaReal,
+                conquistador: Math.max((retadorUser.conquistador || 0) - conqCambio, 0)
+            });
         }
     }
     const situacion = getSituacionDuelo(ganador, empate, retador, retado, probRetador);
@@ -2159,11 +2255,20 @@ async function procesarAceptarDuelo(username, fromUserId, esSusurro, chatChannel
     console.log('[DUELO] ' + retador + ' vs ' + retado + ' | PCF ' + pcfRetador + ' vs ' + pcfRetado + ' | Haki: ' + hakiRetLog + ' vs ' + hakiRetadoLog + ' | ' + (empate ? 'EMPATE' : 'Ganador: ' + ganador) + ' | Monto: ' + monto);
     const textoBase = await getTextoDuelo(situacion);
     const perdedor = empate ? '' : (ganador === retador ? retado : retador);
-    const texto = aplicarPlaceholders(textoBase, {
+    let texto = aplicarPlaceholders(textoBase, {
         retador, retado, ganador: ganador || '', perdedor,
         monto: monto > 0 ? formatBerries(monto) : '0'
     });
+    if (!empate && conqCambio > 0) {
+        const conqStr = '+' + conqCambio + ' Conq | ';
+        const before = texto;
+        texto = texto.replace(/Su\s+recompensa/i, conqStr + 'Su recompensa');
+        if (texto === before) {
+            texto = texto + ' | +' + conqCambio + ' Conq';
+        }
+    }
     client.say('op_d_bot', texto);
+    if (canalDuelo && canalDuelo !== 'op_d_bot') client.say(canalDuelo, texto);
     if (retadorUser.twitch_user_id) { try { await sendWhisper(retadorUser.twitch_user_id, '⚔️ ' + texto); } catch (e) { console.error('Error notif duelo retador:', e); } }
     if (retadoUser.twitch_user_id) { try { await sendWhisper(retadoUser.twitch_user_id, '⚔️ ' + texto); } catch (e) { console.error('Error notif duelo retado:', e); } }
     if (esSusurro) await sendWhisper(fromUserId, '⚔️ Duelo resuelto. ' + texto);
@@ -2233,6 +2338,9 @@ async function procesarMensajeChat(channel, tags, message, self) {
     const canal = channel.replace('#', '').toLowerCase();
 
     if (!command.startsWith('!')) return;
+
+    // Modo mantenimiento: solo !deploylisto funciona
+    if (mantenimientoActivo && command !== '!deploylisto') return;
 
     const canalDb = await getCanal(canal);
     const botActivo = canalDb ? canalDb.bot_activo : true;
@@ -2954,9 +3062,11 @@ async function procesarMensajeChat(channel, tags, message, self) {
 // INICIALIZACIÓN
 // ============================================
 cargarCommitInfo().then(() => console.log('📦 Commit info cargado.'));
-cargarEstadoNpc().then(() => {
-    console.log('👁️ Estado NPC cargado.');
-    programarProximoNpc();
+cargarEstadoMantenimiento().then(() => {
+    cargarEstadoNpc().then(() => {
+        console.log('👁️ Estado NPC cargado.');
+        programarProximoNpc();
+    });
 });
 setInterval(ejecutarTimeoutDuelos, 60 * 1000);
 setInterval(lurkChequeoPeriodico, 5 * 60 * 1000);
