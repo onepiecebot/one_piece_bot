@@ -328,7 +328,7 @@ async function getRecompensaReal(user) {
     // Delta activo con tope
     const tope = Math.round(maxActualizado * TOPE_DELTA_MULT);
     const deltaActivo = Math.min(Math.max(0, user.recompensa_delta || 0), tope);
-    const result = Math.round(base + deltaActivo);
+    const result = redondearBonito(Math.round(base + deltaActivo));
     recompCache[user.username] = { data: result, timestamp: Date.now() };
     return result;
 }
@@ -630,6 +630,16 @@ function getEscalon(ratio) {
 }
 function redondearBerries(v) { return Math.round(v / 10000) * 10000; }
 
+// Redondea a 4 cifras significativas (ej: 123456789 → 123500000)
+function redondearBonito(n) {
+    if (!n || n === 0) return 0;
+    const signo = n < 0 ? -1 : 1;
+    const abs = Math.abs(n);
+    const digitos = Math.floor(Math.log10(abs)) + 1;
+    const factor = Math.pow(10, Math.max(0, digitos - 4));
+    return signo * Math.round(abs / factor) * factor;
+}
+
 async function calcularBonusRachaExplorar(user) {
     const hoy = getFechaHoy();
     const ayer = getFechaOffset(-1);
@@ -656,7 +666,7 @@ function calcularRecompensasExplorar(npc, prob, victoria) {
         : Math.max(1 + (prob - 0.50) * 2, 0.1);
     return {
         conq: Math.max(Math.round(baseConq * mult), 1),
-        berries: Math.max(redondearBerries(baseBerries * mult), 0)
+        berries: Math.max(redondearBonito(baseBerries * mult), 0)
     };
 }
 
@@ -783,7 +793,7 @@ function resolverDuelo(probRetador, retador, retado) {
 
 function calcularMontoDuelo(recompensaRetador, recompensaRetado, pcfRetador, pcfRetado, deltaPerdedor, ganadorEsRetador) {
     // Pot = décimo de la suma de recompensas reales
-    const pot = (recompensaRetador + recompensaRetado) / 10;
+    const pot = (recompensaRetador + recompensaRetado) / 20;
     const pcfPerdedor = ganadorEsRetador ? pcfRetado : pcfRetador;
     const pcfGanador = ganadorEsRetador ? pcfRetador : pcfRetado;
     const recompensaGanador = ganadorEsRetador ? recompensaRetador : recompensaRetado;
@@ -796,7 +806,7 @@ function calcularMontoDuelo(recompensaRetador, recompensaRetado, pcfRetador, pcf
     // Cap 2: si el perdedor tiene delta positivo, nunca más de ese delta
     const deltaPos = Math.max(0, deltaPerdedor);
     if (deltaPos > 0) monto = Math.min(monto, deltaPos);
-    return Math.round(monto);
+    return redondearBonito(Math.round(monto));
 }
 
 function getSituacionDuelo(ganador, empate, retador, retado, probRetador) {
@@ -1367,7 +1377,7 @@ const AYUDA_TEMAS = {
         '• Por susurro muestra tu info detallada.\n' +
         '• !infoop @usuario muestra info resumida de otro.',
     rangos: '🎖️ RANGOS DE HAKI\n' +
-        'Armadura y Observación: No despertado (0) → Despertado (20) → Básico (50) → Avanzado (80) → Supremo (100+).\n' +
+        'Armadura y Observación: No despertado (0) → Despertado (40) → Básico (70) → Avanzado (90) → Supremo (100+).\n' +
         'Conquistador: No despertado (0) → Despertado (60) → Básico (80) → Avanzado (95) → Supremo (100+).\n' +
         'Los Supremos son solo unos pocos.',
     recompensas: '🏴‍☠️💰 RECOMPENSAS\n' +
@@ -1679,8 +1689,11 @@ async function handleWhisper(event) {
         cooldownsLurk[username].observacion = Date.now();
         const lurkCheck = await getLurkStats(username);
         if (lurkCheck && !lurkCheck.lurk_join_actual && lurkCheck.lurk_ultimo_dia === getFechaHoy()) {
-            await updateLurkStats(username, { lurk_join_actual: new Date().toISOString() });
-            console.log('👁️ Bloque reabierto por !observacion: ' + username);
+            const canalActivoLurk = await canalEstaActivo('lenno_ap');
+            if (canalActivoLurk) {
+                await updateLurkStats(username, { lurk_join_actual: new Date().toISOString() });
+                console.log('👁️ Bloque reabierto por !observacion: ' + username);
+            }
         }
         await mostrarObservacion(username, fromUserId);
         return;
@@ -2869,7 +2882,7 @@ async function procesarMensajeChat(channel, tags, message, self) {
         console.log('[FRUTA] ' + username + ' vs ' + rivalLogFruta + ' | PCF ' + poderUsuario + ' vs ' + poderEnemigoBase + ' | Haki U: ' + hakiUFrut + ' | ' + (resultado.victoria ? 'VICTORIA' : 'DERROTA'));
         if (resultado.victoria) {
             const recConq = nivel * 5;
-            const recBerries = nivel * 1000000;
+            const recBerries = redondearBonito(nivel * 1000000);
             const { data: usuariosConFrutaLista } = await supabase.from('usuarios').select('username')
                 .or('fruta.eq."' + user.evento_fruta_nombre + '",fruta_2.eq."' + user.evento_fruta_nombre + '"').limit(1);
             const usuarioConFruta = (usuariosConFrutaLista && usuariosConFrutaLista.length > 0) ? usuariosConFrutaLista[0] : null;
@@ -2930,7 +2943,7 @@ async function procesarMensajeChat(channel, tags, message, self) {
                     prob, false
                 );
                 castigoConq = Math.max(Math.round(castExplorar.conq * 0.35), 1);
-                castigoBerries = Math.max(redondearBerries(castExplorar.berries * 0.35), 100000);
+                castigoBerries = Math.max(redondearBonito(castExplorar.berries * 0.35), 100000);
             }
             await updateUsuario(username, {
                 conquistador: Math.max((user.conquistador || 0) - castigoConq, 0),
