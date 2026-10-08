@@ -891,6 +891,10 @@ async function cerrarVentanaColiseo(coliseo) {
         } else {
             await borrarColiseo(canal);
         }
+        // Limpiar coliseo_canal para que puedan hacer otros comandos
+        for (const p of participantes) {
+            await updateUsuario(p.username, { coliseo_canal: null });
+        }
         return;
     }
     // Caso 2: 2 participantes → verificar condición
@@ -904,6 +908,9 @@ async function cerrarVentanaColiseo(coliseo) {
             // No cumplen → espera
             await guardarColiseo(canal, { estado: 'espera', participantes, ventana_inicio: null, ventana_fin: null });
             client.say(canal, '🏟️ No cumplen las condiciones para pelear. El Coliseo queda en espera.');
+            for (const p of participantes) {
+                await updateUsuario(p.username, { coliseo_canal: null });
+            }
             return;
         }
         // Cumplen → pelear 1v1
@@ -2040,13 +2047,12 @@ async function handleWhisper(event) {
             await sendWhisper(fromUserId, '⏳ Esperá unos segundos.'); return;
         }
         cooldownsLurk[username].observacion = Date.now();
+        await inicializarDiaLurk(username);
         const lurkCheck = await getLurkStats(username);
-        if (lurkCheck && !lurkCheck.lurk_join_actual && lurkCheck.lurk_ultimo_dia === getFechaHoy()) {
-            const canalActivoLurk = await canalEstaActivo('lenno_ap');
-            if (canalActivoLurk) {
-                await updateLurkStats(username, { lurk_join_actual: new Date().toISOString() });
-                console.log('👁️ Bloque reabierto por !observacion: ' + username);
-            }
+        const canalActivoObs = await canalEstaActivo('lenno_ap');
+        if (lurkCheck && !lurkCheck.lurk_join_actual && lurkCheck.lurk_ultimo_dia === getFechaHoy() && canalActivoObs) {
+            await updateLurkStats(username, { lurk_join_actual: new Date().toISOString() });
+            console.log('👁️ Bloque reabierto por !observacion: ' + username);
         }
         await mostrarObservacion(username, fromUserId);
         return;
@@ -3397,7 +3403,7 @@ async function procesarMensajeChat(channel, tags, message, self) {
         }
         const { data: fruta } = await supabase.from('frutas').select('*').eq('nombre', user.evento_fruta_nombre).single();
         if (!fruta) { client.say(channel, '@' + tags.username + ' Error.'); return; }
-        const canalDbSi = canalDb;
+        const canalDbFP = canalDb;
         const filtroFP = canalDbFP ? canalDbFP.episodio_filtro : null;
         if (!pasaFiltroEpisodio(fruta, filtroFP)) {
             client.say(channel, '@' + tags.username + ' 📖 Esta fruta todavía no se vio en este canal. Podés continuar en el chat del canal donde la encontraste, o en el chat de op_d_bot.');

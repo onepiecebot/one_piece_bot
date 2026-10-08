@@ -43,11 +43,9 @@ async function getUsuario(username) {
                 username, armadura: 0, observacion: 0, conquistador: 0,
                 fruta: null, fruta_pendiente: null,
                 recompensa_publica: 0, recompensa_delta: 0,
-                racha_dia: 0, ultimo_comando: 0, minutos_lurk: 0,
-                rechazo_usado: 0, ultimo_dia: null, titulos: [],
+                minutos_lurk: 0,
                 op_usos_hoy: 0, ultimo_op_fecha: null, ultimo_op_timestamp: null,
-                racha_ops: 0, ultimo_dia_racha: null,
-                supremos_min_historico: 0
+                racha_ops: 0, ultimo_dia_racha: null
             }])
             .select().single();
         if (insertError) { console.error('❌ Error creando usuario:', insertError); return null; }
