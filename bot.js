@@ -21,14 +21,14 @@ const {
 // ============================================
 const COOLDOWN_FRUTA = 10 * 60 * 1000; // 10 min
 const FRUTA_LIMITE_DIARIO = 5;
-const TOTAL_PUERTAS_JUEGO = 12000;
+const TOTAL_PUERTAS_JUEGO = 15000;
 const FACTOR_RECOMPENSA = 3614500; // berries por punto de aporte de haki
 const TOPE_DELTA_MULT = 1.8; // tope delta = 1.8 × max base histórica
 const DUEÑO = 'fan_d_larana';
 const TWITCH_API_URL = 'https://api.twitch.tv/helix';
 const GITHUB_REPO = 'onepiecebot/one_piece_bot';
 
-const DUELO_COOLDOWN_MS = 10 * 60 * 1000;
+const DUELO_COOLDOWN_MS = 5 * 60 * 1000;
 const DUELO_LIMITE_DIARIO = 10;
 const DUELO_LIMITE_PAREJA = 3;
 const DUELO_TIMEOUT_MS = 2 * 60 * 1000;
@@ -40,6 +40,38 @@ const LURK_MICRO_COOLDOWN_MS = 2 * 60 * 1000;
 const LURK_LIVE_MINIMO_2H = 120;
 
 const NPC_VENTANA_MINUTOS = 10;
+
+// Coliseo
+const COLISEO_VENTANA_MINUTOS = 10;
+const COLISEO_DELTA_ENTRADA = 10000000; // $10M
+const COLISEO_CONQ_ENTRADA = 1;
+const COLISEO_PROB_MIN = 0.15; // si el más débil tiene menos de 15%, no pelean (nadie supera 85%)
+const COLISEO_EXP_BR = 1.2; // exponente para battle royale
+
+// Frutas meme (aparecen al fallar el sorteo, 40% de las veces)
+const MEMES_FRUTAS = [
+    { nombre: 'mandarina', emoji: '🍊',
+      comer: 'Mandarina consumida. Refrescante, la verdad.',
+      rechazar: 'Mandarina rechazada. ¿Y ahora quién te da vitamina C?' },
+    { nombre: 'banana', emoji: '🍌',
+      comer: 'Te comiste una banana. Potasio para los calambres, dicen.',
+      rechazar: 'Rechazaste la banana. Calambres te esperan.' },
+    { nombre: 'manzana', emoji: '🍎',
+      comer: 'Manzana consumida. Clásica y efectiva.',
+      rechazar: 'La manzana te miró y le dijiste no. Frío.' },
+    { nombre: 'pera', emoji: '🍐',
+      comer: 'Te comiste una pera. Fibra para el cuerpo.',
+      rechazar: 'Pera rechazada. Fibra perdida.' },
+    { nombre: 'uva', emoji: '🍇',
+      comer: 'Uva consumida. Poca cosa pero rica.',
+      rechazar: 'Uva rechazada. Antioxidantes perdidos.' },
+    { nombre: 'ananá', emoji: '🍍',
+      comer: 'Ananá al buche. Un lujo tropical.',
+      rechazar: 'Rechazaste el ananá. Dulce, pero no era el momento.' },
+    { nombre: 'tomate', emoji: '🍅',
+      comer: '¿Quién se come un tomate como si fuese una fruta común? ... Me das miedo.',
+      rechazar: 'Lo dejaste. Menos mal.' }
+];
 
 // NPCs que NO salen como avistamiento (son de relleno)
 const NPCS_EXCLUIDOS_AVISTAMIENTO = [
@@ -59,13 +91,30 @@ const notif5Plazas = { fecha: null, enviado: false };
 
 // Estado de mantenimiento (se lee de bot_config al arrancar, se actualiza al !deploy/!deploylisto)
 let mantenimientoActivo = false;
+let predeployActivo = false;
 
 async function cargarEstadoMantenimiento() {
     try {
         const { data } = await supabase.from('bot_config').select('valor').eq('clave', 'mantenimiento').maybeSingle();
         mantenimientoActivo = (data && data.valor === 'true');
         console.log('🔧 Estado mantenimiento: ' + (mantenimientoActivo ? 'ACTIVO' : 'inactivo'));
+        const { data: pd } = await supabase.from('bot_config').select('valor').eq('clave', 'predeploy').maybeSingle();
+        predeployActivo = (pd && pd.valor === 'true');
+        console.log('🔧 Estado predeploy: ' + (predeployActivo ? 'ACTIVO' : 'inactivo'));
     } catch (e) { console.error('Error cargando mantenimiento:', e); }
+}
+
+async function setPredeploy(valor) {
+    predeployActivo = valor;
+    await supabase.from('bot_config').upsert({ clave: 'predeploy', valor: valor ? 'true' : 'false' });
+    if (valor) {
+        await supabase.from('bot_config').upsert({ clave: 'predeploy_avisado', valor: 'false' });
+    }
+}
+
+async function contarVentanasColiseo() {
+    const { count } = await supabase.from('coliseo').select('*', { count: 'exact', head: true }).eq('estado', 'ventana');
+    return count || 0;
 }
 
 async function setMantenimiento(valor) {
@@ -92,7 +141,8 @@ const COMANDOS_CON_USUARIO = [
     '!explorar', '!facil', '!medio', '!dificil',
     '!continuar', '!retroceder', '!combatir', '!retirarse',
     '!exploracionpendiente', '!duelopendiente',
-    '!observacion', '!personaje'
+    '!observacion', '!personaje',
+    '!coliseo'
 ];
 
 // Comandos que funcionan también por chat en op_d_bot (redirigidos al handler de susurro).
@@ -629,6 +679,285 @@ function getEscalon(ratio) {
     return 'mucho_mas_debil';
 }
 function redondearBerries(v) { return Math.round(v / 10000) * 10000; }
+
+// Rangos por recompensa (Yonko / Sichibukai / Supernova)
+async function actualizarRangosRecompensa() {
+    const { data } = await supabase
+        .from('usuarios')
+        .select('username, recompensa_publica')
+        .gte('recompensa_publica', 300000000)
+        .order('recompensa_publica', { ascending: false })
+        .limit(60);
+    if (!data || data.length === 0) return [];
+    const yonkos = [];
+    const sichibukais = [];
+    const supernovas = [];
+    let pool = [...data];
+    // Yonko: top 4, > $3B
+    for (const u of pool) {
+        if (yonkos.length >= 4) break;
+        if (u.recompensa_publica > 3000000000) yonkos.push(u.username);
+    }
+    pool = pool.filter(u => !yonkos.includes(u.username));
+    // Sichibukai: top 7, > $1B
+    for (const u of pool) {
+        if (sichibukais.length >= 7) break;
+        if (u.recompensa_publica > 1000000000) sichibukais.push(u.username);
+    }
+    pool = pool.filter(u => !sichibukais.includes(u.username));
+    // Supernova: top 11, > $300M
+    for (const u of pool) {
+        if (supernovas.length >= 11) break;
+        if (u.recompensa_publica > 300000000) supernovas.push(u.username);
+    }
+    const rows = [
+        ...yonkos.map(u => ({ username: u, rango: 'yonko' })),
+        ...sichibukais.map(u => ({ username: u, rango: 'sichibukai' })),
+        ...supernovas.map(u => ({ username: u, rango: 'supernova' }))
+    ];
+    await supabase.from('ranking_recompensa').delete().neq('username', '___imposible___');
+    if (rows.length > 0) {
+        await supabase.from('ranking_recompensa').insert(rows);
+    }
+    return rows;
+}
+
+async function getRangoRecompensa(username) {
+    const { data } = await supabase.from('ranking_recompensa')
+        .select('rango').eq('username', username).maybeSingle();
+    return data ? data.rango : null;
+}
+
+function getEmojiRango(rango) {
+    if (rango === 'yonko') return '🏴‍☠️👑';
+    if (rango === 'sichibukai') return '🏴‍☠️⚔️🌊';
+    if (rango === 'supernova') return '🏴‍☠️💫';
+    return '';
+}
+
+function getNombreRango(rango) {
+    if (rango === 'yonko') return 'Yonko';
+    if (rango === 'sichibukai') return 'Sichibukai';
+    if (rango === 'supernova') return 'Supernova';
+    return '';
+}
+
+// ============================================
+// COLISEO — HELPERS
+// ============================================
+async function getColiseo(canal) {
+    const { data } = await supabase.from('coliseo').select('*').eq('canal', canal).maybeSingle();
+    return data;
+}
+
+async function guardarColiseo(canal, datos) {
+    await supabase.from('coliseo').upsert({ canal, actualizado: new Date().toISOString(), ...datos });
+}
+
+async function borrarColiseo(canal) {
+    await supabase.from('coliseo').delete().eq('canal', canal);
+}
+
+function getEmojiRangoColiseo(rango) {
+    if (rango === 1) return '🥇';
+    if (rango === 2) return '🥈';
+    if (rango === 3) return '🥉';
+    return '';
+}
+
+function calcularProbabilidadBR(pcfUsuario, pcfSumaOtros) {
+    if (pcfSumaOtros <= 0) return 1;
+    if (pcfUsuario <= 0) return 0;
+    const r = pcfSumaOtros / pcfUsuario;
+    return 1 / (1 + Math.pow(r, COLISEO_EXP_BR));
+}
+
+function sortearBR(participantes) {
+    // Devuelve un array ordenado por puesto (1º, 2º, 3º...)
+    const restantes = [...participantes];
+    const resultado = [];
+    while (restantes.length > 0) {
+        const pcfTotal = restantes.reduce((s, p) => s + (p.pcf || 0), 0);
+        const probs = restantes.map(p => {
+            const otros = pcfTotal - (p.pcf || 0);
+            return calcularProbabilidadBR(p.pcf || 0, otros);
+        });
+        const sumaProbs = probs.reduce((s, v) => s + v, 0);
+        const normalizadas = probs.map(p => p / sumaProbs);
+        let r = Math.random();
+        let idx = 0;
+        for (let i = 0; i < normalizadas.length; i++) {
+            r -= normalizadas[i];
+            if (r <= 0) { idx = i; break; }
+            idx = i;
+        }
+        resultado.push(restantes[idx]);
+        restantes.splice(idx, 1);
+    }
+    return resultado;
+}
+
+async function repartirPremiosColiseo(participantes, ordenGanadores) {
+    // participantes: array de {username, pcf}
+    // ordenGanadores: array ordenado por puesto (1º, 2º, 3º...)
+    const total = participantes.length;
+    const pozoConq = total * COLISEO_CONQ_ENTRADA;
+    const pozoDelta = total * COLISEO_DELTA_ENTRADA;
+    // Determinar cuántos premios hay
+    let numPremios = 1;
+    let dist = [1.0];
+    if (total >= 10) { numPremios = 3; dist = [0.55, 0.30, 0.15]; }
+    else if (total >= 5) { numPremios = 2; dist = [0.70, 0.30]; }
+    // Calcular montos por puesto (redondeando siempre al ganador, ajustando los demás)
+    const premiosConq = [];
+    const premiosDelta = [];
+    let acumConq = 0;
+    let acumDelta = 0;
+    for (let i = 0; i < numPremios; i++) {
+        if (i < numPremios - 1) {
+            const c = Math.floor(pozoConq * dist[i]);
+            const d = Math.floor(pozoDelta * dist[i]);
+            premiosConq.push(c);
+            premiosDelta.push(d);
+            acumConq += c;
+            acumDelta += d;
+        } else {
+            // Último: lo que sobra (redondeo al ganador)
+            premiosConq.push(pozoConq - acumConq);
+            premiosDelta.push(pozoDelta - acumDelta);
+        }
+    }
+    // Ganadores (top numPremios)
+    const ganadores = ordenGanadores.slice(0, numPremios);
+    const perdedores = ordenGanadores.slice(numPremios);
+    // Aplicar
+    for (let i = 0; i < ganadores.length; i++) {
+        const u = ganadores[i].username;
+        const userU = await getUsuario(u);
+        if (!userU) continue;
+        const conqNeto = premiosConq[i] - COLISEO_CONQ_ENTRADA;
+        const deltaNeto = premiosDelta[i] - COLISEO_DELTA_ENTRADA;
+        await updateUsuario(u, {
+            conquistador: Math.max((userU.conquistador || 0) + conqNeto, 0),
+            recompensa_delta: (userU.recompensa_delta || 0) + deltaNeto,
+            coliseo_canal: null
+        });
+    }
+    for (const p of perdedores) {
+        const userP = await getUsuario(p.username);
+        if (!userP) continue;
+        await updateUsuario(p.username, {
+            conquistador: Math.max((userP.conquistador || 0) - COLISEO_CONQ_ENTRADA, 0),
+            recompensa_delta: (userP.recompensa_delta || 0) - COLISEO_DELTA_ENTRADA,
+            coliseo_canal: null
+        });
+    }
+    // Armar mensaje
+    let msg = '🏟️ COLISEO — ' + total + ' participantes\n';
+    for (let i = 0; i < ganadores.length; i++) {
+        const conqNeto = premiosConq[i] - COLISEO_CONQ_ENTRADA;
+        const deltaNeto = premiosDelta[i] - COLISEO_DELTA_ENTRADA;
+        const emoji = getEmojiRangoColiseo(i + 1);
+        const conqTxt = conqNeto > 0 ? '+' + conqNeto + ' Conq, ' : '';
+        const deltaSigno = deltaNeto >= 0 ? '+' : '';
+        msg += emoji + ' @' + ganadores[i].username + ' (' + conqTxt + deltaSigno + '$' + formatBerries(deltaNeto) + ')\n';
+    }
+    if (perdedores.length > 0) {
+        msg += '💀 ' + perdedores.length + ' derrotados en la arena (-1 Conq, -$10M)';
+    }
+    return msg;
+}
+
+async function usuarioEnColiseo(username) {
+    const { data } = await supabase.from('usuarios').select('coliseo_canal').eq('username', username).maybeSingle();
+    return data ? data.coliseo_canal : null;
+}
+
+async function cerrarVentanaColiseo(coliseo) {
+    const canal = coliseo.canal;
+    const participantes = coliseo.participantes || [];
+    // Recalcular PCF de cada uno (por si entrenaron durante la ventana o en espera)
+    for (const p of participantes) {
+        const uFresh = await getUsuario(p.username);
+        if (uFresh) {
+            p.pcf = await calcularPCFUsuario(uFresh);
+        }
+    }
+    // Caso 1: 0-1 participantes → espera
+    if (participantes.length <= 1) {
+        await guardarColiseo(canal, { estado: 'espera', participantes, ventana_inicio: null, ventana_fin: null });
+        if (participantes.length === 1) {
+            client.say(canal, '🏟️ El Coliseo queda en espera. Se reabrirá cuando alguien más lo active.');
+        } else {
+            await borrarColiseo(canal);
+        }
+        return;
+    }
+    // Caso 2: 2 participantes → verificar condición
+    if (participantes.length === 2) {
+        const [a, b] = participantes;
+        const pcfA = a.pcf || 0;
+        const pcfB = b.pcf || 0;
+        const probA = pcfB === 0 ? 1 : (pcfA === 0 ? 0 : 1 / (1 + Math.pow(pcfB / pcfA, 5.75)));
+        const probDebil = Math.min(probA, 1 - probA);
+        if (probDebil < COLISEO_PROB_MIN) {
+            // No cumplen → espera
+            await guardarColiseo(canal, { estado: 'espera', participantes, ventana_inicio: null, ventana_fin: null });
+            client.say(canal, '🏟️ No cumplen las condiciones para pelear. El Coliseo queda en espera.');
+            return;
+        }
+        // Cumplen → pelear 1v1
+        const res = resolverDuelo(probA, a.username, b.username);
+        let orden;
+        if (res.empate) {
+            // Desempate: mayor PCF
+            orden = pcfA >= pcfB ? [a, b] : [b, a];
+        } else {
+            const ganador = res.ganador;
+            const perdedor = ganador === a.username ? b : a;
+            const ganadorObj = ganador === a.username ? a : b;
+            orden = [ganadorObj, perdedor];
+        }
+        const msg = await repartirPremiosColiseo(participantes, orden);
+        client.say(canal, msg);
+        console.log('[COLISEO] ' + canal + ' → 1v1 ganador: ' + orden[0].username);
+        await borrarColiseo(canal);
+        return;
+    }
+    // Caso 3: 3+ participantes → battle royale
+    const orden = sortearBR(participantes);
+    const msg = await repartirPremiosColiseo(participantes, orden);
+    client.say(canal, msg);
+    console.log('[COLISEO] ' + canal + ' → BR ganador: ' + orden[0].username + ' (' + participantes.length + ' participantes)');
+    await borrarColiseo(canal);
+}
+
+async function revisarColiseosExpirados() {
+    try {
+        const ahoraISO = new Date().toISOString();
+        const { data } = await supabase.from('coliseo')
+            .select('*')
+            .eq('estado', 'ventana')
+            .lt('ventana_fin', ahoraISO);
+        for (const c of (data || [])) {
+            try { await cerrarVentanaColiseo(c); } catch (e) { console.error('Error cerrando coliseo ' + c.canal + ':', e); }
+        }
+        // Aviso al dueño si predeploy está activo y ya no quedan ventanas
+        if (predeployActivo) {
+            const { data: avisado } = await supabase.from('bot_config').select('valor').eq('clave', 'predeploy_avisado').maybeSingle();
+            if (!avisado || avisado.valor !== 'true') {
+                const ventanas = await contarVentanasColiseo();
+                if (ventanas === 0) {
+                    const dueñoUser = await getUsuario(DUEÑO);
+                    if (dueñoUser && dueñoUser.twitch_user_id) {
+                        try { await sendWhisper(dueñoUser.twitch_user_id, '✅ Todas las ventanas de coliseo cerradas. Podés hacer el deploy.'); } catch (e) {}
+                    }
+                    await supabase.from('bot_config').upsert({ clave: 'predeploy_avisado', valor: 'true' });
+                }
+            }
+        }
+    } catch (err) { console.error('Error revisarColiseosExpirados:', err); }
+}
 
 // Redondea a 4 cifras significativas (ej: 123456789 → 123500000)
 function redondearBonito(n) {
@@ -1257,7 +1586,7 @@ async function anunciarNpc() {
     npcVentanaHasta = new Date(Date.now() + NPC_VENTANA_MINUTOS * 60000).toISOString();
     await guardarEstadoNpc();
     const canales = await getCanales();
-    const msg = '👁️ ¡' + npcActual + ' apareció! Susurrá !personaje ' + npcActual.toLowerCase() + ' (' + NPC_VENTANA_MINUTOS + ' min)';
+    const msg = '👁️ ¡' + npcActual + ' apareció! Susurrá "!personaje ' + npcActual.toLowerCase() + '" (tenés ' + NPC_VENTANA_MINUTOS + ' min) 👁️';
     for (const c of canales) {
         if (!c.bot_activo) continue;
         const live = await checkLiveHelix(c.canal);
@@ -1500,6 +1829,12 @@ async function handleWhisper(event) {
     // Modo mantenimiento: solo !deploylisto funciona
     if (mantenimientoActivo && command !== '!deploylisto') return;
 
+    // Predeploy: bloquea duelos y coliseos
+    if (predeployActivo && (command === '!retar' || command === '!duelo' || command === '!coliseo')) {
+        await sendWhisper(fromUserId, '⏳ El bot se prepara para mantenimiento. Esperá un momento.');
+        return;
+    }
+
     if (command === '!testwhisper') {
         await sendWhisper(fromUserId, '¡Hola ' + fromUserLogin + '! Funciona. 🎉');
         return;
@@ -1584,6 +1919,23 @@ async function handleWhisper(event) {
         return;
     }
 
+    // !predeploy (solo dueño)
+    if (command === '!predeploy') {
+        if (username !== DUEÑO) {
+            await sendWhisper(fromUserId, '❌ No tenés permiso para usar este comando.');
+            return;
+        }
+        await setPredeploy(true);
+        const ventanas = await contarVentanasColiseo();
+        if (ventanas === 0) {
+            await sendWhisper(fromUserId, '🔧 Predeploy activo. Sin ventanas abiertas. Podés hacer el deploy cuando quieras.');
+        } else {
+            await sendWhisper(fromUserId, '🔧 Predeploy activo. ⚠️ Hay ' + ventanas + ' ventana(s) de coliseo abiertas. Esperá a que cierren.');
+        }
+        console.log('🔧 Predeploy activado por ' + username + '. Ventanas abiertas: ' + ventanas);
+        return;
+    }
+
     // !deploy (solo dueño)
     if (command === '!deploy') {
         if (username !== DUEÑO) {
@@ -1660,10 +2012,11 @@ async function handleWhisper(event) {
                 }
             }
         }
-        // Limpiar snapshot y desactivar mantenimiento
+        // Limpiar snapshot y desactivar mantenimiento + predeploy
         await supabase.from('bot_config').upsert({ clave: 'deploy_snapshot', valor: '' });
         await supabase.from('bot_config').upsert({ clave: 'deploy_timestamp', valor: '' });
         await setMantenimiento(false);
+        await setPredeploy(false);
         // Avisar a canales
         const canales = await getCanales();
         const msg = '✅ El bot ya está funcionando de nuevo. ¡Gracias por esperar!';
@@ -1757,7 +2110,34 @@ async function handleWhisper(event) {
         }
         const recompensaReal = await getRecompensaReal(user);
         await updateUsuario(username, { recompensa_publica: recompensaReal });
-        const mensaje = '📊 Tus stats: ' + frutaTexto + ' | 🛡️ ' + rangoArm.nombre + ' (' + (user.armadura || 0) + ') ' + rangoArm.emoji + ' | 👁️ ' + rangoObs.nombre + ' (' + (user.observacion || 0) + ') ' + rangoObs.emoji + ' | ⚜️ ' + rangoConq.nombre + ' (' + (user.conquistador || 0) + ') ' + rangoConq.emoji + ' | 🏴‍☠️💰 $' + recompensaReal.toLocaleString('es-AR') + ' | 🗺️ ' + estadoExplorar;
+        // Info de usos y cooldowns
+        const hoyInfo = getFechaHoy();
+        const opUsosHoy = (user.ultimo_op_fecha === hoyInfo) ? (user.op_usos_hoy || 0) : 0;
+        let opTxt = '🎮 !op: ' + opUsosHoy + '/3';
+        const ultimoOpTs = user.ultimo_op_timestamp ? new Date(user.ultimo_op_timestamp).getTime() : 0;
+        const restOp = (10 * 60 * 1000) - (Date.now() - ultimoOpTs);
+        if (restOp > 0) {
+            const m = Math.floor(restOp / 60000);
+            const s = Math.floor((restOp % 60000) / 1000);
+            opTxt += ' | Cooldown: ' + (m > 0 ? (m + 'm ' + s + 's') : (s + 's'));
+        } else {
+            opTxt += ' | Listo ✅';
+        }
+        const frutaUsosHoy = (user.ultimo_dia_fruta === hoyInfo) ? (user.fruta_intentos_hoy || 0) : 0;
+        let frutaTxt = '🍎 !fruta: ' + frutaUsosHoy + '/5';
+        const ultimoFrutaTs = cooldowns['fruta_' + username] || 0;
+        const restFruta = COOLDOWN_FRUTA - (Date.now() - ultimoFrutaTs);
+        if (restFruta > 0) {
+            const m = Math.floor(restFruta / 60000);
+            const s = Math.floor((restFruta % 60000) / 1000);
+            frutaTxt += ' | Cooldown: ' + (m > 0 ? (m + 'm ' + s + 's') : (s + 's'));
+        } else {
+            frutaTxt += ' | Listo ✅';
+        }
+        const rangoRecS = await getRangoRecompensa(username);
+        let sufijoRangoS = '';
+        if (rangoRecS) sufijoRangoS = ' | ' + getEmojiRango(rangoRecS) + ' ' + getNombreRango(rangoRecS);
+        const mensaje = '📊 Tus stats: ' + frutaTexto + ' | 🛡️ ' + rangoArm.nombre + ' (' + (user.armadura || 0) + ') ' + rangoArm.emoji + ' | 👁️ ' + rangoObs.nombre + ' (' + (user.observacion || 0) + ') ' + rangoObs.emoji + ' | ⚜️ ' + rangoConq.nombre + ' (' + (user.conquistador || 0) + ') ' + rangoConq.emoji + ' | 💰 $' + recompensaReal.toLocaleString('es-AR') + sufijoRangoS + ' | 🗺️ ' + estadoExplorar + '\n' + opTxt + '\n' + frutaTxt;
         await sendWhisper(fromUserId, mensaje);
         return;
     }
@@ -1777,7 +2157,10 @@ async function handleWhisper(event) {
         const eArm = getRangoArmadura(targetUser.armadura || 0, supArm).emoji;
         const eObs = getRangoObservacion(targetUser.observacion || 0, supObs).emoji;
         const eConq = getRangoConquistador(targetUser.conquistador || 0, supConq).emoji;
-        await sendWhisper(fromUserId, '@' + target + ' | ' + frutaTexto + ' | 🛡️:' + eArm + ' | 👁️:' + eObs + ' | ⚜️:' + eConq + ' | 🏴‍☠️💰 $' + (targetUser.recompensa_publica || 0).toLocaleString('es-AR'));
+        const rangoRecT = await getRangoRecompensa(target);
+        let sufijoRangoT = '';
+        if (rangoRecT) sufijoRangoT = ' | ' + getEmojiRango(rangoRecT) + ' ' + getNombreRango(rangoRecT);
+        await sendWhisper(fromUserId, '@' + target + ' | ' + frutaTexto + ' | 🛡️:' + eArm + ' | 👁️:' + eObs + ' | ⚜️:' + eConq + ' | 💰 $' + (targetUser.recompensa_publica || 0).toLocaleString('es-AR') + sufijoRangoT);
         return;
     }
 
@@ -2089,6 +2472,208 @@ async function mostrarObservacion(username, fromUserId) {
 // ============================================
 // RETAR
 // ============================================
+async function procesarColiseo(username, canal, channel) {
+    const responder = (msg) => { try { client.say(channel, msg); } catch(e){} };
+
+    // 1. Verificar si ya hay coliseo abierto en este canal
+    const coliseoActual = await getColiseo(canal);
+
+    // 2. Permisos: solo streamer del canal o dueño global pueden ABRIR ventana nueva.
+    //    Cualquiera puede unirse si la ventana ya está abierta.
+    //    Cualquiera puede REABRIR si hay 2+ pendientes (sin pelear por condición).
+    const esStreamer = (username === canal);
+    const esDueñoGlobal = esDueño(username);
+    const puedeAbrir = esStreamer || esDueñoGlobal;
+
+    // ============================================
+    // CASO A: ya hay coliseo en ventana abierta → INSCRIPCIÓN
+    // ============================================
+    if (coliseoActual && coliseoActual.estado === 'ventana') {
+        const participantes = coliseoActual.participantes || [];
+        if (participantes.find(p => p.username === username)) {
+            responder('🏟️ @' + username + ' ya estás inscripto.');
+            return;
+        }
+        // Requisitos
+        const user = await getUsuario(username);
+        if (!user) return;
+        // Ya tiene coliseo pendiente en otro canal
+        const otroColiseo = await usuarioEnColiseo(username);
+        if (otroColiseo && otroColiseo !== canal) {
+            responder('🏟️ @' + username + ' ya estás en un coliseo en otro canal.');
+            return;
+        }
+        // Requisitos de participación
+        if (user.evento_duelo_estado === 'pendiente') {
+            responder('🏟️ @' + username + ' tenés un duelo pendiente. Resolvelo antes.');
+            return;
+        }
+        if (!(await completoExplorarHoy(username))) {
+            responder('🏟️ @' + username + ' necesitás completar tu exploración del día antes de entrar al Coliseo.');
+            return;
+        }
+        if ((user.conquistador || 0) < COLISEO_CONQ_ENTRADA) {
+            responder('🏟️ @' + username + ' necesitás al menos 1 de Conquistador para entrar al Coliseo.');
+            return;
+        }
+        if ((user.recompensa_delta || 0) < COLISEO_DELTA_ENTRADA) {
+            responder('🏟️ @' + username + ' perdiste demasiada recompensa en enfrentamientos anteriores. Entrená un poco más antes de volver.');
+            return;
+        }
+        if ((user.coliseos_hoy || 0) >= DUELO_LIMITE_DIARIO) {
+            responder('🏟️ @' + username + ' ya usaste tus 10 duelos/coliseos de hoy.');
+            return;
+        }
+        // PCF actual
+        const pcf = await calcularPCFUsuario(user);
+        if (pcf <= 0) {
+            responder('🏟️ @' + username + ' necesitás ganar experiencia antes de entrar.');
+            return;
+        }
+        // Inscribir
+        const nuevoParticipante = { username, pcf };
+        await guardarColiseo(canal, { participantes: [...participantes, nuevoParticipante] });
+        await updateUsuario(username, { coliseo_canal: canal, coliseos_hoy: (user.coliseos_hoy || 0) + 1 });
+        responder('✅ @' + username + ' inscripto en el Coliseo.');
+        return;
+    }
+
+    // ============================================
+    // CASO B: no hay coliseo abierto → ABRIR VENTANA
+    // ============================================
+    if (!coliseoActual) {
+        // Solo puede abrir si es streamer, dueño, o hay 2+ pendientes en la cola global
+        let puedePorCola = false;
+        if (!puedeAbrir) {
+            // Buscar coliseos en estado 'espera' (con 2+ pendientes)
+            const { data: coliseosEspera } = await supabase.from('coliseo').select('*').eq('estado', 'espera');
+            for (const c of (coliseosEspera || [])) {
+                if ((c.participantes || []).length >= 2) { puedePorCola = true; break; }
+            }
+        }
+        if (!puedeAbrir && !puedePorCola) return; // silencio
+        // Requisitos del que abre (aunque sea reabriendo, tiene que cumplir)
+        const user = await getUsuario(username);
+        if (!user) return;
+        if (user.evento_duelo_estado === 'pendiente') {
+            responder('🏟️ @' + username + ' tenés un duelo pendiente.');
+            return;
+        }
+        if (!(await completoExplorarHoy(username))) {
+            responder('🏟️ @' + username + ' necesitás completar tu exploración del día.');
+            return;
+        }
+        if ((user.conquistador || 0) < COLISEO_CONQ_ENTRADA) {
+            responder('🏟️ @' + username + ' necesitás al menos 1 de Conquistador.');
+            return;
+        }
+        if ((user.recompensa_delta || 0) < COLISEO_DELTA_ENTRADA) {
+            responder('🏟️ @' + username + ' perdiste demasiada recompensa. Entrená un poco más.');
+            return;
+        }
+        if ((user.coliseos_hoy || 0) >= DUELO_LIMITE_DIARIO) {
+            responder('🏟️ @' + username + ' ya usaste tus 10 duelos/coliseos de hoy.');
+            return;
+        }
+        const pcf = await calcularPCFUsuario(user);
+        if (pcf <= 0) {
+            responder('🏟️ @' + username + ' necesitás ganar experiencia antes de entrar.');
+            return;
+        }
+        // Recolectar participantes de coliseos en 'espera' (cola persistente)
+        let participantesIniciales = [{ username, pcf }];
+        const { data: coliseosEspera } = await supabase.from('coliseo').select('*').eq('estado', 'espera');
+        for (const c of (coliseosEspera || [])) {
+            for (const p of (c.participantes || [])) {
+                if (!participantesIniciales.find(x => x.username === p.username)) {
+                    participantesIniciales.push(p);
+                }
+            }
+            // Limpiar el coliseo viejo de espera
+            await borrarColiseo(c.canal);
+        }
+        // Crear coliseo nuevo
+        const ahora = Date.now();
+        const ventanaFin = new Date(ahora + COLISEO_VENTANA_MINUTOS * 60000).toISOString();
+        await guardarColiseo(canal, {
+            estado: 'ventana',
+            participantes: participantesIniciales,
+            ventana_inicio: new Date(ahora).toISOString(),
+            ventana_fin: ventanaFin
+        });
+        await updateUsuario(username, { coliseo_canal: canal, coliseos_hoy: (user.coliseos_hoy || 0) + 1 });
+        for (const p of participantesIniciales) {
+            if (p.username !== username) {
+                await updateUsuario(p.username, { coliseo_canal: canal });
+            }
+        }
+        // Marcar los que se re-inscribieron
+        client.say(channel, '🏟️ ¡Se abrieron las puertas del Coliseo! Tenés 10 minutos para entrar.');
+        if (participantesIniciales.length > 1) {
+            client.say(channel, '🏟️ Ya hay ' + (participantesIniciales.length - 1) + ' luchador(es) esperando.');
+        }
+        return;
+    }
+
+    // ============================================
+    // CASO C: coliseo en estado 'espera' (nadie cumplió condición) → se ignora
+    // El siguiente que tire !coliseo arranca el CASO B
+    // ============================================
+    if (coliseoActual.estado === 'espera') {
+        // No hacer nada, esperar al CASO B cuando se abra nueva ventana
+        // Pero podemos tratarlo como apertura de nueva ventana:
+        // (reutilizamos el flujo del CASO B si no hay coliseo en este canal)
+        // Como ya estamos acá, hay coliseo espera en este canal:
+        // simplemente registramos al nuevo y abrimos ventana nueva
+        const user = await getUsuario(username);
+        if (!user) return;
+        const participantesViejos = coliseoActual.participantes || [];
+        // Verificar si ya está
+        if (participantesViejos.find(p => p.username === username)) {
+            responder('🏟️ @' + username + ' ya estás en espera.');
+            return;
+        }
+        // Mismo flujo que CASO B para abrir nueva ventana con los viejos
+        if (user.evento_duelo_estado === 'pendiente') {
+            responder('🏟️ @' + username + ' tenés un duelo pendiente.');
+            return;
+        }
+        if (!(await completoExplorarHoy(username))) {
+            responder('🏟️ @' + username + ' necesitás completar tu exploración del día.');
+            return;
+        }
+        if ((user.conquistador || 0) < COLISEO_CONQ_ENTRADA) {
+            responder('🏟️ @' + username + ' necesitás al menos 1 de Conquistador.');
+            return;
+        }
+        if ((user.recompensa_delta || 0) < COLISEO_DELTA_ENTRADA) {
+            responder('🏟️ @' + username + ' perdiste demasiada recompensa. Entrená un poco más.');
+            return;
+        }
+        if ((user.coliseos_hoy || 0) >= DUELO_LIMITE_DIARIO) {
+            responder('🏟️ @' + username + ' ya usaste tus 10 duelos/coliseos de hoy.');
+            return;
+        }
+        const pcf = await calcularPCFUsuario(user);
+        if (pcf <= 0) {
+            responder('🏟️ @' + username + ' necesitás ganar experiencia antes de entrar.');
+            return;
+        }
+        const participantesNuevos = [...participantesViejos, { username, pcf }];
+        const ahora = Date.now();
+        const ventanaFin = new Date(ahora + COLISEO_VENTANA_MINUTOS * 60000).toISOString();
+        await guardarColiseo(canal, {
+            estado: 'ventana',
+            participantes: participantesNuevos,
+            ventana_inicio: new Date(ahora).toISOString(),
+            ventana_fin: ventanaFin
+        });
+        await updateUsuario(username, { coliseo_canal: canal, coliseos_hoy: (user.coliseos_hoy || 0) + 1 });
+        client.say(channel, '🏟️ ¡Se reabrieron las puertas del Coliseo! Tenés 10 minutos para entrar.');
+        return;
+    }
+}
+
 async function procesarRetar(username, targetRaw, fromUserId, esSusurro, chatChannel) {
     const target = targetRaw.replace('@', '').toLowerCase();
     const responder = async (msg) => {
@@ -2282,8 +2867,8 @@ async function procesarAceptarDuelo(username, fromUserId, esSusurro, chatChannel
             texto = texto + ' | +' + conqCambio + ' Conq';
         }
     }
-    client.say('op_d_bot', texto);
     if (canalDuelo && canalDuelo !== 'op_d_bot') client.say(canalDuelo, texto);
+    else client.say('op_d_bot', texto);
     if (retadorUser.twitch_user_id) { try { await sendWhisper(retadorUser.twitch_user_id, '⚔️ ' + texto); } catch (e) { console.error('Error notif duelo retador:', e); } }
     if (retadoUser.twitch_user_id) { try { await sendWhisper(retadoUser.twitch_user_id, '⚔️ ' + texto); } catch (e) { console.error('Error notif duelo retado:', e); } }
     if (esSusurro) await sendWhisper(fromUserId, '⚔️ Duelo resuelto. ' + texto);
@@ -2356,6 +2941,12 @@ async function procesarMensajeChat(channel, tags, message, self) {
 
     // Modo mantenimiento: solo !deploylisto funciona
     if (mantenimientoActivo && command !== '!deploylisto') return;
+
+    // Predeploy: bloquea duelos y coliseos
+    if (predeployActivo && (command === '!retar' || command === '!duelo' || command === '!coliseo')) {
+        client.say(channel, '@' + tags.username + ' ⏳ El bot se prepara para mantenimiento. Esperá un momento.');
+        return;
+    }
 
     const canalDb = await getCanal(canal);
     const botActivo = canalDb ? canalDb.bot_activo : true;
@@ -2476,7 +3067,20 @@ async function procesarMensajeChat(channel, tags, message, self) {
         return;
     }
 
-    const comandosBloqueados = ['!op', '!fruta', '!comer'];
+    // Bloqueo por coliseo activo (solo si la ventana está abierta)
+    const COMANDOS_BLOQUEADOS_COLISEO = ['!op', '!fruta', '!comer', '!pelear', '!retar', '!aceptarduelo'];
+    if (COMANDOS_BLOQUEADOS_COLISEO.includes(command)) {
+        const userCol = await getUsuario(username);
+        if (userCol && userCol.coliseo_canal) {
+            const col = await getColiseo(userCol.coliseo_canal);
+            if (col && col.estado === 'ventana') {
+                client.say(channel, '@' + tags.username + ' Estás en un Coliseo activo. Esperá a que termine.');
+                return;
+            }
+        }
+    }
+
+    const comandosBloqueados = ['!op', '!fruta', '!comer', '!pelear'];
     if (comandosBloqueados.includes(command)) {
         const u = await getUsuario(username);
         if (u && u.evento_duelo_estado === 'pendiente') {
@@ -2516,6 +3120,11 @@ async function procesarMensajeChat(channel, tags, message, self) {
         return;
     }
 
+    if (command === '!coliseo') {
+        await procesarColiseo(username, canal, channel);
+        return;
+    }
+
     if (command === '!infoop') {
         if (args[1]) { client.say(channel, '@' + tags.username + ' Por susurro, máquina 📩'); return; }
         const infoopKey = 'infoop_' + username;
@@ -2531,6 +3140,8 @@ async function procesarMensajeChat(channel, tags, message, self) {
         const supConq = await esSupremoConquistador(username);
         const recompensaReal = await getRecompensaReal(user);
         await updateUsuario(username, { recompensa_publica: recompensaReal });
+        await actualizarRangosRecompensa();
+        const rangoRec = await getRangoRecompensa(username);
         let frutaTexto = '🍎 Ninguna';
         const canalDbInfo = canalDb;
         const filtroInfo = canalDbInfo ? canalDbInfo.episodio_filtro : null;
@@ -2553,7 +3164,9 @@ async function procesarMensajeChat(channel, tags, message, self) {
         const eArm = getRangoArmadura(user.armadura || 0, supArm).emoji;
         const eObs = getRangoObservacion(user.observacion || 0, supObs).emoji;
         const eConq = getRangoConquistador(user.conquistador || 0, supConq).emoji;
-        client.say(channel, '@' + username + ' | ' + frutaTexto + ' | 🛡️:' + eArm + ' | 👁️:' + eObs + ' | ⚜️:' + eConq + ' | 🏴‍☠️💰 $' + recompensaReal.toLocaleString('es-AR'));
+        let sufijoRango = '';
+        if (rangoRec) sufijoRango = ' | ' + getEmojiRango(rangoRec) + ' ' + getNombreRango(rangoRec);
+        client.say(channel, '@' + username + ' | ' + frutaTexto + ' | 🛡️:' + eArm + ' | 👁️:' + eObs + ' | ⚜️:' + eConq + ' | 💰 $' + recompensaReal.toLocaleString('es-AR') + sufijoRango);
         return;
     }
 
@@ -2652,7 +3265,7 @@ async function procesarMensajeChat(channel, tags, message, self) {
                 client.say(channel, '@' + tags.username + ' Ya tenés fruta.');
                 return;
             }
-            if (user.fruta_pendiente) {
+            if (user.fruta_pendiente && !user.fruta_pendiente.startsWith('meme:')) {
                 client.say(channel, '@' + tags.username + ' Tenés una fruta pendiente. Usá !comer o !rechazar primero.');
                 return;
             }
@@ -2683,8 +3296,10 @@ async function procesarMensajeChat(channel, tags, message, self) {
                 const ultimoUso = cooldowns['fruta_' + username] || 0;
                 const tiempoRestante = COOLDOWN_FRUTA - (ahora - ultimoUso);
                 if (tiempoRestante > 0) {
-                    const min = Math.ceil(tiempoRestante / 60000);
-                    client.say(channel, '@' + tags.username + ' Esperá ' + min + ' min.');
+                    const min = Math.floor(tiempoRestante / 60000);
+                    const seg = Math.floor((tiempoRestante % 60000) / 1000);
+                    const tiempoTxt = min > 0 ? (min + 'm ' + seg + 's') : (seg + 's');
+                    client.say(channel, '@' + tags.username + ' Esperá ' + tiempoTxt + '.');
                     return;
                 }
                 cooldowns['fruta_' + username] = Date.now();
@@ -2727,6 +3342,14 @@ async function procesarMensajeChat(channel, tags, message, self) {
                 }
                 const probExito = puertasDisponibles / TOTAL_PUERTAS_JUEGO;
                 if (Math.random() >= probExito) {
+                    // 40% de las veces que fallás, en vez de nada, sale un meme
+                    if (Math.random() < 0.40) {
+                        const meme = MEMES_FRUTAS[Math.floor(Math.random() * MEMES_FRUTAS.length)];
+                        await updateUsuario(username, { fruta_pendiente: 'meme:' + meme.nombre });
+                        console.log('🍊 Meme encontrado: ' + username + ' → ' + meme.nombre);
+                        client.say(channel, '@' + tags.username + ' ¡Encontraste una ' + meme.nombre + ' ' + meme.emoji + '!');
+                        return;
+                    }
                     client.say(channel, '@' + tags.username + ' No encontraste nada esta vez. Volvé a intentar más tarde.');
                     return;
                 }
@@ -2910,7 +3533,6 @@ async function procesarMensajeChat(channel, tags, message, self) {
             await supabase.from('frutas').update({ disponible: false }).eq('nombre', user.evento_fruta_nombre);
             const msgGanada = '@' + tags.username + ' ' + mensaje + ' 🍎 ¡Obtuviste la ' + user.evento_fruta_nombre + ' ' + emojiFruta + '!';
             client.say(channel, msgGanada);
-            if (canal !== 'op_d_bot') client.say('op_d_bot', msgGanada);
             const { data: afectados } = await supabase.from('usuarios').select('username, twitch_user_id')
                 .eq('evento_fruta_nombre', user.evento_fruta_nombre)
                 .eq('evento_fruta_estado', 'pendiente').neq('username', username);
@@ -2979,6 +3601,18 @@ async function procesarMensajeChat(channel, tags, message, self) {
 
     if (command === '!comer') {
         const user = await getUsuario(username);
+        // Meme pendiente: manejo especial
+        if (user && user.fruta_pendiente && user.fruta_pendiente.startsWith('meme:')) {
+            const nombreMeme = user.fruta_pendiente.slice(5);
+            const meme = MEMES_FRUTAS.find(m => m.nombre === nombreMeme);
+            await updateUsuario(username, { fruta_pendiente: null });
+            if (meme) {
+                client.say(channel, '@' + tags.username + ' ' + meme.comer);
+            } else {
+                client.say(channel, '@' + tags.username + ' Te comiste algo raro.');
+            }
+            return;
+        }
         if (user && user.fruta_pendiente) {
             const frutaConsumida = user.fruta_pendiente;
             const { data: frutaData } = await supabase.from('frutas').select('descripcion, emoji, poder_fruta').eq('nombre', frutaConsumida).single();
@@ -2990,7 +3624,6 @@ async function procesarMensajeChat(channel, tags, message, self) {
             console.log('🍎 Fruta consumida: ' + username + ' → ' + frutaConsumida + (user.fruta ? ' (2da)' : ''));
             const msgComida = '@' + tags.username + ' Consumiste la ' + frutaConsumida + ' ' + ((frutaData && frutaData.emoji) || '') + '.';
             client.say(channel, msgComida);
-            if (canal !== 'op_d_bot') client.say('op_d_bot', msgComida);
 
 
             // Marcar a otros usuarios que tenían la misma fruta pendiente
@@ -3021,6 +3654,18 @@ async function procesarMensajeChat(channel, tags, message, self) {
 
     if (command === '!rechazar') {
         const user = await getUsuario(username);
+        // Meme pendiente: manejo especial
+        if (user && user.fruta_pendiente && user.fruta_pendiente.startsWith('meme:')) {
+            const nombreMeme = user.fruta_pendiente.slice(5);
+            const meme = MEMES_FRUTAS.find(m => m.nombre === nombreMeme);
+            await updateUsuario(username, { fruta_pendiente: null });
+            if (meme) {
+                client.say(channel, '@' + tags.username + ' ' + meme.rechazar);
+            } else {
+                client.say(channel, '@' + tags.username + ' La rechazaste.');
+            }
+            return;
+        }
         if (user && user.fruta_pendiente) {
             await updateUsuario(username, { fruta_pendiente: null });
             client.say(channel, '@' + tags.username + ' Rechazaste la ' + user.fruta_pendiente + '.');
@@ -3085,6 +3730,7 @@ cargarEstadoMantenimiento().then(() => {
 });
 setInterval(ejecutarTimeoutDuelos, 60 * 1000);
 setInterval(lurkChequeoPeriodico, 5 * 60 * 1000);
+setInterval(revisarColiseosExpirados, 60 * 1000);
 
 // Scan inicial de chatters + programación de scans :01, :21, :41
 setTimeout(async () => {
