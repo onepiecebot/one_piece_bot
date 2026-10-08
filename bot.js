@@ -357,14 +357,13 @@ async function getRecompensaReal(user) {
     const valorObs = calcularAporteObservacion(user.observacion || 0, supObs) * FACTOR_RECOMPENSA;
     const valorConq = calcularAporteConquistador(user.conquistador || 0, supConq) * FACTOR_RECOMPENSA;
     // PCFs de frutas
+    // Yami (o sin fruta) no necesita PCF: la rama de Yami en calcularRecompensaFruta
+    // usa valores fijos ($400M / $600M). Fruta normal → 1 query.
+    // fruta_2 solo existe con Yami (regla del juego), y en ese caso no se consulta.
     let pcf1 = 0, pcf2 = 0;
-    if (user.fruta) {
+    if (user.fruta && user.fruta !== 'Yami Yami no Mi') {
         const { data: f1 } = await supabase.from('frutas').select('poder_fruta').eq('nombre', user.fruta).single();
         pcf1 = (f1 && f1.poder_fruta) ? Number(f1.poder_fruta) : 0;
-    }
-    if (user.fruta_2) {
-        const { data: f2 } = await supabase.from('frutas').select('poder_fruta').eq('nombre', user.fruta_2).single();
-        pcf2 = (f2 && f2.poder_fruta) ? Number(f2.poder_fruta) : 0;
     }
     const valorFruta = calcularRecompensaFruta(user.fruta, user.fruta_2, pcf1, pcf2);
     const base = valorArm + valorObs + valorConq + valorFruta;
@@ -413,23 +412,32 @@ async function verificarPenalizacionExplorar(username) {
     }
     // Marcar que chequeé hoy (independiente de si exploró o no)
     penalCache[username] = hoy;
-    await updateUsuario(username, { ultimo_dia_penalizacion: hoy });
-    // Si nunca exploró, no penalizar
+
+    // Caso A: nunca exploró → 1 solo update
     if (!user.ultimo_dia_exploracion) {
-        await updateUsuario(username, { dias_sin_explorar: 0 });
+        await updateUsuario(username, { ultimo_dia_penalizacion: hoy, dias_sin_explorar: 0 });
         return null;
     }
+
     const ultimo = new Date(user.ultimo_dia_exploracion);
     const ahora = new Date(hoy);
     const diffDays = Math.floor((ahora - ultimo) / (1000 * 60 * 60 * 24));
     const expected = Math.max(diffDays - 1, 0);
     const capped = Math.min(expected, 4);
-    if (capped <= (user.dias_sin_explorar || 0)) return null;
+
+    // Caso C: ya estaba al día → solo marcar hoy
+    if (capped <= (user.dias_sin_explorar || 0)) {
+        await updateUsuario(username, { ultimo_dia_penalizacion: hoy });
+        return null;
+    }
+
+    // Caso B: hay penalización → 1 solo update con todo
     const rangoConq = getRangoConquistadorTexto(user.conquistador || 0);
     const base = PENALIZACION_BASES[rangoConq];
     const perdConq = base.conq * capped;
     const perdBerries = base.berries * capped;
     await updateUsuario(username, {
+        ultimo_dia_penalizacion: hoy,
         dias_sin_explorar: capped,
         conquistador: Math.max((user.conquistador || 0) - perdConq, 0),
         recompensa_delta: (user.recompensa_delta || 0) - perdBerries
@@ -680,15 +688,69 @@ function getEscalon(ratio) {
 }
 function redondearBerries(v) { return Math.round(v / 10000) * 10000; }
 
+// Rangos por recompensa — umbrales (extraídos a constantes para facilitar tuning)
+const UMBRAL_YONKO = 3000000000;       // $3B
+const UMBRAL_SICHIBUKAI = 1000000000;  // $1B
+const UMBRAL_SUPERNOVA = 300000000;    // $300M
+const RANKING_SLOTS_MAX = 22;          // 4 yonko + 7 sichibukai + 11 supernova
+
 // Rangos por recompensa (Yonko / Sichibukai / Supernova)
-async function actualizarRangosRecompensa() {
+async function actualizarRangosRecompensa(usernameDisparador) {
+    // PASO 1: leer al disparador (1 query por PK)
+    let disparadorEstaEnRanking = false;
+    let disparadorRecompensa = 0;
+    if (usernameDisparador) {
+        const { data: u } = await supabase
+            .from('usuarios')
+            .select('recompensa_publica')
+            .eq('username', usernameDisparador)
+            .maybeSingle();
+        disparadorRecompensa = (u && u.recompensa_publica) || 0;
+
+        // PASO 2: ¿ya está en el ranking? (1 query por PK)
+        const { data: r } = await supabase
+            .from('ranking_recompensa')
+            .select('username')
+            .eq('username', usernameDisparador)
+            .maybeSingle();
+        disparadorEstaEnRanking = !!r;
+    }
+
+    // PASO 3: skip temprano — no está en ranking y no llega al piso absoluto
+    if (usernameDisparador && !disparadorEstaEnRanking && disparadorRecompensa < UMBRAL_SUPERNOVA) {
+        return null;
+    }
+
+    // PASO 4: leer el ranking actual completo
+    const { data: rankingActual } = await supabase
+        .from('ranking_recompensa')
+        .select('username, rango, recompensa_publica')
+        .order('recompensa_publica', { ascending: false });
+    const rankingActualArr = rankingActual || [];
+
+    // PASO 5: skips por slots/minActual (solo si el disparador no está en el ranking)
+    if (usernameDisparador && !disparadorEstaEnRanking) {
+        const haySlotsLibres = rankingActualArr.length < RANKING_SLOTS_MAX;
+        if (!haySlotsLibres) {
+            const minActual = rankingActualArr[rankingActualArr.length - 1].recompensa_publica || 0;
+            if (disparadorRecompensa <= minActual) return null;
+        }
+    }
+
+    // PASO 6: recalcular candidatos (LIMIT 22, era 60)
     const { data } = await supabase
         .from('usuarios')
         .select('username, recompensa_publica')
-        .gte('recompensa_publica', 300000000)
+        .gte('recompensa_publica', UMBRAL_SUPERNOVA)
         .order('recompensa_publica', { ascending: false })
-        .limit(60);
-    if (!data || data.length === 0) return [];
+        .limit(RANKING_SLOTS_MAX);
+
+    if (!data || data.length === 0) {
+        if (rankingActualArr.length === 0) return [];
+        await supabase.from('ranking_recompensa').delete().neq('username', '___imposible___');
+        return [];
+    }
+
     const yonkos = [];
     const sichibukais = [];
     const supernovas = [];
@@ -696,29 +758,41 @@ async function actualizarRangosRecompensa() {
     // Yonko: top 4, > $3B
     for (const u of pool) {
         if (yonkos.length >= 4) break;
-        if (u.recompensa_publica > 3000000000) yonkos.push(u.username);
+        if (u.recompensa_publica > UMBRAL_YONKO) yonkos.push(u.username);
     }
     pool = pool.filter(u => !yonkos.includes(u.username));
     // Sichibukai: top 7, > $1B
     for (const u of pool) {
         if (sichibukais.length >= 7) break;
-        if (u.recompensa_publica > 1000000000) sichibukais.push(u.username);
+        if (u.recompensa_publica > UMBRAL_SICHIBUKAI) sichibukais.push(u.username);
     }
     pool = pool.filter(u => !sichibukais.includes(u.username));
     // Supernova: top 11, > $300M
     for (const u of pool) {
         if (supernovas.length >= 11) break;
-        if (u.recompensa_publica > 300000000) supernovas.push(u.username);
+        if (u.recompensa_publica > UMBRAL_SUPERNOVA) supernovas.push(u.username);
     }
+
+    const recompensaPorUser = {};
+    for (const u of data) recompensaPorUser[u.username] = u.recompensa_publica;
     const rows = [
-        ...yonkos.map(u => ({ username: u, rango: 'yonko' })),
-        ...sichibukais.map(u => ({ username: u, rango: 'sichibukai' })),
-        ...supernovas.map(u => ({ username: u, rango: 'supernova' }))
+        ...yonkos.map(u => ({ username: u, rango: 'yonko', recompensa_publica: recompensaPorUser[u] || 0 })),
+        ...sichibukais.map(u => ({ username: u, rango: 'sichibukai', recompensa_publica: recompensaPorUser[u] || 0 })),
+        ...supernovas.map(u => ({ username: u, rango: 'supernova', recompensa_publica: recompensaPorUser[u] || 0 }))
     ];
+
+    // PASO 7: skip de escritura si el ranking no cambió
+    const mapActual = {};
+    for (const r of rankingActualArr) mapActual[r.username] = r.rango + '|' + Number(r.recompensa_publica || 0);
+    const mapNuevo = {};
+    for (const r of rows) mapNuevo[r.username] = r.rango + '|' + Number(r.recompensa_publica || 0);
+    const mismoTamano = Object.keys(mapActual).length === Object.keys(mapNuevo).length;
+    const todoIgual = mismoTamano && Object.keys(mapNuevo).every(k => mapActual[k] === mapNuevo[k]);
+    if (todoIgual) return rows;
+
+    // PASO 8: escribir (solo si cambió)
     await supabase.from('ranking_recompensa').delete().neq('username', '___imposible___');
-    if (rows.length > 0) {
-        await supabase.from('ranking_recompensa').insert(rows);
-    }
+    await supabase.from('ranking_recompensa').insert(rows);
     return rows;
 }
 
@@ -2096,54 +2170,99 @@ async function handleWhisper(event) {
         const supArm = await esSupremoArmadura(username);
         const supObs = await esSupremoObservacion(username);
         const supConq = await esSupremoConquistador(username);
+        const lurkInfo = await getLurkStats(username);
+        const duelosHoy = await contarDuelosHoy(username);
+        // ¿Puede buscar fruta?
+        const tieneYami = user.fruta === 'Yami Yami no Mi';
+        const puedeBuscarFruta = !user.fruta || (tieneYami && !user.fruta_2);
+
+        // Armar texto de fruta
         let frutaTexto = '🍎 Ninguna';
         if (user.fruta) {
             const { data: f } = await supabase.from('frutas').select('emoji').eq('nombre', user.fruta).single();
             frutaTexto = '🍎 ' + user.fruta + ' ' + ((f && f.emoji) || '');
+            if (user.fruta_2) {
+                const { data: f2 } = await supabase.from('frutas').select('emoji').eq('nombre', user.fruta_2).single();
+                frutaTexto += ' + ' + user.fruta_2 + ' ' + ((f2 && f2.emoji) || '');
+            }
         }
-        if (user.fruta_2) {
-            const { data: f2 } = await supabase.from('frutas').select('emoji').eq('nombre', user.fruta_2).single();
-            frutaTexto += ' | 🍎 ' + user.fruta_2 + ' ' + ((f2 && f2.emoji) || '');
+
+        const hoyInfo = getFechaHoy();
+        const opUsosHoy = (user.ultimo_op_fecha === hoyInfo) ? (user.op_usos_hoy || 0) : 0;
+        const frutaUsosHoy = (user.ultimo_dia_fruta === hoyInfo) ? (user.fruta_intentos_hoy || 0) : 0;
+
+        // Estado de !fruta (solo si puede tirarlo)
+        let estadoFruta = '';
+        if (puedeBuscarFruta) {
+            if (frutaUsosHoy >= FRUTA_LIMITE_DIARIO) {
+                estadoFruta = ' (' + frutaUsosHoy + '/5 🗓️✅)';
+            } else {
+                const ultimoFrutaTs = cooldowns['fruta_' + username] || 0;
+                const restFruta = COOLDOWN_FRUTA - (Date.now() - ultimoFrutaTs);
+                if (restFruta > 0) {
+                    const m = Math.floor(restFruta / 60000);
+                    const s = Math.floor((restFruta % 60000) / 1000);
+                    estadoFruta = ' (' + frutaUsosHoy + '/5 ⏳ ' + (m > 0 ? (m + 'm ' + s + 's') : (s + 's')) + ')';
+                } else {
+                    estadoFruta = ' (' + frutaUsosHoy + '/5 ⌛✅)';
+                }
+            }
         }
+        frutaTexto += estadoFruta;
+
+        // Estado de !op
+        let opTxt;
+        if (opUsosHoy >= 3) {
+            opTxt = '🎮 !op: ' + opUsosHoy + '/3 🗓️✅';
+        } else {
+            const ultimoOpTs = user.ultimo_op_timestamp ? new Date(user.ultimo_op_timestamp).getTime() : 0;
+            const restOp = (10 * 60 * 1000) - (Date.now() - ultimoOpTs);
+            if (restOp > 0) {
+                const m = Math.floor(restOp / 60000);
+                const s = Math.floor((restOp % 60000) / 1000);
+                opTxt = '🎮 !op: ' + opUsosHoy + '/3 ⏳ ' + (m > 0 ? (m + 'm ' + s + 's') : (s + 's'));
+            } else {
+                opTxt = '🎮 !op: ' + opUsosHoy + '/3 ⌛✅';
+            }
+        }
+
+        // Rangos de haki
         const rangoArm = getRangoArmadura(user.armadura || 0, supArm);
         const rangoObs = getRangoObservacion(user.observacion || 0, supObs);
         const rangoConq = getRangoConquistador(user.conquistador || 0, supConq);
-        let estadoExplorar = 'disponible';
-        if (user.evento_explorar_estado === 'pendiente') estadoExplorar = 'pendiente';
+
+        // Postas
+        const postasHoy = (lurkInfo && lurkInfo.lurk_postas_hoy) || 0;
+        const minLurkHoy = (lurkInfo && lurkInfo.lurk_minutos_hoy) || 0;
+
+        // Explorar
+        let estadoExplorar = '🗺️ disponible';
+        if (user.evento_explorar_estado === 'pendiente') estadoExplorar = '🗺️ pendiente';
         else {
             const cd = await puedeExplorar(user);
-            if (!cd.ok) estadoExplorar = 'usada. Próxima en ' + formatTiempoRestante(cd.restante);
+            if (!cd.ok) estadoExplorar = '🗺️ usada. Próxima en ' + formatTiempoRestante(cd.restante);
         }
+
+        // Recompensa
         const recompensaReal = await getRecompensaReal(user);
         await updateUsuario(username, { recompensa_publica: recompensaReal });
-        // Info de usos y cooldowns
-        const hoyInfo = getFechaHoy();
-        const opUsosHoy = (user.ultimo_op_fecha === hoyInfo) ? (user.op_usos_hoy || 0) : 0;
-        let opTxt = '🎮 !op: ' + opUsosHoy + '/3';
-        const ultimoOpTs = user.ultimo_op_timestamp ? new Date(user.ultimo_op_timestamp).getTime() : 0;
-        const restOp = (10 * 60 * 1000) - (Date.now() - ultimoOpTs);
-        if (restOp > 0) {
-            const m = Math.floor(restOp / 60000);
-            const s = Math.floor((restOp % 60000) / 1000);
-            opTxt += ' | Cooldown: ' + (m > 0 ? (m + 'm ' + s + 's') : (s + 's'));
-        } else {
-            opTxt += ' | Listo ✅';
-        }
-        const frutaUsosHoy = (user.ultimo_dia_fruta === hoyInfo) ? (user.fruta_intentos_hoy || 0) : 0;
-        let frutaTxt = '🍎 !fruta: ' + frutaUsosHoy + '/5';
-        const ultimoFrutaTs = cooldowns['fruta_' + username] || 0;
-        const restFruta = COOLDOWN_FRUTA - (Date.now() - ultimoFrutaTs);
-        if (restFruta > 0) {
-            const m = Math.floor(restFruta / 60000);
-            const s = Math.floor((restFruta % 60000) / 1000);
-            frutaTxt += ' | Cooldown: ' + (m > 0 ? (m + 'm ' + s + 's') : (s + 's'));
-        } else {
-            frutaTxt += ' | Listo ✅';
-        }
         const rangoRecS = await getRangoRecompensa(username);
         let sufijoRangoS = '';
-        if (rangoRecS) sufijoRangoS = ' | ' + getEmojiRango(rangoRecS) + ' ' + getNombreRango(rangoRecS);
-        const mensaje = '📊 Tus stats: ' + frutaTexto + ' | 🛡️ ' + rangoArm.nombre + ' (' + (user.armadura || 0) + ') ' + rangoArm.emoji + ' | 👁️ ' + rangoObs.nombre + ' (' + (user.observacion || 0) + ') ' + rangoObs.emoji + ' | ⚜️ ' + rangoConq.nombre + ' (' + (user.conquistador || 0) + ') ' + rangoConq.emoji + ' | 💰 $' + recompensaReal.toLocaleString('es-AR') + sufijoRangoS + ' | 🗺️ ' + estadoExplorar + '\n' + opTxt + '\n' + frutaTxt;
+        if (rangoRecS) sufijoRangoS = ' ' + getEmojiRango(rangoRecS) + ' ' + getNombreRango(rangoRecS);
+
+        // Armado del mensaje (1 línea)
+        const partes = [
+            frutaTexto,
+            '🛡️ ' + rangoArm.nombre + ' (' + (user.armadura || 0) + ') ' + rangoArm.emoji,
+            '👁️ ' + rangoObs.nombre + ' (' + (user.observacion || 0) + ') ' + rangoObs.emoji,
+            '⚜️ ' + rangoConq.nombre + ' (' + (user.conquistador || 0) + ') ' + rangoConq.emoji,
+            opTxt,
+            '🚩 Postas ' + postasHoy + '/3 (' + minLurkHoy + 'min)',
+            estadoExplorar,
+            '⚔️ Duelos ' + duelosHoy + '/10',
+            '💰 $' + recompensaReal.toLocaleString('es-AR') + sufijoRangoS
+        ];
+        const mensaje = partes.join(' | ');
         await sendWhisper(fromUserId, mensaje);
         return;
     }
@@ -3146,7 +3265,7 @@ async function procesarMensajeChat(channel, tags, message, self) {
         const supConq = await esSupremoConquistador(username);
         const recompensaReal = await getRecompensaReal(user);
         await updateUsuario(username, { recompensa_publica: recompensaReal });
-        await actualizarRangosRecompensa();
+        await actualizarRangosRecompensa(username);
         const rangoRec = await getRangoRecompensa(username);
         let frutaTexto = '🍎 Ninguna';
         const canalDbInfo = canalDb;
@@ -3209,19 +3328,24 @@ async function procesarMensajeChat(channel, tags, message, self) {
                 }
                 if (delta !== 0) msgPenalizacion = '💤 Descuidaste. -' + Math.abs(delta) + ' Armadura.';
                 await updateUsuario(username, { armadura: arm, op_usos_hoy: 0, ultimo_op_fecha: hoy, racha_ops: 0 });
+                user.armadura = arm;
+                user.op_usos_hoy = 0;
+                user.ultimo_op_fecha = hoy;
+                user.racha_ops = 0;
             } else {
                 await updateUsuario(username, { op_usos_hoy: 0, ultimo_op_fecha: hoy });
+                user.op_usos_hoy = 0;
+                user.ultimo_op_fecha = hoy;
             }
         }
-        const userAct = await getUsuario(username);
-        if ((userAct.op_usos_hoy || 0) >= 3) { client.say(channel, 'Límite diario alcanzado.'); return; }
-        const armActual = userAct.armadura || 0;
+        if ((user.op_usos_hoy || 0) >= 3) { client.say(channel, 'Límite diario alcanzado.'); return; }
+        const armActual = user.armadura || 0;
         const eraSupremo = await esSupremoArmadura(username);
         const rangoActual = getRangoArmadura(armActual, eraSupremo);
         const intervalo = getIntervaloTirada(rangoActual.nombre);
         const delta = tiradaAleatoria(intervalo.min, intervalo.max);
         const nuevaArm = Math.max(armActual + delta, 0);
-        const nuevosUsos = (userAct.op_usos_hoy || 0) + 1;
+        const nuevosUsos = (user.op_usos_hoy || 0) + 1;
         const updateData = {
             armadura: nuevaArm, op_usos_hoy: nuevosUsos,
             ultimo_op_fecha: hoy, ultimo_op_timestamp: new Date().toISOString()
@@ -3230,8 +3354,8 @@ async function procesarMensajeChat(channel, tags, message, self) {
         if (nuevosUsos === 3) {
             const bonusDiario = getBonusDiario(rangoActual.nombre);
             mensajesExtra.push('🔥 Diario: +' + bonusDiario);
-            const ultimoDiaRacha = userAct.ultimo_dia_racha || null;
-            let rachaActual = userAct.racha_ops || 0;
+            const ultimoDiaRacha = user.ultimo_dia_racha || null;
+            let rachaActual = user.racha_ops || 0;
             rachaActual = (ultimoDiaRacha === getFechaAyer()) ? rachaActual + 1 : 1;
             const bonusRacha = getBonusRachaOp(rachaActual);
             mensajesExtra.push('🔥 Racha ' + rachaActual + 'd: +' + bonusRacha);
@@ -3244,7 +3368,7 @@ async function procesarMensajeChat(channel, tags, message, self) {
         const rangoFinal = getRangoArmadura(updateData.armadura, ahoraSupremo);
         const texto = getTextoResultadoOp(rangoFinal.nombre, delta);
         let respuesta = '@' + tags.username + ' ' + texto + ' ' + (delta > 0 ? '+' : '') + delta + ' Armadura ' + rangoFinal.emoji;
-        const rangoNotifArm = (userAct.armadura_rango_notificado === null || userAct.armadura_rango_notificado === undefined) ? -1 : userAct.armadura_rango_notificado;
+        const rangoNotifArm = (user.armadura_rango_notificado === null || user.armadura_rango_notificado === undefined) ? -1 : user.armadura_rango_notificado;
         if (rangoFinal.idx > rangoNotifArm) {
             const msg = MENSAJES_RANGO_ARMADURA[rangoFinal.nombre];
             if (msg) respuesta += ' | ' + msg;
