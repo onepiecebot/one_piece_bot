@@ -187,11 +187,11 @@ function normalizarComando(cmd) {
 }
 
 // ============================================
-// SCHEDULER DE PENALIZACIONES (12:05 AR)
+// SCHEDULER DE PENALIZACIONES (3:45 AR)
 // ============================================
 async function schedulerPenalizacionesDiarias() {
     try {
-        // Solo corre si ya pasó las 12:05 AR y no corrió hoy
+        // Solo corre si ya pasó las 3:45 AR y no corrió hoy
         const ahora = new Date();
         const offsetArg = -3 * 60;
         const utc = ahora.getTime() + (ahora.getTimezoneOffset() * 60000);
@@ -3509,7 +3509,7 @@ async function procesarMensajeChat(channel, tags, message, self) {
             updateData.racha_ops = rachaActual;
             updateData.ultimo_dia_racha = hoy;
         }
-        chequearHakiCambio('armadura', userAct.armadura, updateData.armadura);
+        chequearHakiCambio('armadura', user.armadura, updateData.armadura);
         await updateUsuario(username, updateData);
         const ahoraSupremo = await esSupremoArmadura(username);
         const rangoFinal = getRangoArmadura(updateData.armadura, ahoraSupremo);
