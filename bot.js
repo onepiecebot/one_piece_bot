@@ -187,6 +187,77 @@ function normalizarComando(cmd) {
 }
 
 // ============================================
+// SCHEDULER DE PENALIZACIONES (12:05 AR)
+// ============================================
+async function schedulerPenalizacionesDiarias() {
+    try {
+        // Solo corre si ya pasó las 12:05 AR y no corrió hoy
+        const ahora = new Date();
+        const offsetArg = -3 * 60;
+        const utc = ahora.getTime() + (ahora.getTimezoneOffset() * 60000);
+        const argNow = new Date(utc + (offsetArg * 60000));
+        const hora = argNow.getHours();
+        const min = argNow.getMinutes();
+        if (hora < 3 || (hora === 3 && min < 45)) return;
+        const hoy = getFechaHoy();
+        const { data: flag } = await supabase.from('bot_config').select('valor').eq('clave', 'penalizacion_ultimo_run').maybeSingle();
+        if (flag && flag.valor === hoy) return;
+        console.log('⏰ Scheduler penalizaciones: iniciando...');
+        const { data: users } = await supabase.from('usuarios').select('*');
+        if (!users || users.length === 0) {
+            await supabase.from('bot_config').upsert({ clave: 'penalizacion_ultimo_run', valor: hoy });
+            return;
+        }
+        let penOp = 0;
+        let penExp = 0;
+        for (const user of users) {
+            // 1. Penalización !op (si no tiró hoy y tenía usos pendientes)
+            if (user.ultimo_op_fecha !== hoy) {
+                const usosAyer = user.op_usos_hoy || 0;
+                const usosFaltantes = 3 - usosAyer;
+                if (usosFaltantes > 0 && user.ultimo_op_fecha !== null) {
+                    let arm = user.armadura || 0;
+                    let delta = 0;
+                    if (usosAyer === 0 && arm < 20) {
+                        delta = -1;
+                        arm = Math.max(arm - 1, 0);
+                    } else {
+                        for (let i = 0; i < usosFaltantes; i++) {
+                            const rango = getRangoArmadura(arm);
+                            const int = getIntervaloTirada(rango.nombre);
+                            const peor = Math.min(int.min, int.max);
+                            delta += peor;
+                            arm = Math.max(arm + peor, 0);
+                        }
+                    }
+                    chequearHakiCambio('armadura', user.armadura, arm);
+                    await updateUsuario(user.username, {
+                        armadura: arm,
+                        op_usos_hoy: 0,
+                        ultimo_op_fecha: hoy,
+                        racha_ops: 0,
+                        op_delta_pendiente: delta
+                    });
+                    penOp++;
+                } else {
+                    await updateUsuario(user.username, { op_usos_hoy: 0, ultimo_op_fecha: hoy });
+                }
+            }
+            // 2. Penalización explorar (usa la función existente)
+            const result = await verificarPenalizacionExplorar(user.username);
+            if (result) {
+                await updateUsuario(user.username, { explorar_penal_pendiente: result });
+                penExp++;
+            }
+        }
+        await supabase.from('bot_config').upsert({ clave: 'penalizacion_ultimo_run', valor: hoy });
+        console.log('⏰ Scheduler penalizaciones: completado. OP: ' + penOp + ' | Explorar: ' + penExp);
+    } catch (err) {
+        console.error('❌ Error schedulerPenalizacionesDiarias:', err);
+    }
+}
+
+// ============================================
 // COMMIT INFO
 // ============================================
 const RENDER_COMMIT = process.env.RENDER_GIT_COMMIT || null;
@@ -3200,9 +3271,18 @@ async function procesarMensajeChat(channel, tags, message, self) {
 
     if (usaUsuario) {
         try {
-            const penal = await verificarPenalizacionExplorar(username);
-            if (penal) {
-                client.say(channel, '@' + tags.username + ' 💤 No exploraste por ' + penal.dias + ' día(s). Perdiste ' + penal.perdConq + ' Conq y $' + penal.perdBerries.toLocaleString('es-AR'));
+            // 1. Notificación pendiente del scheduler (evita reaplicar)
+            const userP = await getUsuario(username);
+            if (userP && userP.explorar_penal_pendiente) {
+                const p = userP.explorar_penal_pendiente;
+                client.say(channel, '@' + tags.username + ' 💤 No exploraste por ' + p.dias + ' día(s). Perdiste ' + p.perdConq + ' Conq y $' + p.perdBerries.toLocaleString('es-AR'));
+                await updateUsuario(username, { explorar_penal_pendiente: null });
+            } else {
+                // 2. Fallback: chequeo in-line (por si el scheduler no corrió)
+                const penal = await verificarPenalizacionExplorar(username);
+                if (penal) {
+                    client.say(channel, '@' + tags.username + ' 💤 No exploraste por ' + penal.dias + ' día(s). Perdiste ' + penal.perdConq + ' Conq y $' + penal.perdBerries.toLocaleString('es-AR'));
+                }
             }
         } catch (err) { console.error('Error penal:', err); }
     }
@@ -3365,6 +3445,15 @@ async function procesarMensajeChat(channel, tags, message, self) {
         }
         let msgPenalizacion = null;
         const hoy = getFechaHoy();
+        // Si el scheduler ya aplicó la penalización, solo mostramos el aviso
+        if (user.op_delta_pendiente !== null && user.op_delta_pendiente !== undefined) {
+            const deltaPend = user.op_delta_pendiente;
+            if (deltaPend !== 0) {
+                msgPenalizacion = '💤 Descuidaste tu entrenamiento. -' + Math.abs(deltaPend) + ' Armadura.';
+            }
+            await updateUsuario(username, { op_delta_pendiente: null });
+            user.op_delta_pendiente = null;
+        }
         const ultimoDia = user.ultimo_op_fecha || null;
         if (ultimoDia !== hoy) {
             const usosAyer = user.op_usos_hoy || 0;
@@ -3922,6 +4011,7 @@ cargarEstadoMantenimiento().then(() => {
 setInterval(ejecutarTimeoutDuelos, 60 * 1000);
 setInterval(lurkChequeoPeriodico, 5 * 60 * 1000);
 setInterval(revisarColiseosExpirados, 60 * 1000);
+setInterval(schedulerPenalizacionesDiarias, 60 * 60 * 1000);
 
 // Supremos: recálculo inicial al arrancar
 setTimeout(async () => {
