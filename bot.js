@@ -87,7 +87,6 @@ const cooldowns = {};
 const cooldownsLurk = {};
 const cooldownsCanaleson = {};
 const cooldownsOnOff = {};
-const notif5Plazas = { fecha: null, enviado: false };
 
 // Estado de mantenimiento (se lee de bot_config al arrancar, se actualiza al !deploy/!deploylisto)
 let mantenimientoActivo = false;
@@ -436,6 +435,7 @@ async function verificarPenalizacionExplorar(username) {
     const base = PENALIZACION_BASES[rangoConq];
     const perdConq = base.conq * capped;
     const perdBerries = base.berries * capped;
+    chequearHakiCambio('conquistador', user.conquistador, Math.max((user.conquistador || 0) - perdConq, 0));
     await updateUsuario(username, {
         ultimo_dia_penalizacion: hoy,
         dias_sin_explorar: capped,
@@ -446,26 +446,72 @@ async function verificarPenalizacionExplorar(username) {
 }
 
 // ============================================
-// SUPREMOS DINÁMICOS
+// SUPREMOS (top 12 por Haki + cupos según usuarios totales)
 // ============================================
+const SUPREMOS_CACHE_TTL = 30000;
+const SUPREMOS_TOP_LIMITE = 12;
+const GARANTIZADOS_CACHE_TTL = 5 * 60 * 1000;
+let garantizadosCache = { data: [], timestamp: 0 };
 let supremosCacheArm = { data: [], timestamp: 0 };
 let supremosCacheObs = { data: [], timestamp: 0 };
 let supremosCacheConq = { data: [], timestamp: 0 };
-const SUPREMOS_CACHE_TTL = 30000;
-const GARANTIZADOS_CACHE_TTL = 5 * 60 * 1000;
-let garantizadosCache = { data: [], timestamp: 0 };
+// Si un Haki se marca sucio, el scheduler recalcula su tabla en ≤ 30s.
+const hakiSucia = { armadura: false, observacion: false, conquistador: false };
 
-function calcularPlazasPorDedicados(dedicados) {
-    if (dedicados <= 10) return 1;
-    if (dedicados <= 20) return 2;
-    if (dedicados <= 40) return 3;
-    if (dedicados <= 70) return 4;
-    return 5;
+function marcarHakiSucia(haki) {
+    if (haki === 'armadura' || haki === 'observacion' || haki === 'conquistador') {
+        hakiSucia[haki] = true;
+    }
 }
 
-function calcularPlazasPorPuntos(topPuntos) {
-    if (topPuntos < 100) return 0;
-    return 6 + Math.floor((topPuntos - 100) / 50);
+// Marca sucia si el cambio es "relevante":
+// - Estaba o quedó en rango Avanzado o más (90/90/95)
+// - Cruzó la barrera de 100 (en cualquier dirección)
+function chequearHakiCambio(haki, antes, despues) {
+    const a = antes || 0;
+    const d = despues || 0;
+    if (a === d) return;
+    const umbral = (haki === 'conquistador') ? 95 : 90;
+    const antesRel = a >= umbral;
+    const despuesRel = d >= umbral;
+    const cruzo100 = (a < 100 && d >= 100) || (a >= 100 && d < 100);
+    if (antesRel || despuesRel || cruzo100) marcarHakiSucia(haki);
+}
+
+// Cupos según cantidad total de usuarios
+function calcularPlazasSupremos(total) {
+    if (total <= 10) return 1;
+    if (total <= 20) return 2;
+    if (total <= 40) return 3;
+    if (total <= 70) return 4;
+    if (total <= 99) return 5;
+    if (total <= 149) return 6;
+    return 7;
+}
+
+// Recalcula la tabla supremos para un Haki: top 12 usuarios con > 0 puntos
+async function actualizarTablaSupremos(haki) {
+    const { data } = await supabase
+        .from('usuarios')
+        .select('username, ' + haki)
+        .gt(haki, 0)
+        .order(haki, { ascending: false })
+        .limit(SUPREMOS_TOP_LIMITE);
+    const rows = (data || []).map(u => ({
+        haki,
+        username: u.username,
+        puntos: u[haki] || 0,
+        tipo: 'puntos',
+        actualizado: new Date().toISOString()
+    }));
+    await supabase.from('supremos').delete().eq('haki', haki);
+    if (rows.length > 0) {
+        await supabase.from('supremos').insert(rows);
+    }
+    // Invalidar cache de este haki
+    if (haki === 'armadura') supremosCacheArm = { data: [], timestamp: 0 };
+    if (haki === 'observacion') supremosCacheObs = { data: [], timestamp: 0 };
+    if (haki === 'conquistador') supremosCacheConq = { data: [], timestamp: 0 };
 }
 
 async function marcarDiaPerfecto(username) {
@@ -500,62 +546,51 @@ async function getSupremosObservacionGarantizados() {
     return result;
 }
 
-async function getDedicadosHoy() {
-    const { data } = await supabase.from('usuarios').select('username').gt('op_usos_hoy', 0);
-    return (data || []).length;
-}
-
-async function calcularSupremos(campo, cache) {
+// Calcula los Supremos reales de un Haki:
+// 1. Lee los 12 de la tabla.
+// 2. De esos, filtra los que tienen ≥ 100 puntos.
+// 3. Aplica cupos (según total de usuarios en la DB).
+// 4. Para Observación: garantizados entran primero y ocupan cupos.
+// 5. Empates en el corte → entran todos.
+async function calcularSupremos(haki, cache) {
     const ahora = Date.now();
     if (ahora - cache.timestamp < SUPREMOS_CACHE_TTL) return cache.data;
     try {
-        const dedicados = await getDedicadosHoy();
-        const plazasDedicados = calcularPlazasPorDedicados(dedicados);
-        const { data: maxData } = await supabase
-            .from('usuarios').select(campo).order(campo, { ascending: false }).limit(1);
-        const topPuntos = (maxData && maxData[0]) ? (maxData[0][campo] || 0) : 0;
-        const plazasPuntos = calcularPlazasPorPuntos(topPuntos);
-        const totalPlazas = Math.max(plazasDedicados, plazasPuntos);
-        const hoy = getFechaHoy();
-        if (plazasDedicados >= 5 && (notif5Plazas.fecha !== hoy || !notif5Plazas.enviado)) {
-            notif5Plazas.fecha = hoy;
-            notif5Plazas.enviado = true;
-            const dueñoUser = await getUsuario(DUEÑO);
-            if (dueñoUser && dueñoUser.twitch_user_id) {
-                try {
-                    await sendWhisper(dueñoUser.twitch_user_id, '🎉 Se alcanzó 5 plazas de Supremos.');
-                } catch (e) {}
+        // 1. Total usuarios para cupos
+        const { count } = await supabase.from('usuarios').select('*', { count: 'exact', head: true });
+        const plazas = calcularPlazasSupremos(count || 0);
+        // 2. Leer la tabla supremos de ese Haki
+        const { data: tabla } = await supabase
+            .from('supremos')
+            .select('username, puntos')
+            .eq('haki', haki)
+            .order('puntos', { ascending: false });
+        const elegibles = (tabla || []).filter(r => r.puntos >= 100);
+        // 3. Garantizados (solo Observación)
+        let garantizados = [];
+        if (haki === 'observacion') {
+            garantizados = await getSupremosObservacionGarantizados();
+        }
+        // 4. Armar resultado: garantizados primero, después cupos por puntos
+        const result = new Set();
+        for (const g of garantizados) result.add(g.toLowerCase());
+        const cuposRestantes = Math.max(0, plazas - result.size);
+        if (cuposRestantes > 0) {
+            const noGarant = elegibles.filter(r => !result.has(r.username.toLowerCase()));
+            if (noGarant.length > 0) {
+                const corteIdx = Math.min(cuposRestantes, noGarant.length) - 1;
+                const valorCorte = noGarant[corteIdx].puntos;
+                for (const e of noGarant) {
+                    if (e.puntos >= valorCorte) result.add(e.username.toLowerCase());
+                }
             }
         }
-        const { data: topData } = await supabase
-            .from('usuarios').select('username, ' + campo)
-            .gt(campo, 0).order(campo, { ascending: false })
-            .limit(Math.max(totalPlazas * 3, 30));
-        let result = [];
-        if (topData && topData.length > 0) {
-            const elegibles = topData.filter(u => (u[campo] || 0) >= 100);
-            if (elegibles.length > 0) {
-                const corteIdx = Math.min(totalPlazas, elegibles.length) - 1;
-                const valorCorte = elegibles[corteIdx][campo];
-                result = elegibles
-                    .filter(u => (u[campo] || 0) >= valorCorte)
-                    .map(u => u.username.toLowerCase());
-            }
-        }
-        // Supremos garantizados por 20 días perfectos (solo Observación)
-        if (campo === 'observacion') {
-            const garantizados = await getSupremosObservacionGarantizados();
-            if (garantizados.length > 0) {
-                const setResult = new Set(result);
-                for (const g of garantizados) setResult.add(g.toLowerCase());
-                result = Array.from(setResult);
-            }
-        }
-        cache.data = result;
+        const arr = Array.from(result);
+        cache.data = arr;
         cache.timestamp = ahora;
-        return result;
+        return arr;
     } catch (err) {
-        console.error('❌ Error calcularSupremos ' + campo + ':', err);
+        console.error('❌ Error calcularSupremos ' + haki + ':', err);
         return [];
     }
 }
@@ -911,6 +946,7 @@ async function repartirPremiosColiseo(participantes, ordenGanadores) {
         if (!userU) continue;
         const conqNeto = premiosConq[i] - COLISEO_CONQ_ENTRADA;
         const deltaNeto = premiosDelta[i] - COLISEO_DELTA_ENTRADA;
+        chequearHakiCambio('conquistador', userU.conquistador, Math.max((userU.conquistador || 0) + conqNeto, 0));
         await updateUsuario(u, {
             conquistador: Math.max((userU.conquistador || 0) + conqNeto, 0),
             recompensa_delta: (userU.recompensa_delta || 0) + deltaNeto,
@@ -920,6 +956,7 @@ async function repartirPremiosColiseo(participantes, ordenGanadores) {
     for (const p of perdedores) {
         const userP = await getUsuario(p.username);
         if (!userP) continue;
+        chequearHakiCambio('conquistador', userP.conquistador, Math.max((userP.conquistador || 0) - COLISEO_CONQ_ENTRADA, 0));
         await updateUsuario(p.username, {
             conquistador: Math.max((userP.conquistador || 0) - COLISEO_CONQ_ENTRADA, 0),
             recompensa_delta: (userP.recompensa_delta || 0) - COLISEO_DELTA_ENTRADA,
@@ -1354,9 +1391,14 @@ async function lurkCerrarBloque(username) {
         lurk_ultimo_chequeo: new Date().toISOString(),
         minutos_lurk_total: (lurk.minutos_lurk_total || 0) + minutosReales
     });
+    const obsAntesLurk = user.observacion || 0;
     if (ptsNuevos !== 0 || minutosReales > 0) await agregarPuntosObservacion(username, ptsNuevos, minutosReales);
     if (minutosReales > 0) {
         await updateUsuario(username, { minutos_lurk: (user.minutos_lurk || 0) + minutosReales });
+    }
+    if (ptsNuevos !== 0) {
+        const userPostObs = await getUsuario(username);
+        if (userPostObs) chequearHakiCambio('observacion', obsAntesLurk, userPostObs.observacion);
     }
     // Si acaba de llegar a 3 postas y ya canjeó el avistamiento → día perfecto
     if (postasNuevas >= 3 && postasPrev < 3 && lurk.lurk_npc_canjeado_hoy) {
@@ -1715,7 +1757,10 @@ async function procesarPersonaje(username, nombreIngresado, fromUserId) {
     if (ingresado === correcto) {
         await updateLurkStats(username, { lurk_npc_canjeado_hoy: true });
         if ((lurk.lurk_postas_hoy || 0) >= 3) {
+            const obsAntesPersonaje = (await getUsuario(username) || {}).observacion || 0;
             await agregarPuntosObservacion(username, 3, 0);
+            const userPostPersonaje = await getUsuario(username);
+            if (userPostPersonaje) chequearHakiCambio('observacion', obsAntesPersonaje, userPostPersonaje.observacion);
             await updateLurkStats(username, { lurk_puntos_hoy: (lurk.lurk_puntos_hoy || 0) + 3 });
             await marcarDiaPerfecto(username);
             console.log('🌟 Día perfecto marcado: ' + username);
@@ -1727,7 +1772,10 @@ async function procesarPersonaje(username, nombreIngresado, fromUserId) {
         }
     } else {
         // Fallo: -1 inmediato. No marca canjeado (permite reintentar en la ventana).
+        const obsAntesFallo = (await getUsuario(username) || {}).observacion || 0;
         await agregarPuntosObservacion(username, -1, 0);
+        const userPostFallo = await getUsuario(username);
+        if (userPostFallo) chequearHakiCambio('observacion', obsAntesFallo, userPostFallo.observacion);
         await updateLurkStats(username, { lurk_puntos_hoy: Math.max(0, (lurk.lurk_puntos_hoy || 0) - 1) });
         console.log('👁️ NPC intento fallido: ' + username + ' → -1');
         await sendWhisper(fromUserId, '❌ Ese no era. -1 de Haki de Observación.');
@@ -2412,6 +2460,7 @@ async function handleWhisper(event) {
         const rachaExpl = await calcularBonusRachaExplorar(user);
         const msgRachaExpl = rachaExpl.yaContado ? '' : ' | 🔥 Racha ' + rachaExpl.racha + 'd: +' + rachaExpl.bonus;
         const castigo = Math.max(Math.ceil(op.castigo_conq * 0.1), 1);
+        chequearHakiCambio('conquistador', user.conquistador, Math.max((user.conquistador || 0) - castigo, 0) + rachaExpl.bonus);
         await updateUsuario(username, {
             conquistador: Math.max((user.conquistador || 0) - castigo, 0) + rachaExpl.bonus,
             evento_explorar_estado: null, evento_explorar_fase: null, evento_explorar_dificultad: null,
@@ -2437,6 +2486,7 @@ async function handleWhisper(event) {
         const rachaExpl = await calcularBonusRachaExplorar(user);
         const msgRachaExpl = rachaExpl.yaContado ? '' : ' | 🔥 Racha ' + rachaExpl.racha + 'd: +' + rachaExpl.bonus;
         if (op.victoria) {
+            chequearHakiCambio('conquistador', user.conquistador, (user.conquistador || 0) + op.recompensa_conq + rachaExpl.bonus);
             await updateUsuario(username, {
                 conquistador: (user.conquistador || 0) + op.recompensa_conq + rachaExpl.bonus,
                 recompensa_delta: (user.recompensa_delta || 0) + op.recompensa_berries,
@@ -2446,6 +2496,7 @@ async function handleWhisper(event) {
             });
             await sendWhisper(fromUserId, msgCtx + '🏆 ¡Victoria! Derrotaste a ' + op.npc + '. +' + op.recompensa_conq + ' Conq. +$' + op.recompensa_berries.toLocaleString('es-AR') + msgRachaExpl);
         } else {
+            chequearHakiCambio('conquistador', user.conquistador, Math.max((user.conquistador || 0) - op.castigo_conq, 0) + rachaExpl.bonus);
             await updateUsuario(username, {
                 conquistador: Math.max((user.conquistador || 0) - op.castigo_conq, 0) + rachaExpl.bonus,
                 recompensa_delta: (user.recompensa_delta || 0) - op.castigo_berries,
@@ -2479,6 +2530,7 @@ async function handleWhisper(event) {
             evento_explorar_pcf_npc: null, evento_explorar_comandos: null, evento_explorar_opciones: null
         };
         updateData.conquistador = Math.max((user.conquistador || 0) - castigo, 0) + rachaExpl.bonus;
+        chequearHakiCambio('conquistador', user.conquistador, updateData.conquistador);
         await updateUsuario(username, updateData);
         if (tieneHuidaEspecial) {
             await sendWhisper(fromUserId, npcData.texto_huida + msgRachaExpl);
@@ -2940,6 +2992,8 @@ async function procesarAceptarDuelo(username, fromUserId, esSusurro, chatChannel
         // Cuánto pierde realmente el perdedor (nunca más de lo que tiene, mínimo 0)
         const perdidaReal = Math.min(monto, Math.max(0, deltaPerd));
         if (ganadorEsRetador) {
+            chequearHakiCambio('conquistador', retadorUser.conquistador, (retadorUser.conquistador || 0) + conqCambio);
+            chequearHakiCambio('conquistador', retadoUser.conquistador, Math.max((retadoUser.conquistador || 0) - conqCambio, 0));
             await updateUsuario(retador, {
                 recompensa_delta: (retadorUser.recompensa_delta || 0) + monto,
                 conquistador: (retadorUser.conquistador || 0) + conqCambio
@@ -2949,6 +3003,8 @@ async function procesarAceptarDuelo(username, fromUserId, esSusurro, chatChannel
                 conquistador: Math.max((retadoUser.conquistador || 0) - conqCambio, 0)
             });
         } else {
+            chequearHakiCambio('conquistador', retadoUser.conquistador, (retadoUser.conquistador || 0) + conqCambio);
+            chequearHakiCambio('conquistador', retadorUser.conquistador, Math.max((retadorUser.conquistador || 0) - conqCambio, 0));
             await updateUsuario(retado, {
                 recompensa_delta: (retadoUser.recompensa_delta || 0) + monto,
                 conquistador: (retadoUser.conquistador || 0) + conqCambio
@@ -3326,7 +3382,8 @@ async function procesarMensajeChat(channel, tags, message, self) {
                         arm = Math.max(arm + peor, 0);
                     }
                 }
-                if (delta !== 0) msgPenalizacion = '💤 Descuidaste. -' + Math.abs(delta) + ' Armadura.';
+                if (delta !== 0) msgPenalizacion = '💤 Descuidaste tu entrenamiento. -' + Math.abs(delta) + ' Armadura.';
+                chequearHakiCambio('armadura', user.armadura, arm);
                 await updateUsuario(username, { armadura: arm, op_usos_hoy: 0, ultimo_op_fecha: hoy, racha_ops: 0 });
                 user.armadura = arm;
                 user.op_usos_hoy = 0;
@@ -3363,6 +3420,7 @@ async function procesarMensajeChat(channel, tags, message, self) {
             updateData.racha_ops = rachaActual;
             updateData.ultimo_dia_racha = hoy;
         }
+        chequearHakiCambio('armadura', userAct.armadura, updateData.armadura);
         await updateUsuario(username, updateData);
         const ahoraSupremo = await esSupremoArmadura(username);
         const rangoFinal = getRangoArmadura(updateData.armadura, ahoraSupremo);
@@ -3652,6 +3710,7 @@ async function procesarMensajeChat(channel, tags, message, self) {
             const updateFrutaData = user.fruta
                 ? { fruta_2: user.evento_fruta_nombre }
                 : { fruta: user.evento_fruta_nombre };
+            chequearHakiCambio('conquistador', user.conquistador, (user.conquistador || 0) + recConq);
             await updateUsuario(username, {
                 conquistador: (user.conquistador || 0) + recConq,
                 recompensa_delta: (user.recompensa_delta || 0) + recBerries,
@@ -3697,6 +3756,7 @@ async function procesarMensajeChat(channel, tags, message, self) {
                 castigoConq = Math.max(Math.round(castExplorar.conq * 0.35), 1);
                 castigoBerries = Math.max(redondearBonito(castExplorar.berries * 0.35), 100000);
             }
+            chequearHakiCambio('conquistador', user.conquistador, Math.max((user.conquistador || 0) - castigoConq, 0));
             await updateUsuario(username, {
                 conquistador: Math.max((user.conquistador || 0) - castigoConq, 0),
                 recompensa_delta: (user.recompensa_delta || 0) - castigoBerries,
@@ -3828,6 +3888,7 @@ async function procesarMensajeChat(channel, tags, message, self) {
         if (!user) return;
         const actual = user[info.campo] || 0;
         const nuevo = info.signo > 0 ? actual + cantidad : Math.max(actual - cantidad, 0);
+        chequearHakiCambio(info.campo, actual, nuevo);
         await updateUsuario(target, { [info.campo]: nuevo });
         console.log('🔧 Admin: ' + username + ' ' + (info.signo > 0 ? 'sumó' : 'restó') + ' ' + cantidad + ' ' + info.nombre + ' a ' + target);
         client.say(channel, '@' + tags.username + ' ' + (info.signo > 0 ? 'Sumado' : 'Restado') + ' ' + cantidad + ' ' + info.nombre + ' a @' + target + '. Ahora: ' + nuevo);
@@ -3861,6 +3922,29 @@ cargarEstadoMantenimiento().then(() => {
 setInterval(ejecutarTimeoutDuelos, 60 * 1000);
 setInterval(lurkChequeoPeriodico, 5 * 60 * 1000);
 setInterval(revisarColiseosExpirados, 60 * 1000);
+
+// Supremos: recálculo inicial al arrancar
+setTimeout(async () => {
+    try {
+        await actualizarTablaSupremos('armadura');
+        await actualizarTablaSupremos('observacion');
+        await actualizarTablaSupremos('conquistador');
+        console.log('🏆 Tabla supremos inicializada.');
+    } catch (e) { console.error('Error inicializando supremos:', e); }
+}, 5000);
+
+// Supremos: scheduler cada 30s (recalcula solo Hakis marcados sucios)
+setInterval(async () => {
+    try {
+        for (const haki of ['armadura', 'observacion', 'conquistador']) {
+            if (hakiSucia[haki]) {
+                hakiSucia[haki] = false;
+                await actualizarTablaSupremos(haki);
+                console.log('🏆 Tabla supremos actualizada: ' + haki);
+            }
+        }
+    } catch (e) { console.error('Error scheduler supremos:', e); }
+}, 30 * 1000);
 
 // Scan inicial de chatters + programación de scans :01, :21, :41
 setTimeout(async () => {
