@@ -872,7 +872,7 @@ async function actualizarRangosRecompensa(usernameDisparador) {
     // Shichibukai: top 7, > $1B
     for (const u of pool) {
         if (shichibukais.length >= 7) break;
-        if (u.recompensa_publica > UMBRAL_ShICHIBUKAI) shichibukais.push(u.username);
+        if (u.recompensa_publica > UMBRAL_SHICHIBUKAI) shichibukais.push(u.username);
     }
     pool = pool.filter(u => !shichibukais.includes(u.username));
     // Supernova: top 11, > $300M
