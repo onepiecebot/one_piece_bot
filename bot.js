@@ -798,11 +798,11 @@ function redondearBerries(v) { return Math.round(v / 10000) * 10000; }
 
 // Rangos por recompensa — umbrales (extraídos a constantes para facilitar tuning)
 const UMBRAL_YONKO = 3000000000;       // $3B
-const UMBRAL_SICHIBUKAI = 1000000000;  // $1B
+const UMBRAL_SHICHIBUKAI = 1000000000;  // $1B
 const UMBRAL_SUPERNOVA = 300000000;    // $300M
-const RANKING_SLOTS_MAX = 22;          // 4 yonko + 7 sichibukai + 11 supernova
+const RANKING_SLOTS_MAX = 22;          // 4 yonko + 7 shichibukai + 11 supernova
 
-// Rangos por recompensa (Yonko / Sichibukai / Supernova)
+// Rangos por recompensa (Yonko / Shichibukai / Supernova)
 async function actualizarRangosRecompensa(usernameDisparador) {
     // PASO 1: leer al disparador (1 query por PK)
     let disparadorEstaEnRanking = false;
@@ -860,7 +860,7 @@ async function actualizarRangosRecompensa(usernameDisparador) {
     }
 
     const yonkos = [];
-    const sichibukais = [];
+    const shichibukais = [];
     const supernovas = [];
     let pool = [...data];
     // Yonko: top 4, > $3B
@@ -869,12 +869,12 @@ async function actualizarRangosRecompensa(usernameDisparador) {
         if (u.recompensa_publica > UMBRAL_YONKO) yonkos.push(u.username);
     }
     pool = pool.filter(u => !yonkos.includes(u.username));
-    // Sichibukai: top 7, > $1B
+    // Shichibukai: top 7, > $1B
     for (const u of pool) {
-        if (sichibukais.length >= 7) break;
-        if (u.recompensa_publica > UMBRAL_SICHIBUKAI) sichibukais.push(u.username);
+        if (shichibukais.length >= 7) break;
+        if (u.recompensa_publica > UMBRAL_ShICHIBUKAI) shichibukais.push(u.username);
     }
-    pool = pool.filter(u => !sichibukais.includes(u.username));
+    pool = pool.filter(u => !shichibukais.includes(u.username));
     // Supernova: top 11, > $300M
     for (const u of pool) {
         if (supernovas.length >= 11) break;
@@ -885,7 +885,7 @@ async function actualizarRangosRecompensa(usernameDisparador) {
     for (const u of data) recompensaPorUser[u.username] = u.recompensa_publica;
     const rows = [
         ...yonkos.map(u => ({ username: u, rango: 'yonko', recompensa_publica: recompensaPorUser[u] || 0 })),
-        ...sichibukais.map(u => ({ username: u, rango: 'sichibukai', recompensa_publica: recompensaPorUser[u] || 0 })),
+        ...shichibukais.map(u => ({ username: u, rango: 'shichibukai', recompensa_publica: recompensaPorUser[u] || 0 })),
         ...supernovas.map(u => ({ username: u, rango: 'supernova', recompensa_publica: recompensaPorUser[u] || 0 }))
     ];
 
@@ -912,14 +912,14 @@ async function getRangoRecompensa(username) {
 
 function getEmojiRango(rango) {
     if (rango === 'yonko') return '🏴‍☠️👑';
-    if (rango === 'sichibukai') return '🏴‍☠️⚔️🌊';
+    if (rango === 'shichibukai') return '🏴‍☠️⚔️🌊';
     if (rango === 'supernova') return '🏴‍☠️💫';
     return '';
 }
 
 function getNombreRango(rango) {
     if (rango === 'yonko') return 'Yonko';
-    if (rango === 'sichibukai') return 'Sichibukai';
+    if (rango === 'shichibukai') return 'Shichibukai';
     if (rango === 'supernova') return 'Supernova';
     return '';
 }
@@ -2263,6 +2263,12 @@ async function handleWhisper(event) {
         return;
     }
 
+    // !op
+    if (command === '!op') {
+        await procesarOp(username, fromUserLogin, fromUserId, true, null);
+        return;
+    }
+
     // !observacion
     if (command === '!observacion') {
         if (!cooldownsLurk[username]) cooldownsLurk[username] = {};
@@ -2940,6 +2946,107 @@ async function procesarColiseo(username, canal, channel) {
     }
 }
 
+async function procesarOp(username, displayName, fromUserId, esSusurro, chatChannel) {
+    const responder = async (msg) => {
+        if (esSusurro) await sendWhisper(fromUserId, msg);
+        else client.say(chatChannel, msg);
+    };
+    const user = await getUsuario(username);
+    if (!user) return;
+    const ahora = Date.now();
+    const ultimoTs = user.ultimo_op_timestamp ? new Date(user.ultimo_op_timestamp).getTime() : 0;
+    const tiempoRestante = (10 * 60 * 1000) - (ahora - ultimoTs);
+    if (tiempoRestante > 0) {
+        const min = Math.floor(tiempoRestante / 60000);
+        const seg = Math.floor((tiempoRestante % 60000) / 1000);
+        await responder('⏳ Faltan ' + min + 'm ' + seg + 's para !op.');
+        return;
+    }
+    let msgPenalizacion = null;
+    const hoy = getFechaHoy();
+    // Si el scheduler ya aplicó la penalización, solo mostramos el aviso
+    if (user.op_delta_pendiente !== null && user.op_delta_pendiente !== undefined) {
+        const deltaPend = user.op_delta_pendiente;
+        if (deltaPend !== 0) {
+            msgPenalizacion = '💤 Descuidaste tu entrenamiento. -' + Math.abs(deltaPend) + ' Armadura.';
+        }
+        await updateUsuario(username, { op_delta_pendiente: null });
+        user.op_delta_pendiente = null;
+    }
+    const ultimoDia = user.ultimo_op_fecha || null;
+    if (ultimoDia !== hoy) {
+        const usosAyer = user.op_usos_hoy || 0;
+        const usosFaltantes = 3 - usosAyer;
+        if (usosFaltantes > 0 && ultimoDia !== null) {
+            let arm = user.armadura || 0;
+            let delta = 0;
+            if (usosAyer === 0 && arm < 20) { delta = -1; arm = Math.max(arm - 1, 0); }
+            else {
+                for (let i = 0; i < usosFaltantes; i++) {
+                    const rango = getRangoArmadura(arm);
+                    const int = getIntervaloTirada(rango.nombre);
+                    const peor = Math.min(int.min, int.max);
+                    delta += peor;
+                    arm = Math.max(arm + peor, 0);
+                }
+            }
+            if (delta !== 0) msgPenalizacion = '💤 Descuidaste tu entrenamiento. -' + Math.abs(delta) + ' Armadura.';
+            chequearHakiCambio('armadura', user.armadura, arm);
+            await updateUsuario(username, { armadura: arm, op_usos_hoy: 0, ultimo_op_fecha: hoy, racha_ops: 0 });
+            user.armadura = arm;
+            user.op_usos_hoy = 0;
+            user.ultimo_op_fecha = hoy;
+            user.racha_ops = 0;
+        } else {
+            await updateUsuario(username, { op_usos_hoy: 0, ultimo_op_fecha: hoy });
+            user.op_usos_hoy = 0;
+            user.ultimo_op_fecha = hoy;
+        }
+    }
+    if ((user.op_usos_hoy || 0) >= 3) { await responder('Límite diario alcanzado.'); return; }
+    const armActual = user.armadura || 0;
+    const eraSupremo = await esSupremoArmadura(username);
+    const rangoActual = getRangoArmadura(armActual, eraSupremo);
+    const intervalo = getIntervaloTirada(rangoActual.nombre);
+    const delta = tiradaAleatoria(intervalo.min, intervalo.max);
+    const nuevaArm = Math.max(armActual + delta, 0);
+    const nuevosUsos = (user.op_usos_hoy || 0) + 1;
+    const updateData = {
+        armadura: nuevaArm, op_usos_hoy: nuevosUsos,
+        ultimo_op_fecha: hoy, ultimo_op_timestamp: new Date().toISOString()
+    };
+    const mensajesExtra = [];
+    if (nuevosUsos === 3) {
+        const bonusDiario = getBonusDiario(rangoActual.nombre);
+        mensajesExtra.push('🔥 Diario: +' + bonusDiario);
+        const ultimoDiaRacha = user.ultimo_dia_racha || null;
+        let rachaActual = user.racha_ops || 0;
+        rachaActual = (ultimoDiaRacha === getFechaAyer()) ? rachaActual + 1 : 1;
+        const bonusRacha = getBonusRachaOp(rachaActual);
+        mensajesExtra.push('🔥 Racha ' + rachaActual + 'd: +' + bonusRacha);
+        updateData.armadura = nuevaArm + bonusDiario + bonusRacha;
+        updateData.racha_ops = rachaActual;
+        updateData.ultimo_dia_racha = hoy;
+    }
+    chequearHakiCambio('armadura', user.armadura, updateData.armadura);
+    await updateUsuario(username, updateData);
+    const ahoraSupremo = await esSupremoArmadura(username);
+    const rangoFinal = getRangoArmadura(updateData.armadura, ahoraSupremo);
+    const texto = getTextoResultadoOp(rangoFinal.nombre, delta);
+    let respuesta = texto + ' ' + (delta > 0 ? '+' : '') + delta + ' Armadura ' + rangoFinal.emoji;
+    if (!esSusurro) respuesta = '@' + displayName + ' ' + respuesta;
+    const rangoNotifArm = (user.armadura_rango_notificado === null || user.armadura_rango_notificado === undefined) ? -1 : user.armadura_rango_notificado;
+    if (rangoFinal.idx > rangoNotifArm) {
+        const msg = MENSAJES_RANGO_ARMADURA[rangoFinal.nombre];
+        if (msg) respuesta += ' | ' + msg;
+        await updateUsuario(username, { armadura_rango_notificado: rangoFinal.idx });
+        console.log('⬆️ Rango: ' + username + ' → Armadura ' + rangoFinal.nombre);
+    }
+    if (mensajesExtra.length > 0) respuesta += ' | ' + mensajesExtra.join(' | ');
+    if (msgPenalizacion) respuesta = msgPenalizacion + ' | ' + respuesta;
+    await responder(respuesta);
+}
+
 async function procesarRetar(username, targetRaw, fromUserId, esSusurro, chatChannel) {
     const target = targetRaw.replace('@', '').toLowerCase();
     const responder = async (msg) => {
@@ -3450,99 +3557,7 @@ async function procesarMensajeChat(channel, tags, message, self) {
     }
 
     if (command === '!op') {
-        const user = await getUsuario(username);
-        if (!user) return;
-        const ahora = Date.now();
-        const ultimoTs = user.ultimo_op_timestamp ? new Date(user.ultimo_op_timestamp).getTime() : 0;
-        const tiempoRestante = (10 * 60 * 1000) - (ahora - ultimoTs);
-        if (tiempoRestante > 0) {
-            const min = Math.floor(tiempoRestante / 60000);
-            const seg = Math.floor((tiempoRestante % 60000) / 1000);
-            client.say(channel, '⏳ Faltan ' + min + 'm ' + seg + 's para !op.');
-            return;
-        }
-        let msgPenalizacion = null;
-        const hoy = getFechaHoy();
-        // Si el scheduler ya aplicó la penalización, solo mostramos el aviso
-        if (user.op_delta_pendiente !== null && user.op_delta_pendiente !== undefined) {
-            const deltaPend = user.op_delta_pendiente;
-            if (deltaPend !== 0) {
-                msgPenalizacion = '💤 Descuidaste tu entrenamiento. -' + Math.abs(deltaPend) + ' Armadura.';
-            }
-            await updateUsuario(username, { op_delta_pendiente: null });
-            user.op_delta_pendiente = null;
-        }
-        const ultimoDia = user.ultimo_op_fecha || null;
-        if (ultimoDia !== hoy) {
-            const usosAyer = user.op_usos_hoy || 0;
-            const usosFaltantes = 3 - usosAyer;
-            if (usosFaltantes > 0 && ultimoDia !== null) {
-                let arm = user.armadura || 0;
-                let delta = 0;
-                if (usosAyer === 0 && arm < 20) { delta = -1; arm = Math.max(arm - 1, 0); }
-                else {
-                    for (let i = 0; i < usosFaltantes; i++) {
-                        const rango = getRangoArmadura(arm);
-                        const int = getIntervaloTirada(rango.nombre);
-                        const peor = Math.min(int.min, int.max);
-                        delta += peor;
-                        arm = Math.max(arm + peor, 0);
-                    }
-                }
-                if (delta !== 0) msgPenalizacion = '💤 Descuidaste tu entrenamiento. -' + Math.abs(delta) + ' Armadura.';
-                chequearHakiCambio('armadura', user.armadura, arm);
-                await updateUsuario(username, { armadura: arm, op_usos_hoy: 0, ultimo_op_fecha: hoy, racha_ops: 0 });
-                user.armadura = arm;
-                user.op_usos_hoy = 0;
-                user.ultimo_op_fecha = hoy;
-                user.racha_ops = 0;
-            } else {
-                await updateUsuario(username, { op_usos_hoy: 0, ultimo_op_fecha: hoy });
-                user.op_usos_hoy = 0;
-                user.ultimo_op_fecha = hoy;
-            }
-        }
-        if ((user.op_usos_hoy || 0) >= 3) { client.say(channel, 'Límite diario alcanzado.'); return; }
-        const armActual = user.armadura || 0;
-        const eraSupremo = await esSupremoArmadura(username);
-        const rangoActual = getRangoArmadura(armActual, eraSupremo);
-        const intervalo = getIntervaloTirada(rangoActual.nombre);
-        const delta = tiradaAleatoria(intervalo.min, intervalo.max);
-        const nuevaArm = Math.max(armActual + delta, 0);
-        const nuevosUsos = (user.op_usos_hoy || 0) + 1;
-        const updateData = {
-            armadura: nuevaArm, op_usos_hoy: nuevosUsos,
-            ultimo_op_fecha: hoy, ultimo_op_timestamp: new Date().toISOString()
-        };
-        const mensajesExtra = [];
-        if (nuevosUsos === 3) {
-            const bonusDiario = getBonusDiario(rangoActual.nombre);
-            mensajesExtra.push('🔥 Diario: +' + bonusDiario);
-            const ultimoDiaRacha = user.ultimo_dia_racha || null;
-            let rachaActual = user.racha_ops || 0;
-            rachaActual = (ultimoDiaRacha === getFechaAyer()) ? rachaActual + 1 : 1;
-            const bonusRacha = getBonusRachaOp(rachaActual);
-            mensajesExtra.push('🔥 Racha ' + rachaActual + 'd: +' + bonusRacha);
-            updateData.armadura = nuevaArm + bonusDiario + bonusRacha;
-            updateData.racha_ops = rachaActual;
-            updateData.ultimo_dia_racha = hoy;
-        }
-        chequearHakiCambio('armadura', user.armadura, updateData.armadura);
-        await updateUsuario(username, updateData);
-        const ahoraSupremo = await esSupremoArmadura(username);
-        const rangoFinal = getRangoArmadura(updateData.armadura, ahoraSupremo);
-        const texto = getTextoResultadoOp(rangoFinal.nombre, delta);
-        let respuesta = '@' + tags.username + ' ' + texto + ' ' + (delta > 0 ? '+' : '') + delta + ' Armadura ' + rangoFinal.emoji;
-        const rangoNotifArm = (user.armadura_rango_notificado === null || user.armadura_rango_notificado === undefined) ? -1 : user.armadura_rango_notificado;
-        if (rangoFinal.idx > rangoNotifArm) {
-            const msg = MENSAJES_RANGO_ARMADURA[rangoFinal.nombre];
-            if (msg) respuesta += ' | ' + msg;
-            await updateUsuario(username, { armadura_rango_notificado: rangoFinal.idx });
-            console.log('⬆️ Rango: ' + username + ' → Armadura ' + rangoFinal.nombre);
-        }
-        if (mensajesExtra.length > 0) respuesta += ' | ' + mensajesExtra.join(' | ');
-        if (msgPenalizacion) respuesta = msgPenalizacion + ' | ' + respuesta;
-        client.say(channel, respuesta);
+        await procesarOp(username, tags.username, null, false, channel);
         return;
     }
 
