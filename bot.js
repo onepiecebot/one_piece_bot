@@ -1882,7 +1882,7 @@ async function procesarPersonaje(username, nombreIngresado, fromUserId) {
 // ============================================
 // AYUDA
 // ============================================
-const AYUDA_MENU = '📖 AYUDA op_d_bot — 💬 !ayudachat → Comandos de chat — 📩 !ayudasusurro → Comandos de const AYUDA_MENU = '📖 AYUDA op_d_bot — 💬 !ayudachat → Comandos de chat — 📩 !ayudasusurro → Comandos de susurro — 🔍 !ayuda <tema> → Detalle de un tema. Temas: observacion, armadura, conquistador, explorar, fruta, duelos, infoop, rangos, recompensas, coliseo';
+const AYUDA_MENU = '📖 AYUDA op_d_bot — 💬 !ayudachat → Comandos de chat — 📩 !ayudasusurro → Comandos de susurro — 🔍 !ayuda <tema> → Detalle de un tema. Temas: observacion, armadura, conquistador, explorar, fruta, duelos, infoop, rangos, recompensas, coliseo';
 
 const AYUDA_TEMAS = {
     observacion: '📡 HAKI DE OBSERVACIÓN\n' +
