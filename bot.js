@@ -42,7 +42,7 @@ const LURK_LIVE_MINIMO_2H = 120;
 const NPC_VENTANA_MINUTOS = 10;
 
 // Coliseo
-const COLISEO_VENTANA_MINUTOS = 10;
+const COLISEO_VENTANA_MINUTOS = 5;
 const COLISEO_DELTA_ENTRADA = 10000000; // $10M
 const COLISEO_CONQ_ENTRADA = 1;
 const COLISEO_PROB_MIN = 0.15; // si el más débil tiene menos de 15%, no pelean (nadie supera 85%)
@@ -1882,7 +1882,7 @@ async function procesarPersonaje(username, nombreIngresado, fromUserId) {
 // ============================================
 // AYUDA
 // ============================================
-const AYUDA_MENU = '📖 AYUDA op_d_bot — 💬 !ayudachat → Comandos de chat — 📩 !ayudasusurro → Comandos de susurro — 🔍 !ayuda <tema> → Detalle de un tema. Temas: observacion, armadura, conquistador, explorar, fruta, duelos, infoop, rangos, recompensas';
+const AYUDA_MENU = '📖 AYUDA op_d_bot — 💬 !ayudachat → Comandos de chat — 📩 !ayudasusurro → Comandos de const AYUDA_MENU = '📖 AYUDA op_d_bot — 💬 !ayudachat → Comandos de chat — 📩 !ayudasusurro → Comandos de susurro — 🔍 !ayuda <tema> → Detalle de un tema. Temas: observacion, armadura, conquistador, explorar, fruta, duelos, infoop, rangos, recompensas, coliseo';
 
 const AYUDA_TEMAS = {
     observacion: '📡 HAKI DE OBSERVACIÓN\n' +
@@ -1934,7 +1934,14 @@ const AYUDA_TEMAS = {
     recompensas: '🏴‍☠️💰 RECOMPENSAS\n' +
         'Tu recompensa crece con tus stats y con lo que ganás (o perdés) en eventos.\n' +
         '• En chat: se actualiza tu recompensa pública (la que ven otros).\n' +
-        '• Por susurro: ves tu recompensa real siempre actualizada.'
+        '• Por susurro: ves tu recompensa real siempre actualizada.',
+    coliseo: '🏟️ COLISEO\n' +
+        'Se abre con !coliseo (solo el streamer del canal o el dueño global pueden abrirlo).\n' +
+        '• Al abrirse, tenés unos minutos para inscribirte con !coliseo.\n' +
+        '• Cuantos más entren, mejor. El ganador se lleva la gloria y una buena tajada.\n' +
+        '• Si son 2, es un 1v1. Si son 3 o más, pelean todos contra todos.\n' +
+        '• Entrar tiene un costo (reputación y berries). Los ganadores se reparten el botín.\n' +
+        '• Mientras estás en el Coliseo no podés usar !op, !fruta, !comer, !pelear, !retar ni !aceptarduelo.'
 };
 const AYUDA_CHAT = '💬 COMANDOS DE CHAT 🎮 !op → Entrena Haki 📊 !infoop → Tu info 🍎 !fruta → Busca fruta ⚔️ !retar @usuario → Duelo 🏆 !historial @usuario';
 const AYUDA_CHAT_STREAMER = '💬 COMANDOS DE CHAT 🎮 !op → Entrena Haki 📊 !infoop → Tu info 🍎 !fruta → Busca fruta ⚔️ !retar @usuario → Duelo 🏆 !historial @usuario 🔴 !offop / 🟢 !onop';
@@ -2869,7 +2876,7 @@ async function procesarColiseo(username, canal, channel) {
             }
         }
         // Marcar los que se re-inscribieron
-        client.say(channel, '🏟️ ¡Se abrieron las puertas del Coliseo! Tenés 10 minutos para entrar.');
+        client.say(channel, '🏟️ ¡Se abrieron las puertas del Coliseo! Tenés ' + COLISEO_VENTANA_MINUTOS + ' minutos para entrar.');
         if (participantesIniciales.length > 1) {
             client.say(channel, '🏟️ Ya hay ' + (participantesIniciales.length - 1) + ' luchador(es) esperando.');
         }
@@ -2926,7 +2933,7 @@ async function procesarColiseo(username, canal, channel) {
             ventana_fin: ventanaFin
         });
         await updateUsuario(username, { coliseo_canal: canal, coliseos_hoy: (user.coliseos_hoy || 0) + 1 });
-        client.say(channel, '🏟️ ¡Se reabrieron las puertas del Coliseo! Tenés 10 minutos para entrar.');
+        client.say(channel, '🏟️ ¡Se reabrieron las puertas del Coliseo! Tenés ' + COLISEO_VENTANA_MINUTOS + ' minutos para entrar.');
         return;
     }
 }
@@ -2946,8 +2953,8 @@ async function procesarRetar(username, targetRaw, fromUserId, esSusurro, chatCha
         const otro = user.evento_duelo_retador === username ? user.evento_duelo_retado : user.evento_duelo_retador;
         await responder('Ya tenés un duelo pendiente con @' + otro + '.'); return;
     }
-    if (user.evento_explorar_estado === 'pendiente' || user.evento_fruta_estado === 'pendiente') {
-        await responder('Tenés un evento pendiente. Resolvelo antes.'); return;
+    if (user.evento_explorar_estado === 'pendiente') {
+        await responder('Tenés una exploración pendiente. Resolvela antes.'); return;
     }
     if (!(await completoExplorarHoy(username))) { await responder('Necesitás completar tu !explorar del día.'); return; }
     if (user.ultimo_duelo_timestamp) {
@@ -2958,7 +2965,9 @@ async function procesarRetar(username, targetRaw, fromUserId, esSusurro, chatCha
     if ((await contarDuelosHoyEntre(username, target)) >= DUELO_LIMITE_PAREJA) { await responder('Ya se enfrentaron 3 veces hoy.'); return; }
     if (await fueRechazadoHoy(username, target)) { await responder('@' + target + ' ya te rechazó hoy.'); return; }
     if (targetUser.evento_duelo_estado === 'pendiente') { await responder('@' + target + ' ya tiene duelo pendiente.'); return; }
-    if (targetUser.evento_explorar_estado === 'pendiente' || targetUser.evento_fruta_estado === 'pendiente') {
+    if (targetUser.evento_explorar_estado === 'pendiente') {
+        await responder('@' + target + ' está en medio de una exploración.'); return;
+    }
         await responder('@' + target + ' está en medio de un evento.'); return;
     }
     if (!(await completoExplorarHoy(target))) { await responder('@' + target + ' no completó su !explorar del día.'); return; }
