@@ -444,9 +444,11 @@ async function getRecompensaReal(user) {
         maxActualizado = Math.round(base);
         await updateUsuario(user.username, { max_base_historica: maxActualizado });
     }
-    // Delta activo con tope
+    // Delta activo: positivos con tope, negativos con piso -base/3
     const tope = Math.round(maxActualizado * TOPE_DELTA_MULT);
-    const deltaActivo = Math.min(Math.max(0, user.recompensa_delta || 0), tope);
+    const pisoNeg = -Math.round(base / 3);
+    const deltaRaw = user.recompensa_delta || 0;
+    const deltaActivo = Math.min(Math.max(deltaRaw, pisoNeg), tope);
     const result = redondearBonito(Math.round(base + deltaActivo));
     recompCache[user.username] = { data: result, timestamp: Date.now() };
     return result;
@@ -1109,7 +1111,9 @@ async function cerrarVentanaColiseo(coliseo) {
         }
         const msg = await repartirPremiosColiseo(participantes, orden);
         client.say(canal, msg);
-        console.log('[COLISEO] ' + canal + ' → 1v1 ganador: ' + orden[0].username);
+        const probLogA = (probA * 100).toFixed(1);
+        const probLogB = ((1 - probA) * 100).toFixed(1);
+        console.log('[COLISEO] ' + canal + ' → 1v1 | ' + a.username + ' (PCF ' + pcfA + ', ' + probLogA + '%) vs ' + b.username + ' (PCF ' + pcfB + ', ' + probLogB + '%) | Ganador: ' + orden[0].username);
         await borrarColiseo(canal);
         return;
     }
@@ -1117,7 +1121,16 @@ async function cerrarVentanaColiseo(coliseo) {
     const orden = sortearBR(participantes);
     const msg = await repartirPremiosColiseo(participantes, orden);
     client.say(canal, msg);
-    console.log('[COLISEO] ' + canal + ' → BR ganador: ' + orden[0].username + ' (' + participantes.length + ' participantes)');
+    const pcfTotalBR = participantes.reduce((s, p) => s + (p.pcf || 0), 0);
+    const probsBR = participantes.map(p => {
+        const otros = pcfTotalBR - (p.pcf || 0);
+        return calcularProbabilidadBR(p.pcf || 0, otros);
+    });
+    const sumaProbsBR = probsBR.reduce((s, v) => s + v, 0);
+    const detalleBR = participantes.map((p, i) =>
+        p.username + '(PCF ' + (p.pcf || 0) + ', ' + ((probsBR[i] / sumaProbsBR) * 100).toFixed(1) + '%)'
+    ).join(' ');
+    console.log('[COLISEO] ' + canal + ' → BR ' + participantes.length + ' personas | ' + detalleBR + ' | Ganador: ' + orden[0].username);
     await borrarColiseo(canal);
 }
 
@@ -1481,11 +1494,20 @@ async function lurkCerrarBloque(username) {
     if (userFresh) {
         const supObs = await esSupremoObservacion(username);
         const rangoActual = getRangoObservacion(userFresh.observacion || 0, supObs);
-        const rangoNotif = lurk.lurk_rango_notificado;
-        if (rangoActual.idx > rangoNotif) {
+        let rangoNotifLocal = lurk.lurk_rango_notificado;
+        // Primer punto de observación (idx 0, todavía no llegó a Despertado)
+        if (rangoActual.idx === 0 && rangoNotifLocal < 0 && (userFresh.observacion || 0) >= 1) {
+            if (userFresh.twitch_user_id) {
+                try { await sendWhisper(userFresh.twitch_user_id, MENSAJES_RANGO_OBS[1]); } catch (e) { console.error('Error notif primer punto:', e); }
+            }
+            rangoNotifLocal = 0;
+            await updateLurkStats(username, { lurk_rango_notificado: 0 });
+        }
+        // Subidas de rango (Despertado o más)
+        if (rangoActual.idx >= 1 && rangoActual.idx > rangoNotifLocal) {
             console.log('⬆️ Rango: ' + username + ' → Observación ' + rangoActual.nombre);
-            if (userFresh.twitch_user_id && rangoActual.idx >= 1 && rangoActual.idx <= 5) {
-                const msg = MENSAJES_RANGO_OBS[rangoActual.idx];
+            if (userFresh.twitch_user_id && rangoActual.idx <= 5) {
+                const msg = MENSAJES_RANGO_OBS[rangoActual.idx + 1];
                 if (msg) { try { await sendWhisper(userFresh.twitch_user_id, msg); } catch (e) { console.error('Error notif rango:', e); } }
             }
             await updateLurkStats(username, { lurk_rango_notificado: rangoActual.idx });
@@ -1912,8 +1934,7 @@ const AYUDA_TEMAS = {
     recompensas: '🏴‍☠️💰 RECOMPENSAS\n' +
         'Tu recompensa crece con tus stats y con lo que ganás (o perdés) en eventos.\n' +
         '• En chat: se actualiza tu recompensa pública (la que ven otros).\n' +
-        '• Por susurro: ves tu recompensa real siempre actualizada.\n' +
-        '• Las pérdidas no bajan tu recompensa por debajo de tus stats.'
+        '• Por susurro: ves tu recompensa real siempre actualizada.'
 };
 const AYUDA_CHAT = '💬 COMANDOS DE CHAT 🎮 !op → Entrena Haki 📊 !infoop → Tu info 🍎 !fruta → Busca fruta ⚔️ !retar @usuario → Duelo 🏆 !historial @usuario';
 const AYUDA_CHAT_STREAMER = '💬 COMANDOS DE CHAT 🎮 !op → Entrena Haki 📊 !infoop → Tu info 🍎 !fruta → Busca fruta ⚔️ !retar @usuario → Duelo 🏆 !historial @usuario 🔴 !offop / 🟢 !onop';
@@ -2764,10 +2785,6 @@ async function procesarColiseo(username, canal, channel) {
             responder('🏟️ @' + username + ' necesitás al menos 1 de Conquistador para entrar al Coliseo.');
             return;
         }
-        if ((user.recompensa_delta || 0) < COLISEO_DELTA_ENTRADA) {
-            responder('🏟️ @' + username + ' perdiste demasiada recompensa en enfrentamientos anteriores. Entrená un poco más antes de volver.');
-            return;
-        }
         if ((user.coliseos_hoy || 0) >= DUELO_LIMITE_DIARIO) {
             responder('🏟️ @' + username + ' ya usaste tus 10 duelos/coliseos de hoy.');
             return;
@@ -2813,10 +2830,6 @@ async function procesarColiseo(username, canal, channel) {
         }
         if ((user.conquistador || 0) < COLISEO_CONQ_ENTRADA) {
             responder('🏟️ @' + username + ' necesitás al menos 1 de Conquistador.');
-            return;
-        }
-        if ((user.recompensa_delta || 0) < COLISEO_DELTA_ENTRADA) {
-            responder('🏟️ @' + username + ' perdiste demasiada recompensa. Entrená un poco más.');
             return;
         }
         if ((user.coliseos_hoy || 0) >= DUELO_LIMITE_DIARIO) {
@@ -2892,10 +2905,6 @@ async function procesarColiseo(username, canal, channel) {
         }
         if ((user.conquistador || 0) < COLISEO_CONQ_ENTRADA) {
             responder('🏟️ @' + username + ' necesitás al menos 1 de Conquistador.');
-            return;
-        }
-        if ((user.recompensa_delta || 0) < COLISEO_DELTA_ENTRADA) {
-            responder('🏟️ @' + username + ' perdiste demasiada recompensa. Entrená un poco más.');
             return;
         }
         if ((user.coliseos_hoy || 0) >= DUELO_LIMITE_DIARIO) {
