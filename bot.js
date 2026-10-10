@@ -2232,8 +2232,10 @@ async function handleWhisper(event) {
                     const totalAntes = lurk.lurk_minutos_hoy || 0;
                     const totalDespues = Math.min(60, totalAntes + minutosDeploy);
                     const minReales = totalDespues - totalAntes;
+                    const postasNuevasSnapshot = Math.min(3, Math.floor(totalDespues / 20));
                     await updateLurkStats(u, {
                         lurk_minutos_hoy: totalDespues,
+                        lurk_postas_hoy: postasNuevasSnapshot,
                         minutos_lurk_total: (lurk.minutos_lurk_total || 0) + minReales
                     });
                     console.log('🔧 Snapshot lurk: ' + u + ' +' + minReales + ' min (deploy)');
