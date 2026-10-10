@@ -2968,8 +2968,6 @@ async function procesarRetar(username, targetRaw, fromUserId, esSusurro, chatCha
     if (targetUser.evento_explorar_estado === 'pendiente') {
         await responder('@' + target + ' está en medio de una exploración.'); return;
     }
-        await responder('@' + target + ' está en medio de un evento.'); return;
-    }
     if (!(await completoExplorarHoy(target))) { await responder('@' + target + ' no completó su !explorar del día.'); return; }
     const pcfRetador = await calcularPCFUsuario(user);
     const pcfRetado = await calcularPCFUsuario(targetUser);
