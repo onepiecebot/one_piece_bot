@@ -2463,7 +2463,7 @@ async function handleWhisper(event) {
             await sendWhisper(fromUserId, fruta.fase1 + '\n\n📖 Para continuar, andá al chat del canal donde la encontraste, o al chat de op_d_bot.');
         } else {
             const calaverasFPw = await getCalaverasEventoFruta(user, fruta);
-            await sendWhisper(fromUserId, fruta.fase2 + ' ' + calaverasFPw + ' 🍎 ' + fruta.nombre + ' ' + (fruta.emoji || '') + ' ⚔️ ' + displayStat(fruta.ataque || 0) + ' | 🛡️ ' + displayStat(fruta.defensa || 0) + ' | 🧠 ' + displayStat(fruta.utilidad || 0) + '\n\n📖 Para resolverlo, andá al chat del canal donde la encontraste, o al chat de op_d_bot.');
+            await sendWhisper(fromUserId, calaverasFPw + ' ' + fruta.fase2 + ' 🍎 ' + fruta.nombre + ' ' + (fruta.emoji || '') + ' ⚔️ ' + displayStat(fruta.ataque || 0) + ' | 🛡️ ' + displayStat(fruta.defensa || 0) + ' | 🧠 ' + displayStat(fruta.utilidad || 0) + ' ¿Qué harás? — ⚔️ !pelear o 🏃 !huir\n\n📖 Para resolverlo, andá al chat del canal donde la encontraste, o al chat de op_d_bot.');
         }
         return;
     }
@@ -2492,7 +2492,7 @@ async function handleWhisper(event) {
             if (user.evento_explorar_fase === 'avistamiento') {
                 await sendWhisper(fromUserId, '📍 Pendiente. ' + npc.fase1 + ' — ➡️ !continuar o ⬅️ !retroceder');
             } else {
-                await sendWhisper(fromUserId, '📍 Pendiente. ' + npc.fase2 + ' ' + getCalaverasPorProb(op.prob) + ' — ⚔️ !combatir o 🏃 !retirarse');
+                await sendWhisper(fromUserId, '📍 Pendiente. ' + getCalaverasPorProb(op.prob) + ' ' + npc.fase2 + ' ¿Qué harás? — ⚔️ !combatir o 🏃 !retirarse');
             }
             return;
         }
@@ -2553,7 +2553,7 @@ async function handleWhisper(event) {
         const { data: npc } = await supabase.from('npcs').select('*').eq('nombre', user.evento_explorar_npc).single();
         const o = user.evento_explorar_opciones || {};
         const op = o[user.evento_explorar_dificultad];
-        await sendWhisper(fromUserId, npc.fase2 + ' ' + getCalaverasPorProb(op.prob) + ' ⚔️ !combatir o 🏃 !retirarse');
+        await sendWhisper(fromUserId, getCalaverasPorProb(op.prob) + ' ' + npc.fase2 + ' ¿Qué harás? — ⚔️ !combatir o 🏃 !retirarse');
         return;
     }
 
@@ -2668,7 +2668,7 @@ async function handleWhisper(event) {
         } else {
             const o = user.evento_explorar_opciones || {};
             const op = o[user.evento_explorar_dificultad];
-            await sendWhisper(fromUserId, '📍 ' + npc.fase2 + ' ' + getCalaverasPorProb(op.prob) + ' ⚔️ !combatir o 🏃 !retirarse');
+            await sendWhisper(fromUserId, '📍 ' + getCalaverasPorProb(op.prob) + ' ' + npc.fase2 + ' ¿Qué harás? — ⚔️ !combatir o 🏃 !retirarse');
         }
         return;
     }
@@ -3717,7 +3717,7 @@ async function procesarMensajeChat(channel, tags, message, self) {
             client.say(channel, '@' + tags.username + ' ' + fruta.fase1 + ' — ✅ !si o ❌ !no');
         } else {
             const calaverasFP = await getCalaverasEventoFruta(user, fruta);
-            client.say(channel, '@' + tags.username + ' ' + fruta.fase2 + ' ' + calaverasFP + ' 🍎 ' + fruta.nombre + ' ' + (fruta.emoji || '') + ' ⚔️ ' + displayStat(fruta.ataque || 0) + ' | 🛡️ ' + displayStat(fruta.defensa || 0) + ' | 🧠 ' + displayStat(fruta.utilidad || 0) + ' — ⚔️ !pelear o 🏃 !huir');
+            client.say(channel, '@' + tags.username + ' ' + calaverasFP + ' ' + fruta.fase2 + ' 🍎 ' + fruta.nombre + ' ' + (fruta.emoji || '') + ' ⚔️ ' + displayStat(fruta.ataque || 0) + ' | 🛡️ ' + displayStat(fruta.defensa || 0) + ' | 🧠 ' + displayStat(fruta.utilidad || 0) + ' ¿Qué harás? — ⚔️ !pelear o 🏃 !huir');
         }
         return;
     }
@@ -3745,7 +3745,7 @@ async function procesarMensajeChat(channel, tags, message, self) {
         await updateUsuario(username, { evento_fruta_fase: 'encuentro', evento_fruta_comandos: 'pelear_huir' });
         const { data: fruta } = await supabase.from('frutas').select('*').eq('nombre', user.evento_fruta_nombre).single();
         const calaverasSi = await getCalaverasEventoFruta(user, fruta);
-        client.say(channel, '@' + tags.username + ' ' + fruta.fase2 + ' ' + calaverasSi + ' 🍎 ' + fruta.nombre + ' ' + (fruta.emoji || '') + ' ⚔️ ' + displayStat(fruta.ataque || 0) + ' | 🛡️ ' + displayStat(fruta.defensa || 0) + ' | 🧠 ' + displayStat(fruta.utilidad || 0) + ' — ⚔️ !pelear o 🏃 !huir');
+        client.say(channel, '@' + tags.username + ' ' + calaverasSi + ' ' + fruta.fase2 + ' 🍎 ' + fruta.nombre + ' ' + (fruta.emoji || '') + ' ⚔️ ' + displayStat(fruta.ataque || 0) + ' | 🛡️ ' + displayStat(fruta.defensa || 0) + ' | 🧠 ' + displayStat(fruta.utilidad || 0) + ' ¿Qué harás? — ⚔️ !pelear o 🏃 !huir');
         return;
     }
 
