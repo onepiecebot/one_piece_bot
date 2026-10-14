@@ -35,7 +35,7 @@ const DUELO_TIMEOUT_MS = 2 * 60 * 1000;
 
 // Canales donde se cuenta lurk. fan_d_larana y op_d_bot NO tienen lurk
 // porque no son canales de streamer. Se agregan acá a medida que suman.
-const CANALES_CON_LURK = ['lenno_ap'];
+const CANALES_CON_LURK = ['lenno_ap', 'pepeecr'];
 const LURK_MICRO_COOLDOWN_MS = 2 * 60 * 1000;
 const LURK_LIVE_MINIMO_2H = 120;
 
@@ -1684,8 +1684,10 @@ async function programarProximoScan() {
     const secs = Math.floor((ms % 60000) / 1000);
     console.log('👁️ Próximo scan de chatters en ' + mins + 'm ' + secs + 's');
     setTimeout(async () => {
-        try { await escanearChatters('lenno_ap'); }
-        catch (e) { console.error('Error scan:', e); }
+        for (const canal of CANALES_CON_LURK) {
+            try { await escanearChatters(canal); }
+            catch (e) { console.error('Error scan ' + canal + ':', e); }
+        }
         programarProximoScan();
     }, ms);
 }
@@ -1949,7 +1951,7 @@ const AYUDA_SUSURRO = '📩 COMANDOS DE SUSURRO (o chat de op_d_bot) 🗺️ !ex
 const client = new tmi.Client({
     options: { debug: false },
     identity: { username: config.botName, password: config.oauth },
-    channels: [config.channelName, 'op_d_bot', 'lenno_ap']
+    channels: [config.channelName, 'op_d_bot', 'lenno_ap', 'pepeecr']
 });
 
 // Wrapper: loguea TODAS las respuestas del bot en el chat
@@ -2113,7 +2115,9 @@ async function handleWhisper(event) {
             return;
         }
         await sendWhisper(fromUserId, '⏳ Escaneando chatters...');
-        await escanearChatters('lenno_ap');
+        for (const canal of CANALES_CON_LURK) {
+            await escanearChatters(canal);
+        }
         await sendWhisper(fromUserId, '✅ Scan completado. Revisá los logs.');
         return;
     }
@@ -2228,7 +2232,9 @@ async function handleWhisper(event) {
         const snapshot = snapData ? JSON.parse(snapData.valor || '[]') : [];
         const deployTs = tsData ? tsData.valor : '';
         // Escanear chatters actuales (abre bloques de los que están ahora)
-        await escanearChatters('lenno_ap');
+        for (const canal of CANALES_CON_LURK) {
+            await escanearChatters(canal);
+        }
         // Para cada uno del snapshot que tiene bloque abierto ahora → sumar minutos del deploy
         if (snapshot.length > 0 && deployTs) {
             const minutosDeploy = Math.max(0, Math.floor((Date.now() - new Date(deployTs).getTime()) / 60000));
@@ -2291,7 +2297,10 @@ async function handleWhisper(event) {
         cooldownsLurk[username].observacion = Date.now();
         await inicializarDiaLurk(username);
         const lurkCheck = await getLurkStats(username);
-        const canalActivoObs = await canalEstaActivo('lenno_ap');
+        let canalActivoObs = false;
+        for (const canal of CANALES_CON_LURK) {
+            if (await canalEstaActivo(canal)) { canalActivoObs = true; break; }
+        }
         if (lurkCheck && !lurkCheck.lurk_join_actual && lurkCheck.lurk_ultimo_dia === getFechaHoy() && canalActivoObs) {
             await updateLurkStats(username, { lurk_join_actual: new Date().toISOString() });
             console.log('👁️ Bloque reabierto por !observacion: ' + username);
@@ -4033,29 +4042,67 @@ async function procesarMensajeChat(channel, tags, message, self) {
 // ============================================
 // INICIALIZACIÓN
 // ============================================
-cargarCommitInfo().then(() => console.log('📦 Commit info cargado.'));
-cargarEstadoMantenimiento().then(() => {
-    cargarEstadoNpc().then(() => {
+// ============================================
+// ARRANQUE SECUENCIAL (uno tras otro, con pausas)
+// ============================================
+async function secuenciaArranque() {
+    try {
+        // 1. Estado de mantenimiento
+        await cargarEstadoMantenimiento();
+        await new Promise(r => setTimeout(r, 1500));
+
+        // 2. Commit info
+        await cargarCommitInfo();
+        console.log('📦 Commit info cargado.');
+        await new Promise(r => setTimeout(r, 1500));
+
+        // 3. Estado NPC
+        await cargarEstadoNpc();
         console.log('👁️ Estado NPC cargado.');
         programarProximoNpc();
-    });
-});
+        await new Promise(r => setTimeout(r, 1500));
+
+        // 4. Supremos
+        await actualizarTablaSupremos('armadura');
+        await new Promise(r => setTimeout(r, 1000));
+        await actualizarTablaSupremos('observacion');
+        await new Promise(r => setTimeout(r, 1000));
+        await actualizarTablaSupremos('conquistador');
+        console.log('🏆 Tabla supremos inicializada.');
+        await new Promise(r => setTimeout(r, 1500));
+
+        // 5. Scan inicial de chatters
+        for (const canal of CANALES_CON_LURK) {
+            try { await escanearChatters(canal); }
+            catch (e) { console.error('Error scan inicial ' + canal + ':', e); }
+            await new Promise(r => setTimeout(r, 1000));
+        }
+        programarProximoScan();
+
+        // 6. Susurro al dueño confirmando que arrancó
+        const dueño = await getUsuario(DUEÑO);
+        if (dueño && dueño.twitch_user_id) {
+            const msg = mantenimientoActivo
+                ? '✅ Bot arrancó en modo mantenimiento. Cuando quieras, tirá !deploylisto.'
+                : '✅ Bot arrancó correctamente. Todo funcionando.';
+            await sendWhisper(dueño.twitch_user_id, msg);
+        }
+        console.log('🚀 Secuencia de arranque completa.');
+    } catch (e) {
+        console.error('❌ Error en secuencia de arranque:', e);
+    }
+}
+
+// Lanzar la secuencia al iniciar
+secuenciaArranque();
+
+// Schedulers periódicos (estos no arrancan con el boot, solo se registran)
 setInterval(ejecutarTimeoutDuelos, 60 * 1000);
 setInterval(lurkChequeoPeriodico, 5 * 60 * 1000);
 setInterval(revisarColiseosExpirados, 60 * 1000);
 setInterval(schedulerPenalizacionesDiarias, 60 * 60 * 1000);
 
-// Supremos: recálculo inicial al arrancar
-setTimeout(async () => {
-    try {
-        await actualizarTablaSupremos('armadura');
-        await actualizarTablaSupremos('observacion');
-        await actualizarTablaSupremos('conquistador');
-        console.log('🏆 Tabla supremos inicializada.');
-    } catch (e) { console.error('Error inicializando supremos:', e); }
-}, 5000);
-
-// Supremos: scheduler cada 30s (recalcula solo Hakis marcados sucios)
+// Scheduler de Supremos cada 30s
 setInterval(async () => {
     try {
         for (const haki of ['armadura', 'observacion', 'conquistador']) {
@@ -4067,12 +4114,5 @@ setInterval(async () => {
         }
     } catch (e) { console.error('Error scheduler supremos:', e); }
 }, 30 * 1000);
-
-// Scan inicial de chatters + programación de scans :01, :21, :41
-setTimeout(async () => {
-    try { await escanearChatters('lenno_ap'); }
-    catch (e) { console.error('Error scan inicial:', e); }
-    programarProximoScan();
-}, 15000);
 
 console.log('Bot escuchando...');
