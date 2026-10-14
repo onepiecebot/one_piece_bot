@@ -1736,7 +1736,6 @@ async function lurkChequeoPeriodico() {
             }
             await updateCanal(c.canal, updateC);
         }
-        await limpiarHistorialViejo();
     } catch (err) { console.error('❌ Error lurk chequeo:', err); }
 }
 
@@ -4097,10 +4096,15 @@ async function secuenciaArranque() {
 secuenciaArranque();
 
 // Schedulers periódicos (estos no arrancan con el boot, solo se registran)
-setInterval(ejecutarTimeoutDuelos, 60 * 1000);
-setInterval(lurkChequeoPeriodico, 5 * 60 * 1000);
-setInterval(revisarColiseosExpirados, 60 * 1000);
+setInterval(ejecutarTimeoutDuelos, 2 * 60 * 1000);
+setInterval(lurkChequeoPeriodico, 10 * 60 * 1000);
+setInterval(revisarColiseosExpirados, 2 * 60 * 1000);
 setInterval(schedulerPenalizacionesDiarias, 60 * 60 * 1000);
+
+// Limpieza de historial viejo (1 vez cada 6 horas)
+setInterval(async () => {
+    try { await limpiarHistorialViejo(); } catch (e) { console.error('Error limpiando historial:', e); }
+}, 6 * 60 * 60 * 1000);
 
 // Scheduler de Supremos cada 30s
 setInterval(async () => {
