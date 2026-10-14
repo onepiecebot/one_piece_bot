@@ -1151,8 +1151,8 @@ async function revisarColiseosExpirados() {
                 const ventanas = await contarVentanasColiseo();
                 if (ventanas === 0) {
                     const dueñoUser = await getUsuario(DUEÑO);
-                    if (dueñoUser && dueñoUser.twitch_user_id) {
-                        try { await sendWhisper(dueñoUser.twitch_user_id, '✅ Todas las ventanas de coliseo cerradas. Podés hacer el deploy.'); } catch (e) {}
+                    if (dueñoUser) {
+                        await notificar(DUEÑO, dueñoUser.twitch_user_id, '✅ Todas las ventanas de coliseo cerradas. Podés hacer el deploy.');
                     }
                     await supabase.from('bot_config').upsert({ clave: 'predeploy_avisado', valor: 'true' });
                 }
@@ -1384,11 +1384,9 @@ async function ejecutarTimeoutDuelos() {
                 delta_retado: eU ? (eU.recompensa_delta || 0) : 0,
                 canal
             });
-            if (rU && rU.twitch_user_id) {
-                try {
-                    const t = await getTextoDuelo('expiracion');
-                    await sendWhisper(rU.twitch_user_id, '⌛ ' + aplicarPlaceholders(t, { retador, retado: retado || '', monto: '0' }));
-                } catch (e) { console.error('Error notif expiración:', e); }
+            if (rU) {
+                const t = await getTextoDuelo('expiracion');
+                await notificar(retador, rU.twitch_user_id, '⌛ ' + aplicarPlaceholders(t, { retador, retado: retado || '', monto: '0' }));
             }
         }
     } catch (err) { console.error('❌ Error timeout duelos:', err); }
@@ -1497,18 +1495,16 @@ async function lurkCerrarBloque(username) {
         let rangoNotifLocal = lurk.lurk_rango_notificado;
         // Primer punto de observación (idx 0, todavía no llegó a Despertado)
         if (rangoActual.idx === 0 && rangoNotifLocal < 0 && (userFresh.observacion || 0) >= 1) {
-            if (userFresh.twitch_user_id) {
-                try { await sendWhisper(userFresh.twitch_user_id, MENSAJES_RANGO_OBS[1]); } catch (e) { console.error('Error notif primer punto:', e); }
-            }
+            await notificar(username, userFresh.twitch_user_id, MENSAJES_RANGO_OBS[1]);
             rangoNotifLocal = 0;
             await updateLurkStats(username, { lurk_rango_notificado: 0 });
         }
         // Subidas de rango (Despertado o más)
         if (rangoActual.idx >= 1 && rangoActual.idx > rangoNotifLocal) {
             console.log('⬆️ Rango: ' + username + ' → Observación ' + rangoActual.nombre);
-            if (userFresh.twitch_user_id && rangoActual.idx <= 5) {
+            if (rangoActual.idx <= 5) {
                 const msg = MENSAJES_RANGO_OBS[rangoActual.idx + 1];
-                if (msg) { try { await sendWhisper(userFresh.twitch_user_id, msg); } catch (e) { console.error('Error notif rango:', e); } }
+                if (msg) await notificar(username, userFresh.twitch_user_id, msg);
             }
             await updateLurkStats(username, { lurk_rango_notificado: rangoActual.idx });
         }
@@ -1999,8 +1995,13 @@ client.on('whisper', async (from, userstate, message, self) => {
     try {
         if (twitchUserId) {
             const u = await getUsuario(fromUser.toLowerCase());
-            if (u && u.twitch_user_id !== twitchUserId) {
-                await updateUsuario(fromUser.toLowerCase(), { twitch_user_id: twitchUserId });
+            if (u) {
+                const updates = {};
+                if (u.twitch_user_id !== twitchUserId) updates.twitch_user_id = twitchUserId;
+                if (!u.ha_susurrado) updates.ha_susurrado = true;
+                if (Object.keys(updates).length > 0) {
+                    await updateUsuario(fromUser.toLowerCase(), updates);
+                }
             }
         }
         const fakeEvent = {
@@ -2011,6 +2012,18 @@ client.on('whisper', async (from, userstate, message, self) => {
         await handleWhisper(fakeEvent);
     } catch (err) { console.error('❌ Error whisper:', err); }
 });
+
+// ============================================
+// ENVIAR NOTIFICACIÓN (solo si ya susurró antes)
+// ============================================
+async function notificar(username, toUserId, message) {
+    if (!toUserId) return;
+    try {
+        const u = await getUsuario(username);
+        if (!u || !u.ha_susurrado) return;
+        await sendWhisper(toUserId, message);
+    } catch (e) { console.error('Error notificar:', e); }
+}
 
 // ============================================
 // ENVIAR SUSURRO
@@ -3105,11 +3118,7 @@ async function procesarRetar(username, targetRaw, fromUserId, esSusurro, chatCha
     if (!esSusurro) {
         client.say(chatChannel, '⚔️ @' + target + ', @' + username + ' te ha retado a un duelo.');
     }
-    if (targetUser.twitch_user_id) {
-        try {
-            await sendWhisper(targetUser.twitch_user_id, '⚔️ @' + username + ' te ha retado a un duelo. Tenés 2 minutos para responder con !aceptarduelo o !rechazarduelo.');
-        } catch (e) { console.error('Error notif reto:', e); }
-    }
+    await notificar(target, targetUser.twitch_user_id, '⚔️ @' + username + ' te ha retado a un duelo. Tenés 2 minutos para responder con !aceptarduelo o !rechazarduelo.');
     if (esSusurro) await sendWhisper(fromUserId, '⚔️ Reto enviado a @' + target + '.');
 }
 // Calaveras para evento de fruta (calculadas al momento de mostrar)
@@ -3246,8 +3255,8 @@ async function procesarAceptarDuelo(username, fromUserId, esSusurro, chatChannel
     }
     if (canalDuelo && canalDuelo !== 'op_d_bot') client.say(canalDuelo, texto);
     else client.say('op_d_bot', texto);
-    if (retadorUser.twitch_user_id) { try { await sendWhisper(retadorUser.twitch_user_id, '⚔️ ' + texto); } catch (e) { console.error('Error notif duelo retador:', e); } }
-    if (retadoUser.twitch_user_id) { try { await sendWhisper(retadoUser.twitch_user_id, '⚔️ ' + texto); } catch (e) { console.error('Error notif duelo retado:', e); } }
+    await notificar(retador, retadorUser.twitch_user_id, '⚔️ ' + texto);
+    await notificar(retado, retadoUser.twitch_user_id, '⚔️ ' + texto);
     if (esSusurro) await sendWhisper(fromUserId, '⚔️ Duelo resuelto. ' + texto);
 }
 
@@ -3284,11 +3293,9 @@ async function procesarRechazarDuelo(username, fromUserId, esSusurro, chatChanne
     console.log('⚔️ Duelo rechazado: ' + retador + ' vs ' + retado);
     if (esSusurro) await sendWhisper(fromUserId, 'Rechazaste el duelo.');
     else client.say(chatChannel, '@' + username + ' Rechazaste el duelo.');
-    if (retadorUser && retadorUser.twitch_user_id) {
-        try {
-            const t = await getTextoDuelo('rechazo');
-            await sendWhisper(retadorUser.twitch_user_id, '❌ ' + aplicarPlaceholders(t, { retador, retado, monto: '0' }));
-        } catch (e) { console.error('Error notif rechazo:', e); }
+    if (retadorUser) {
+        const t = await getTextoDuelo('rechazo');
+        await notificar(retador, retadorUser.twitch_user_id, '❌ ' + aplicarPlaceholders(t, { retador, retado, monto: '0' }));
     }
 }
 
@@ -3857,11 +3864,7 @@ async function procesarMensajeChat(channel, tags, message, self) {
                         fruta_perdida_por: username,
                         fruta_perdida_pcf: pcfFruta
                     });
-                    if (a.twitch_user_id) {
-                        try {
-                            await sendWhisper(a.twitch_user_id, '¿Y tu fruta? ¿Habría jurado que había una fruta aquí... Nooo, pestañaste, y @' + username + ' te la primereó');
-                        } catch (e) { console.error('Error whisper fruta perdida:', e); }
-                    }
+                    await notificar(a.username, a.twitch_user_id, '¿Y tu fruta? ¿Habría jurado que había una fruta aquí... Nooo, pestañaste, y @' + username + ' te la primereó');
                     console.log('🍎 Fruta perdida: ' + a.username + ' perdió evento de ' + user.evento_fruta_nombre);
                 }
             }
@@ -3951,11 +3954,7 @@ async function procesarMensajeChat(channel, tags, message, self) {
                         fruta_perdida_por: username,
                         fruta_perdida_pcf: pcfFruta
                     });
-                    if (otro.twitch_user_id) {
-                        try {
-                            await sendWhisper(otro.twitch_user_id, '¿Y tu fruta? ¿Habría jurado que había una fruta aquí... Nooo, pestañaste, y @' + username + ' te la primereó');
-                        } catch (e) { console.error('Error whisper fruta perdida:', e); }
-                    }
+                    await notificar(otro.username, otro.twitch_user_id, '¿Y tu fruta? ¿Habría jurado que había una fruta aquí... Nooo, pestañaste, y @' + username + ' te la primereó');
                 }
             }
         } else {
