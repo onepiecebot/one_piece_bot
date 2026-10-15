@@ -161,6 +161,15 @@ const COMANDOS_SUSURRO_EN_OP_D_BOT = [
     '!infoop'
 ];
 
+// Comandos que el bot reconoce. Solo estos se loguean en el chat.
+const COMANDOS_DEL_BOT = new Set([
+    ...COMANDOS_CON_USUARIO,
+    ...COMANDOS_SUSURRO_EN_OP_D_BOT,
+    '!onop', '!offop',
+    '!setepisodio',
+    '!deploylisto'
+]);
+
 // ============================================
 // HELPERS GENERALES
 // ============================================
@@ -3367,7 +3376,9 @@ async function procesarMensajeChat(channel, tags, message, self) {
         }
         return;
     }
-    console.log('💬 [' + canal + '] ' + username + ': ' + message);
+    if (COMANDOS_DEL_BOT.has(command)) {
+        console.log('💬 [' + canal + '] ' + username + ': ' + message);
+    }
 
     // Solo crear usuarios para comandos que realmente los usan.
     // Cualquier otro !comando (por ej. para otros bots) NO toca la DB.
