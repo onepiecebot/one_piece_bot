@@ -49,7 +49,8 @@ async function getUsuario(username) {
             }])
             .select().single();
         if (insertError) { console.error('❌ Error creando usuario:', insertError); return null; }
-        await supabase.from('lurk_stats').insert([{ username }]);
+        await supabase.from('lurkv2').insert([{ usuario: username }]);
+        await supabase.from('lurkreg').insert([{ usuario: username }]);
         return newUser;
     }
     return data[0];
@@ -353,6 +354,114 @@ async function inicializarDiaLurk(username) {
     return { penalizacion, reseteado: true, lurk: await getLurkStats(username) };
 }
 
+// ==================== LURKV2 (estado diario) ====================
+async function getLurkV2(username) {
+    const { data, error } = await supabase
+        .from('lurkv2').select('*').eq('usuario', username).limit(1);
+    if (error) { console.error('❌ Error getLurkV2:', error.message); return null; }
+    if (!data || data.length === 0) {
+        // Verificar que el usuario exista antes de crear
+        const { data: user } = await supabase
+            .from('usuarios').select('username').eq('username', username).limit(1);
+        if (!user || user.length === 0) return null;
+        const { data: created, error: insErr } = await supabase
+            .from('lurkv2').insert([{ usuario: username }]).select().limit(1);
+        if (insErr) { console.error('❌ Error creando lurkv2:', insErr.message); return null; }
+        return created && created[0];
+    }
+    return data[0];
+}
+
+async function updateLurkV2(username, datos) {
+    const { data, error } = await supabase
+        .from('lurkv2').update(datos).eq('usuario', username).select();
+    if (error) { console.error('❌ Error updateLurkV2:', error.message); return null; }
+    return data;
+}
+
+// ==================== LURKREG (acumulado) ====================
+async function getLurkReg(username) {
+    const { data, error } = await supabase
+        .from('lurkreg').select('*').eq('usuario', username).limit(1);
+    if (error) { console.error('❌ Error getLurkReg:', error.message); return null; }
+    if (!data || data.length === 0) {
+        const { data: user } = await supabase
+            .from('usuarios').select('username').eq('username', username).limit(1);
+        if (!user || user.length === 0) return null;
+        const { data: created, error: insErr } = await supabase
+            .from('lurkreg').insert([{ usuario: username }]).select().limit(1);
+        if (insErr) { console.error('❌ Error creando lurkreg:', insErr.message); return null; }
+        return created && created[0];
+    }
+    return data[0];
+}
+
+async function updateLurkReg(username, datos) {
+    const { data, error } = await supabase
+        .from('lurkreg').update(datos).eq('usuario', username).select();
+    if (error) { console.error('❌ Error updateLurkReg:', error.message); return null; }
+    return data;
+}
+
+// ==================== LURKREG (negocio) ====================
+
+// Suma los 20 slots contados (todos menos el de vigencia)
+async function recalcularObservacionNueva(username) {
+    const reg = await getLurkReg(username);
+    if (!reg) return null;
+    let total = 0;
+    for (let i = 1; i <= 21; i++) {
+        if (i === reg.vigencia) continue;
+        total += reg['dia' + i] || 0;
+    }
+    total = Math.max(0, total);
+    await updateLurkReg(username, { puntos_actuales: total });
+    await updateUsuario(username, { observacion: total });
+    return total;
+}
+
+// Agrega puntos al slot de vigencia actual + lurkv2.puntos_hoy
+async function agregarPuntosObservacionNueva(username, puntos) {
+    if (!puntos || puntos === 0) return null;
+    let reg = await getLurkReg(username);
+    if (!reg) return null;
+    if (!reg.vigencia || reg.vigencia === 0) {
+        // Primera vez que acumula puntos: arrancamos la ventana en vigencia 1
+        await updateLurkReg(username, { vigencia: 1 });
+        reg = await getLurkReg(username);
+        if (!reg) return null;
+    }
+    const slotActual = 'dia' + reg.vigencia;
+    const valorActual = reg[slotActual] || 0;
+    await updateLurkReg(username, { [slotActual]: valorActual + puntos });
+    const v2 = await getLurkV2(username);
+    if (v2) {
+        await updateLurkV2(username, { puntos_hoy: (v2.puntos_hoy || 0) + puntos });
+    }
+    return await recalcularObservacionNueva(username);
+}
+
+// Avanza la vigencia (ring buffer)
+async function avanzarVigencia(username) {
+    const reg = await getLurkReg(username);
+    if (!reg) return null;
+    let nueva = (reg.vigencia || 0) + 1;
+    if (nueva > 21) nueva = 1;
+    const slotNuevo = 'dia' + nueva;
+    await updateLurkReg(username, {
+        vigencia: nueva,
+        [slotNuevo]: 0
+    });
+    return await recalcularObservacionNueva(username);
+}
+
+// Lee cuántos puntos tiene el usuario en el día en curso
+async function getPuntosDiaActual(username) {
+    const reg = await getLurkReg(username);
+    if (!reg || !reg.vigencia || reg.vigencia === 0) return 0;
+    return reg['dia' + reg.vigencia] || 0;
+}
+
 module.exports = {
     getUsuario, updateUsuario, supabase,
     getTextoDuelo, getTextoExplorar, getHistorialH2H,
@@ -360,11 +469,16 @@ module.exports = {
     crearDuelo, limpiarEventoDuelo, tieneEventoPendiente,
     completoExplorarHoy, getFechaHoy, getFechaOffset, getFechaNpc,
     usuarioExiste,
-    // Lurk
+    // Lurk viejo (todavía en uso hasta que migremos)
     getLurkStats, updateLurkStats,
     getHistorialLurk, agregarPuntosObservacion, recalcularObservacion,
     limpiarHistorialViejo, aplicarPenalizacionesInactivas,
     getCanal, getCanales, updateCanal, huboStreamEseDia,
     inicializarDiaLurk, evaluarRacha,
-    sumarMinutosLurk, getCanalesActivos
+    sumarMinutosLurk, getCanalesActivos,
+    // Lurk nuevo
+    getLurkV2, updateLurkV2,
+    getLurkReg, updateLurkReg,
+    recalcularObservacionNueva, agregarPuntosObservacionNueva,
+    avanzarVigencia, getPuntosDiaActual
 };

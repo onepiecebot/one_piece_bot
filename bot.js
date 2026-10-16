@@ -10,10 +10,11 @@ const {
     crearDuelo, limpiarEventoDuelo,
     completoExplorarHoy, getFechaHoy, getFechaOffset, getFechaNpc,
     usuarioExiste,
-    getLurkStats, updateLurkStats,
-    getHistorialLurk, agregarPuntosObservacion, recalcularObservacion,
-    limpiarHistorialViejo, getCanal, getCanales, updateCanal,
-    huboStreamEseDia, inicializarDiaLurk
+    getCanal, getCanales, updateCanal,
+    getLurkV2, updateLurkV2,
+    getLurkReg, updateLurkReg,
+    recalcularObservacionNueva, agregarPuntosObservacionNueva,
+    avanzarVigencia
 } = db;
 
 // ============================================
@@ -323,20 +324,27 @@ function getRangoConquistador(puntos, esSupremo) {
     return { nombre: 'No despertado', emoji: '❌', idx: 0 };
 }
 
-function getPtsPostasPorRango(idxRango) {
-    const tabla = {
-        0: [2, 2, 4],
-        1: [2, 2, 3],
-        2: [1, 2, 3],
-        3: [1, 1, 3],
-        4: [1, 1, 2]
-    };
-    return tabla[idxRango] || tabla[0];
+// Puntos por posta: 1ra = +1, 2da = +1, 3ra = +2
+const PUNTOS_POSTAS = [1, 1, 2];
+
+// Umbrales de minutos: 10 / 30 / 60
+function calcularPostasPorMinutos(minutos) {
+    if (minutos >= 60) return 3;
+    if (minutos >= 30) return 2;
+    if (minutos >= 10) return 1;
+    return 0;
+}
+
+// Puntos por las primeras N postas (1 a 3)
+function calcularPuntosPostas(desde, hasta) {
+    let total = 0;
+    for (let i = desde; i < hasta && i < 3; i++) total += PUNTOS_POSTAS[i];
+    return total;
 }
 
 function calcularBonusRacha(racha) {
-    if (racha <= 15) return (racha % 5 === 0) ? 5 : 1;
-    return (racha % 5 === 0) ? 10 : 2;
+    if (racha <= 1) return 0;
+    return (racha % 5 === 0) ? 5 : 1;
 }
 
 // Filtro de episodio: ¿la fruta pasa el filtro del canal?
@@ -532,8 +540,6 @@ async function verificarPenalizacionExplorar(username) {
 // ============================================
 const SUPREMOS_CACHE_TTL = 30000;
 const SUPREMOS_TOP_LIMITE = 12;
-const GARANTIZADOS_CACHE_TTL = 5 * 60 * 1000;
-let garantizadosCache = { data: [], timestamp: 0 };
 let supremosCacheArm = { data: [], timestamp: 0 };
 let supremosCacheObs = { data: [], timestamp: 0 };
 let supremosCacheConq = { data: [], timestamp: 0 };
@@ -596,38 +602,6 @@ async function actualizarTablaSupremos(haki) {
     if (haki === 'conquistador') supremosCacheConq = { data: [], timestamp: 0 };
 }
 
-async function marcarDiaPerfecto(username) {
-    const hoy = getFechaHoy();
-    await supabase.from('lurk_historial')
-        .update({ dia_perfecto: true })
-        .eq('username', username).eq('fecha', hoy);
-}
-
-async function getSupremosObservacionGarantizados() {
-    if (Date.now() - garantizadosCache.timestamp < GARANTIZADOS_CACHE_TTL) {
-        return garantizadosCache.data;
-    }
-    const hace20 = getFechaOffset(-20);
-    const ayer = getFechaOffset(-1);
-    const { data } = await supabase.from('lurk_historial')
-        .select('username')
-        .eq('dia_perfecto', true)
-        .gte('fecha', hace20)
-        .lte('fecha', ayer)
-        .limit(10000);
-    if (!data || data.length === 0) {
-        garantizadosCache = { data: [], timestamp: Date.now() };
-        return [];
-    }
-    const counts = {};
-    for (const r of data) {
-        counts[r.username] = (counts[r.username] || 0) + 1;
-    }
-    const result = Object.keys(counts).filter(u => counts[u] >= 20);
-    garantizadosCache = { data: result, timestamp: Date.now() };
-    return result;
-}
-
 // Calcula los Supremos reales de un Haki:
 // 1. Lee los 12 de la tabla.
 // 2. De esos, filtra los que tienen ≥ 100 puntos.
@@ -648,23 +622,13 @@ async function calcularSupremos(haki, cache) {
             .eq('haki', haki)
             .order('puntos', { ascending: false });
         const elegibles = (tabla || []).filter(r => r.puntos >= 100);
-        // 3. Garantizados (solo Observación)
-        let garantizados = [];
-        if (haki === 'observacion') {
-            garantizados = await getSupremosObservacionGarantizados();
-        }
-        // 4. Armar resultado: garantizados primero, después cupos por puntos
+        // Armar resultado: top N por puntos, empates entran todos
         const result = new Set();
-        for (const g of garantizados) result.add(g.toLowerCase());
-        const cuposRestantes = Math.max(0, plazas - result.size);
-        if (cuposRestantes > 0) {
-            const noGarant = elegibles.filter(r => !result.has(r.username.toLowerCase()));
-            if (noGarant.length > 0) {
-                const corteIdx = Math.min(cuposRestantes, noGarant.length) - 1;
-                const valorCorte = noGarant[corteIdx].puntos;
-                for (const e of noGarant) {
-                    if (e.puntos >= valorCorte) result.add(e.username.toLowerCase());
-                }
+        if (elegibles.length > 0) {
+            const corteIdx = Math.min(plazas, elegibles.length) - 1;
+            const valorCorte = elegibles[corteIdx].puntos;
+            for (const e of elegibles) {
+                if (e.puntos >= valorCorte) result.add(e.username.toLowerCase());
             }
         }
         const arr = Array.from(result);
@@ -1412,117 +1376,160 @@ async function lurkJoin(username, canal) {
     if (!(await usuarioExiste(username))) return;
     const c = await getCanal(canal);
     if (!c || !c.bot_activo) return;
-    // No abrir bloque si el canal está offline (con cache de 5 min)
     if (!(await canalEstaActivo(canal, c))) return;
-    await inicializarDiaLurk(username);
-    const lurk = await getLurkStats(username);
-    if (!lurk) return;
-    if (lurk.lurk_join_actual) {
-        const desde = Date.now() - new Date(lurk.lurk_join_actual).getTime();
+    await inicializarDiaLurkV2(username);
+    const v2 = await getLurkV2(username);
+    if (!v2) return;
+    if (v2.completo) return;
+    if (v2.join_actual) {
+        const desde = Date.now() - new Date(v2.join_actual).getTime();
         if (desde < LURK_MICRO_COOLDOWN_MS) {
-            console.log('👁️ JOIN (micro-cooldown): ' + username);
             return;
         }
         await lurkCerrarBloque(username);
     }
-    await updateLurkStats(username, { lurk_join_actual: new Date().toISOString() });
-    console.log('👁️ JOIN (bloque abierto): ' + username);
+    await updateLurkV2(username, { join_actual: new Date().toISOString() });
 }
 
 async function lurkPart(username) {
-    const lurk = await getLurkStats(username);
-    if (!lurk || !lurk.lurk_join_actual) return;
+    const v2 = await getLurkV2(username);
+    if (!v2 || !v2.join_actual) return;
+    if (v2.completo) {
+        await updateLurkV2(username, { join_actual: null });
+        return;
+    }
     await lurkCerrarBloque(username);
-    console.log('👁️ PART (bloque cerrado): ' + username);
 }
-
+async function rachaSeMantiene(ultimoDiaRacha, hoy) {
+    if (!ultimoDiaRacha) return false;
+    if (ultimoDiaRacha === hoy) return true;
+    // Leer días con stream
+    const { data: ds } = await supabase.from('bot_config')
+        .select('valor').eq('clave', 'dias_con_stream').maybeSingle();
+    let dias = [];
+    if (ds && ds.valor) { try { dias = JSON.parse(ds.valor); } catch (e) { dias = []; } }
+    // Si no hay info de días con stream, asumimos que sí (no romper racha)
+    if (dias.length === 0) return true;
+    // ¿Hubo algún día con stream entre ultimoDiaRacha (exclusive) y hoy (exclusive)?
+    const enMedio = dias.filter(d => d > ultimoDiaRacha && d < hoy);
+    return enMedio.length === 0;
+}
 async function lurkCerrarBloque(username) {
-    const lurk = await getLurkStats(username);
-    if (!lurk || !lurk.lurk_join_actual) return;
+    const v2 = await getLurkV2(username);
+    if (!v2 || !v2.join_actual) return;
+    if (v2.completo) {
+        await updateLurkV2(username, { join_actual: null });
+        return;
+    }
     const user = await getUsuario(username);
     if (!user) return;
-    const inicio = new Date(lurk.lurk_join_actual).getTime();
+
+    const inicio = new Date(v2.join_actual).getTime();
     const minutosBloque = Math.max(0, Math.floor((Date.now() - inicio) / 60000));
-    const totalAntes = lurk.lurk_minutos_hoy || 0;
-    const totalDespues = Math.min(60, totalAntes + minutosBloque);
-    const minutosReales = totalDespues - totalAntes;
-    let idxRango = lurk.lurk_rango_inicio;
-    if (idxRango === null || idxRango === undefined) {
-        const supObs = await esSupremoObservacion(username);
-        idxRango = getRangoObservacion(user.observacion || 0, supObs).idx;
-        await updateLurkStats(username, { lurk_rango_inicio: idxRango });
+    const totalAntes = v2.minutos_hoy || 0;
+    const totalDespues = totalAntes + minutosBloque;
+
+    const postasAntes = v2.postas_hoy || 0;
+    const postasNuevas = Math.min(3, calcularPostasPorMinutos(totalDespues));
+
+    let puntosNuevos = 0;
+    if (postasNuevas > postasAntes) {
+        puntosNuevos += calcularPuntosPostas(postasAntes, postasNuevas);
     }
-    const ptsRango = getPtsPostasPorRango(idxRango);
-    const postasPrev = lurk.lurk_postas_hoy || 0;
-    const postasNuevas = Math.min(3, Math.floor(totalDespues / 20));
-    let ptsNuevos = 0;
-    for (let i = postasPrev; i < postasNuevas; i++) ptsNuevos += ptsRango[i] || 0;
-    let rachaNueva = lurk.lurk_racha || 0;
-    let ultimoDiaRacha = lurk.lurk_ultimo_dia_racha;
-    if (postasNuevas >= 3 && postasPrev < 3) {
-        const hoy = getFechaHoy();
-        if (ultimoDiaRacha !== hoy) {
-            const ayer = getFechaOffset(-1);
-            rachaNueva = (ultimoDiaRacha === ayer) ? (rachaNueva + 1) : 1;
-            ptsNuevos += calcularBonusRacha(rachaNueva);
+
+    // Racha: solo al llegar a 3 postas por primera vez hoy
+    let rachaNueva = null;
+    let ultimoDiaRacha = null;
+    if (postasNuevas >= 3 && postasAntes < 3) {
+        const reg = await getLurkReg(username);
+        if (reg) {
+            const hoy = getFechaHoy();
+            let racha = reg.racha || 0;
+            const mantieneRacha = await rachaSeMantiene(reg.ultimo_dia_racha, hoy);
+            if (!mantieneRacha) racha = 0;
+            racha += 1;
+            const bonusRacha = calcularBonusRacha(racha);
+            puntosNuevos += bonusRacha;
+            rachaNueva = racha;
             ultimoDiaRacha = hoy;
         }
-        if (lurk.lurk_npc_pendiente > 0) {
-            ptsNuevos += lurk.lurk_npc_pendiente;
-            await updateLurkStats(username, { lurk_npc_pendiente: 0 });
-        }
     }
-    await updateLurkStats(username, {
-        lurk_minutos_hoy: totalDespues,
-        lurk_postas_hoy: postasNuevas,
-        lurk_puntos_hoy: (lurk.lurk_puntos_hoy || 0) + ptsNuevos,
-        lurk_racha: rachaNueva,
-        lurk_ultimo_dia_racha: ultimoDiaRacha,
-        lurk_join_actual: null,
-        lurk_ultimo_chequeo: new Date().toISOString(),
-        minutos_lurk_total: (lurk.minutos_lurk_total || 0) + minutosReales
-    });
-    const obsAntesLurk = user.observacion || 0;
-    if (ptsNuevos !== 0 || minutosReales > 0) await agregarPuntosObservacion(username, ptsNuevos, minutosReales);
-    if (minutosReales > 0) {
-        await updateUsuario(username, { minutos_lurk: (user.minutos_lurk || 0) + minutosReales });
+
+    // Acreditar puntos (escribe en lurkreg.diaX + lurkv2.puntos_hoy)
+    if (puntosNuevos !== 0) {
+        await agregarPuntosObservacionNueva(username, puntosNuevos);
     }
-    if (ptsNuevos !== 0) {
-        const userPostObs = await getUsuario(username);
-        if (userPostObs) chequearHakiCambio('observacion', obsAntesLurk, userPostObs.observacion);
+
+    // Avist pendiente: si llegó a ≥1 posta, acreditar
+    if (postasNuevas >= 1 && v2.avist_pendiente > 0) {
+        await agregarPuntosObservacionNueva(username, v2.avist_pendiente);
+        await updateLurkV2(username, { avist_pendiente: 0 });
     }
-    // Si acaba de llegar a 3 postas y ya canjeó el avistamiento → día perfecto
-    if (postasNuevas >= 3 && postasPrev < 3 && lurk.lurk_npc_canjeado_hoy) {
-        await marcarDiaPerfecto(username);
-        console.log('🌟 Día perfecto marcado: ' + username);
+
+    // Actualizar lurkv2
+    const updateV2 = {
+        minutos_hoy: totalDespues,
+        postas_hoy: postasNuevas,
+        join_actual: null,
+        ultimo_chequeo: new Date().toISOString()
+    };
+    if (postasNuevas >= 3) updateV2.completo = true;
+    await updateLurkV2(username, updateV2);
+
+    // Actualizar racha en lurkreg
+    if (rachaNueva !== null) {
+        await updateLurkReg(username, { racha: rachaNueva, ultimo_dia_racha: ultimoDiaRacha });
     }
-    console.log('📊 Lurk cerrado: ' + username + ' → ' + totalDespues + ' min, ' + postasNuevas + ' postas, +' + ptsNuevos + ' pts');
+
+    // Minutos totales (para !infoop)
+    if (minutosBloque > 0) {
+        await updateUsuario(username, { minutos_lurk: (user.minutos_lurk || 0) + minutosBloque });
+    }
+
+    if (puntosNuevos !== 0) {
+        const userPost = await getUsuario(username);
+        if (userPost) chequearHakiCambio('observacion', user.observacion || 0, userPost.observacion);
+    }
+
+    console.log('📊 Lurk cerrado: ' + username + ' → ' + totalDespues + ' min, ' + postasNuevas + ' postas, +' + puntosNuevos + ' pts');
+
+    // Notificación de rango
     const userFresh = await getUsuario(username);
     if (userFresh) {
         const supObs = await esSupremoObservacion(username);
         const rangoActual = getRangoObservacion(userFresh.observacion || 0, supObs);
-        let rangoNotifLocal = lurk.lurk_rango_notificado;
-        // Primer punto de observación (idx 0, todavía no llegó a Despertado)
-        if (rangoActual.idx === 0 && rangoNotifLocal < 0 && (userFresh.observacion || 0) >= 1) {
+        const reg = await getLurkReg(username);
+        const rangoNotif = reg ? (reg.rango_notificado === null || reg.rango_notificado === undefined ? -1 : reg.rango_notificado) : -1;
+        if (rangoActual.idx === 0 && rangoNotif < 0 && (userFresh.observacion || 0) >= 1) {
             await notificar(username, userFresh.twitch_user_id, MENSAJES_RANGO_OBS[1]);
-            rangoNotifLocal = 0;
-            await updateLurkStats(username, { lurk_rango_notificado: 0 });
-        }
-        // Subidas de rango (Despertado o más)
-        if (rangoActual.idx >= 1 && rangoActual.idx > rangoNotifLocal) {
+            await updateLurkReg(username, { rango_notificado: 0 });
+        } else if (rangoActual.idx >= 1 && rangoActual.idx > rangoNotif) {
             console.log('⬆️ Rango: ' + username + ' → Observación ' + rangoActual.nombre);
-            if (rangoActual.idx <= 5) {
-                const msg = MENSAJES_RANGO_OBS[rangoActual.idx + 1];
-                if (msg) await notificar(username, userFresh.twitch_user_id, msg);
-            }
-            await updateLurkStats(username, { lurk_rango_notificado: rangoActual.idx });
+            const msg = MENSAJES_RANGO_OBS[rangoActual.idx + 1];
+            if (msg) await notificar(username, userFresh.twitch_user_id, msg);
+            await updateLurkReg(username, { rango_notificado: rangoActual.idx });
         }
     }
 }
 
-async function lurkProcesarPostas(username) {
-    return await lurkCerrarBloque(username);
+async function inicializarDiaLurkV2(username) {
+    const v2 = await getLurkV2(username);
+    if (!v2) return null;
+    const hoy = getFechaHoy();
+    if (v2.ultimo_dia === hoy) return v2;
+    await updateLurkV2(username, {
+        minutos_hoy: 0,
+        postas_hoy: 0,
+        puntos_hoy: 0,
+        completo: false,
+        avist_reclamado: false,
+        avist_pendiente: 0,
+        join_actual: null,
+        ultimo_dia: hoy
+    });
+    return await getLurkV2(username);
 }
+
 // Cache de live por canal (5 min TTL)
 const liveCache = {};
 const LIVE_CACHE_TTL = 5 * 60 * 1000;
@@ -1594,15 +1601,13 @@ async function escanearChatters(canal) {
         // 1. ¿Está live el canal?
         const live = await checkLiveHelix(canal);
         if (!live) {
-            const { data: abiertos } = await supabase.from('lurk_stats')
-                .select('username').not('lurk_join_actual', 'is', null);
+            const { data: abiertos } = await supabase.from('lurkv2')
+                .select('usuario').not('join_actual', 'is', null);
             if (abiertos && abiertos.length > 0) {
                 for (const a of abiertos) {
-                    await lurkCerrarBloque(a.username);
+                    await lurkCerrarBloque(a.usuario);
                 }
                 console.log('👁️ Scan ' + canal + ': canal offline, ' + abiertos.length + ' bloques cerrados');
-            } else {
-                console.log('👁️ Scan ' + canal + ': canal offline, sin bloques abiertos');
             }
             return;
         }
@@ -1628,8 +1633,8 @@ async function escanearChatters(canal) {
         const data = await res.json();
         const chatters = data.data || [];
 
-        // 3. Usuarios registrados (solo los que alguna vez interactuaron con el bot)
-        const { data: usuariosDb } = await supabase.from('lurk_stats').select('username');
+        // 3. Usuarios registrados (todos los que interactuaron con el bot alguna vez)
+        const { data: usuariosDb } = await supabase.from('usuarios').select('username');
         const usuariosSet = new Set((usuariosDb || []).map(u => u.username.toLowerCase()));
 
         // 4. Registrados que están en el chat
@@ -1639,32 +1644,29 @@ async function escanearChatters(canal) {
             if (usuariosSet.has(u)) enChat.add(u);
         }
 
-        // 5. Reabrir bloques de los que están en el chat
-        let reabiertos = 0;
+        // 5. Reabrir bloques de los que están en el chat (omitiendo completos)
         for (const username of enChat) {
-            const lurk = await getLurkStats(username);
-            if (!lurk) continue;
-            if (lurk.lurk_join_actual) await lurkCerrarBloque(username);
-            await inicializarDiaLurk(username);
-            await updateLurkStats(username, { lurk_join_actual: new Date().toISOString() });
-            reabiertos++;
-        }
-
-        // 6. Cerrar bloques de registrados que ya NO están en el chat
-        const { data: conBloque } = await supabase.from('lurk_stats')
-            .select('username').not('lurk_join_actual', 'is', null);
-        let cerrados = 0;
-        if (conBloque) {
-            for (const row of conBloque) {
-                if (!enChat.has(row.username) && usuariosSet.has(row.username)) {
-                    await lurkCerrarBloque(row.username);
-                    cerrados++;
-                }
+            const v2 = await getLurkV2(username);
+            if (!v2) continue;
+            if (v2.completo) continue;
+            if (v2.join_actual) await lurkCerrarBloque(username);
+            await inicializarDiaLurkV2(username);
+            const v2Fresh = await getLurkV2(username);
+            if (v2Fresh && !v2Fresh.completo) {
+                await updateLurkV2(username, { join_actual: new Date().toISOString() });
             }
         }
 
-        console.log('👁️ Scan ' + canal + ': ' + chatters.length + ' chatters, ' +
-            enChat.size + ' registrados, ' + reabiertos + ' bloques activos, ' + cerrados + ' cerrados');
+        // 6. Cerrar bloques de registrados que ya NO están en el chat
+        const { data: conBloque } = await supabase.from('lurkv2')
+            .select('usuario').not('join_actual', 'is', null);
+        if (conBloque) {
+            for (const row of conBloque) {
+                if (!enChat.has(row.usuario) && usuariosSet.has(row.usuario)) {
+                    await lurkCerrarBloque(row.usuario);
+                }
+            }
+        }
     } catch (err) {
         console.error('❌ Error escanearChatters:', err);
     }
@@ -1700,50 +1702,89 @@ async function programarProximoScan() {
         programarProximoScan();
     }, ms);
 }
+async function cerrarDiaObservacion(fechaAnterior) {
+    // Verificar si el día anterior tuvo stream (según bot_config.dias_con_stream)
+    const { data: ds } = await supabase.from('bot_config')
+        .select('valor').eq('clave', 'dias_con_stream').maybeSingle();
+    let dias = [];
+    if (ds && ds.valor) {
+        try { dias = JSON.parse(ds.valor); } catch (e) { dias = []; }
+    }
+    if (!dias.includes(fechaAnterior)) {
+        console.log('📅 Cierre ' + fechaAnterior + ': sin stream, vigencia no avanza');
+        return;
+    }
+    // Avanzar vigencia para todos los usuarios de lurkreg
+    const { data: usuarios } = await supabase.from('lurkreg').select('usuario');
+    if (!usuarios || usuarios.length === 0) return;
+    for (const u of usuarios) {
+        await avanzarVigencia(u.usuario);
+    }
+    console.log('📅 Cierre ' + fechaAnterior + ': vigencia avanzada para ' + usuarios.length + ' usuarios');
+}
+
 async function lurkChequeoPeriodico() {
     try {
         const hoy = getFechaHoy();
-        const { data: activosPre } = await supabase.from('lurk_stats')
-            .select('username, lurk_join_actual, lurk_ultimo_dia')
-            .not('lurk_join_actual', 'is', null);
+        const ayer = getFechaOffset(-1);
+
+        // 1. Cerrar bloques abiertos de días anteriores (por si el bot estuvo offline)
+        //    IMPORTANTE: esto va ANTES de avanzar la vigencia, para que los puntos
+        //    del bloque abierto caigan en el slot del día que correspondía.
+        const { data: activosPre } = await supabase.from('lurkv2')
+            .select('usuario, join_actual, ultimo_dia')
+            .not('join_actual', 'is', null);
         if (activosPre) {
             for (const a of activosPre) {
-                if (a.lurk_ultimo_dia !== hoy) {
-                    await lurkCerrarBloque(a.username);
-                    const lurkFresh = await getLurkStats(a.username);
-                    let rachaNueva = lurkFresh ? (lurkFresh.lurk_racha || 0) : 0;
-                    if (lurkFresh) {
-                        const rachaEval = await db.evaluarRacha(a.username, lurkFresh);
-                        rachaNueva = rachaEval;
-                    }
-                    await updateLurkStats(a.username, {
-                        lurk_ultimo_dia: hoy,
-                        lurk_minutos_hoy: 0,
-                        lurk_puntos_hoy: 0,
-                        lurk_postas_hoy: 0,
-                        lurk_npc_pendiente: 0,
-                        lurk_npc_canjeado_hoy: false,
-                        lurk_rango_inicio: null,
-                        lurk_racha: rachaNueva
-                    });
-                    console.log('🌅 Reset diario de lurk para ' + a.username + ' (racha → ' + rachaNueva + ')');
+                if (a.ultimo_dia !== hoy) {
+                    await lurkCerrarBloque(a.usuario);
+                    await inicializarDiaLurkV2(a.usuario);
                 }
             }
         }
+
+        // 2. Cierre del día anterior (una sola vez por día)
+        const { data: flag } = await supabase.from('bot_config')
+            .select('valor').eq('clave', 'cierre_dia_ultimo').maybeSingle();
+        if (!flag || flag.valor !== ayer) {
+            await cerrarDiaObservacion(ayer);
+            await supabase.from('bot_config').upsert({ clave: 'cierre_dia_ultimo', valor: ayer });
+        }
+
+        // 3. Actualizar live_minutos de canales
         const canales = await getCanales();
+        let huboStreamHoy = false;
         for (const c of canales) {
             if (!c.bot_activo) continue;
             const live = await checkLiveHelix(c.canal);
             if (!live) continue;
+            huboStreamHoy = true;
             let liveMin = c.live_minutos_hoy || 0;
             if (c.ultimo_dia_live !== hoy) liveMin = 0;
-            liveMin += 5;
+            liveMin += 10;
             const updateC = { live_minutos_hoy: liveMin, ultimo_dia_live: hoy };
             if (liveMin >= LURK_LIVE_MINIMO_2H && c.dia_contado_2h !== hoy) {
                 updateC.dia_contado_2h = hoy;
                 console.log('📺 Día con stream contado: ' + c.canal + ' → ' + hoy);
             }
             await updateCanal(c.canal, updateC);
+        }
+
+        // 4. Registrar el día en el historial de días con stream
+        if (huboStreamHoy) {
+            const { data: ds } = await supabase.from('bot_config')
+                .select('valor').eq('clave', 'dias_con_stream').maybeSingle();
+            let dias = [];
+            if (ds && ds.valor) {
+                try { dias = JSON.parse(ds.valor); } catch (e) { dias = []; }
+            }
+            if (!dias.includes(hoy)) {
+                dias.push(hoy);
+                // Recortar a los últimos 30 días
+                dias.sort();
+                if (dias.length > 30) dias = dias.slice(-30);
+                await supabase.from('bot_config').upsert({ clave: 'dias_con_stream', valor: JSON.stringify(dias) });
+            }
         }
     } catch (err) { console.error('❌ Error lurk chequeo:', err); }
 }
@@ -1846,45 +1887,30 @@ async function procesarPersonaje(username, nombreIngresado, fromUserId) {
     if (!npcVentanaHasta || new Date(npcVentanaHasta) < new Date()) {
         await sendWhisper(fromUserId, '⏳ Ya pasó la ventana de reclamo.'); return;
     }
-    const lurk = await getLurkStats(username);
-    if (!lurk) return;
-    if (lurk.lurk_npc_canjeado_hoy) {
+    const v2 = await getLurkV2(username);
+    if (!v2) return;
+    if (v2.avist_reclamado) {
         await sendWhisper(fromUserId, 'Ya reclamaste tu avistamiento de hoy. Volvé mañana.'); return;
     }
     const ingresado = nombreIngresado.toLowerCase().trim();
     const correcto = npcActual.toLowerCase().trim();
     if (ingresado === correcto) {
-        await updateLurkStats(username, { lurk_npc_canjeado_hoy: true });
-        if ((lurk.lurk_postas_hoy || 0) >= 3) {
-            const obsAntesPersonaje = (await getUsuario(username) || {}).observacion || 0;
-            await agregarPuntosObservacion(username, 3, 0);
-            const userPostPersonaje = await getUsuario(username);
-            if (userPostPersonaje) chequearHakiCambio('observacion', obsAntesPersonaje, userPostPersonaje.observacion);
-            await updateLurkStats(username, { lurk_puntos_hoy: (lurk.lurk_puntos_hoy || 0) + 3 });
-            await marcarDiaPerfecto(username);
-            console.log('🌟 Día perfecto marcado: ' + username);
-            await sendWhisper(fromUserId, '🎯 ¡Correcto! +3 de Haki de Observación.');
+        await updateLurkV2(username, { avist_reclamado: true });
+        if ((v2.postas_hoy || 0) >= 1) {
+            const userAntes = await getUsuario(username);
+            const obsAntes = (userAntes && userAntes.observacion) || 0;
+            await agregarPuntosObservacionNueva(username, 2);
+            const userPost = await getUsuario(username);
+            if (userPost) chequearHakiCambio('observacion', obsAntes, userPost.observacion);
+            await sendWhisper(fromUserId, '👁️ ¡Bien visto! +2 de Haki de Observación para vos.');
         } else {
-            await updateLurkStats(username, { lurk_npc_pendiente: 3 });
-            console.log('👁️ NPC canjeado: ' + username + ' → acierto (+3, pendiente)');
-            await sendWhisper(fromUserId, '🎯 ¡Correcto! +3 pendientes. Se acreditan al completar tus 3 postas del día.');
+            await updateLurkV2(username, { avist_pendiente: 2 });
+            await sendWhisper(fromUserId, '👁️ ¡Acertaste! Aunque... hace falta que estés al menos 10 min en el stream. Cuando llegues, te sumo los puntos.');
         }
     } else {
-        // Fallo: -1 inmediato. No marca canjeado (permite reintentar en la ventana).
-        const obsAntesFallo = (await getUsuario(username) || {}).observacion || 0;
-        await agregarPuntosObservacion(username, -1, 0);
-        const userPostFallo = await getUsuario(username);
-        if (userPostFallo) chequearHakiCambio('observacion', obsAntesFallo, userPostFallo.observacion);
-        await updateLurkStats(username, { lurk_puntos_hoy: Math.max(0, (lurk.lurk_puntos_hoy || 0) - 1) });
-        console.log('👁️ NPC intento fallido: ' + username + ' → -1');
-        await sendWhisper(fromUserId, '❌ Ese no era. -1 de Haki de Observación.');
+        await sendWhisper(fromUserId, '❌ Ese no era, locura.');
     }
 }
-
-// ═══════════════════════════════════════════════════════════
-// CONTINÚA EN PARTE 2
-// ═══════════════════════════════════════════════════════════
-
 // ============================================
 // AYUDA
 // ============================================
@@ -2196,9 +2222,9 @@ async function handleWhisper(event) {
             return;
         }
         // Snapshot: guardar quiénes tienen bloque abierto y timestamp
-        const { data: abiertos } = await supabase.from('lurk_stats')
-            .select('username').not('lurk_join_actual', 'is', null);
-        const snapshotList = (abiertos || []).map(a => a.username);
+        const { data: abiertos } = await supabase.from('lurkv2')
+            .select('usuario').not('join_actual', 'is', null);
+        const snapshotList = (abiertos || []).map(a => a.usuario);
         await supabase.from('bot_config').upsert({ clave: 'deploy_timestamp', valor: new Date().toISOString() });
         await supabase.from('bot_config').upsert({ clave: 'deploy_snapshot', valor: JSON.stringify(snapshotList) });
         // Activar mantenimiento
@@ -2207,7 +2233,7 @@ async function handleWhisper(event) {
         let cerrados = 0;
         if (abiertos) {
             for (const a of abiertos) {
-                await lurkCerrarBloque(a.username);
+                await lurkCerrarBloque(a.usuario);
                 cerrados++;
             }
         }
@@ -2247,25 +2273,20 @@ async function handleWhisper(event) {
         if (snapshot.length > 0 && deployTs) {
             const minutosDeploy = Math.max(0, Math.floor((Date.now() - new Date(deployTs).getTime()) / 60000));
             for (const u of snapshot) {
-                const lurk = await getLurkStats(u);
-                if (!lurk || !lurk.lurk_join_actual) continue;
+                const v2 = await getLurkV2(u);
+                if (!v2 || !v2.join_actual || v2.completo) continue;
                 if (minutosDeploy > 0) {
-                    await agregarPuntosObservacion(u, 0, minutosDeploy);
+                    const totalDespues = (v2.minutos_hoy || 0) + minutosDeploy;
+                    const postasNuevasSnapshot = Math.min(3, calcularPostasPorMinutos(totalDespues));
+                    await updateLurkV2(u, {
+                        minutos_hoy: totalDespues,
+                        postas_hoy: postasNuevasSnapshot
+                    });
                     const userFresh = await getUsuario(u);
                     if (userFresh) {
                         await updateUsuario(u, { minutos_lurk: (userFresh.minutos_lurk || 0) + minutosDeploy });
                     }
-                    // Sumar minutos al lurk_stats
-                    const totalAntes = lurk.lurk_minutos_hoy || 0;
-                    const totalDespues = Math.min(60, totalAntes + minutosDeploy);
-                    const minReales = totalDespues - totalAntes;
-                    const postasNuevasSnapshot = Math.min(3, Math.floor(totalDespues / 20));
-                    await updateLurkStats(u, {
-                        lurk_minutos_hoy: totalDespues,
-                        lurk_postas_hoy: postasNuevasSnapshot,
-                        minutos_lurk_total: (lurk.minutos_lurk_total || 0) + minReales
-                    });
-                    console.log('🔧 Snapshot lurk: ' + u + ' +' + minReales + ' min (deploy)');
+                    console.log('🔧 Snapshot lurk: ' + u + ' +' + minutosDeploy + ' min (deploy)');
                 }
             }
         }
@@ -2303,15 +2324,14 @@ async function handleWhisper(event) {
             await sendWhisper(fromUserId, '⏳ Esperá unos segundos.'); return;
         }
         cooldownsLurk[username].observacion = Date.now();
-        await inicializarDiaLurk(username);
-        const lurkCheck = await getLurkStats(username);
+        await inicializarDiaLurkV2(username);
+        const v2Obs = await getLurkV2(username);
         let canalActivoObs = false;
         for (const canal of CANALES_CON_LURK) {
             if (await canalEstaActivo(canal)) { canalActivoObs = true; break; }
         }
-        if (lurkCheck && !lurkCheck.lurk_join_actual && lurkCheck.lurk_ultimo_dia === getFechaHoy() && canalActivoObs) {
-            await updateLurkStats(username, { lurk_join_actual: new Date().toISOString() });
-            console.log('👁️ Bloque reabierto por !observacion: ' + username);
+        if (v2Obs && !v2Obs.completo && !v2Obs.join_actual && v2Obs.ultimo_dia === getFechaHoy() && canalActivoObs) {
+            await updateLurkV2(username, { join_actual: new Date().toISOString() });
         }
         await mostrarObservacion(username, fromUserId);
         return;
@@ -2355,7 +2375,7 @@ async function handleWhisper(event) {
         const supArm = await esSupremoArmadura(username);
         const supObs = await esSupremoObservacion(username);
         const supConq = await esSupremoConquistador(username);
-        const lurkInfo = await getLurkStats(username);
+        const lurkInfo = await getLurkV2(username);
         const duelosHoy = await contarDuelosHoy(username);
         // ¿Puede buscar fruta?
         const tieneYami = user.fruta === 'Yami Yami no Mi';
@@ -2416,9 +2436,13 @@ async function handleWhisper(event) {
         const rangoObs = getRangoObservacion(user.observacion || 0, supObs);
         const rangoConq = getRangoConquistador(user.conquistador || 0, supConq);
 
-        // Postas
-        const postasHoy = (lurkInfo && lurkInfo.lurk_postas_hoy) || 0;
-        const minLurkHoy = (lurkInfo && lurkInfo.lurk_minutos_hoy) || 0;
+        // Postas (con progreso del bloque abierto)
+        let minLurkHoy = (lurkInfo && lurkInfo.minutos_hoy) || 0;
+        if (lurkInfo && lurkInfo.join_actual && !lurkInfo.completo) {
+            const transcurridos = Math.max(0, Math.floor((Date.now() - new Date(lurkInfo.join_actual).getTime()) / 60000));
+            minLurkHoy += transcurridos;
+        }
+        const postasHoy = Math.min(3, calcularPostasPorMinutos(minLurkHoy));
 
         // Explorar
         let estadoExplorar = '🗺️ disponible';
@@ -2757,25 +2781,37 @@ async function handleWhisper(event) {
 async function mostrarObservacion(username, fromUserId) {
     const user = await getUsuario(username);
     if (!user) return;
-    const lurk = await getLurkStats(username);
-    if (!lurk) { await sendWhisper(fromUserId, 'Error.'); return; }
+    const v2 = await getLurkV2(username);
+    if (!v2) { await sendWhisper(fromUserId, 'Error.'); return; }
+    const reg = await getLurkReg(username);
+    if (!reg) { await sendWhisper(fromUserId, 'Error.'); return; }
     const supObs = await esSupremoObservacion(username);
     const rango = getRangoObservacion(user.observacion || 0, supObs);
-    const postas = lurk.lurk_postas_hoy || 0;
-    const minutos = lurk.lurk_minutos_hoy || 0;
-    const ptsHoy = lurk.lurk_puntos_hoy || 0;
-    const racha = lurk.lurk_racha || 0;
-    const bonusRacha = racha > 0 ? calcularBonusRacha(racha) : 0;
-    let avistamiento = '❌ no reclamado';
-    if (lurk.lurk_npc_canjeado_hoy) {
-        avistamiento = (lurk.lurk_npc_pendiente > 0) ? '⏳ pendiente (te faltan postas)' : '✅ reclamado';
+
+    // Calcular progreso actual (incluyendo bloque abierto si lo hay)
+    let minutosActuales = v2.minutos_hoy || 0;
+    if (v2.join_actual && !v2.completo) {
+        const transcurridos = Math.max(0, Math.floor((Date.now() - new Date(v2.join_actual).getTime()) / 60000));
+        minutosActuales += transcurridos;
     }
+    const postasActuales = Math.min(3, calcularPostasPorMinutos(minutosActuales));
+    const ptsHoy = v2.puntos_hoy || 0;
+    const ptsPendientes = v2.avist_pendiente || 0;
+    const racha = reg.racha || 0;
+    const bonusRacha = racha > 0 ? calcularBonusRacha(racha) : 0;
+
+    let avistamiento = '❌ no reclamado';
+    if (v2.avist_reclamado) {
+        avistamiento = (v2.avist_pendiente > 0) ? '⏳ pendiente (necesitás 10 min en el chat)' : '✅ reclamado';
+    }
+
     let faltan = '';
-    if (postas < 3) faltan = 'Faltan: ' + (3 - postas) + ' posta' + (postas === 2 ? '' : 's') + ' para completar el día';
+    if (postasActuales < 3) faltan = 'Faltan: ' + (3 - postasActuales) + ' posta' + (postasActuales === 2 ? '' : 's') + ' para completar el día';
     else faltan = '¡Día completo!';
+
     const msg = '📡 Haki de Observación\n' +
-        '🚩 Postas hoy: ' + postas + '/3 (' + minutos + ' min)\n' +
-        '📈 Puntos hoy: +' + ptsHoy + '\n' +
+        '🚩 Postas hoy: ' + postasActuales + '/3 (' + minutosActuales + ' min)\n' +
+        '📈 Puntos hoy: +' + ptsHoy + (ptsPendientes > 0 ? ' (+' + ptsPendientes + ' pendiente)' : '') + '\n' +
         '🔥 Racha: ' + racha + ' día' + (racha === 1 ? '' : 's') + (bonusRacha > 0 ? ' (bonus +' + bonusRacha + ')' : '') + '\n' +
         '🔭 Avistamiento: ' + avistamiento + '\n' +
         '⏳ ' + faltan + '\n' +
@@ -4113,9 +4149,6 @@ setInterval(revisarColiseosExpirados, 2 * 60 * 1000);
 setInterval(schedulerPenalizacionesDiarias, 60 * 60 * 1000);
 
 // Limpieza de historial viejo (1 vez cada 6 horas)
-setInterval(async () => {
-    try { await limpiarHistorialViejo(); } catch (e) { console.error('Error limpiando historial:', e); }
-}, 6 * 60 * 60 * 1000);
 
 // Scheduler de Supremos cada 30s
 setInterval(async () => {
