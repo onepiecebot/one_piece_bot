@@ -203,11 +203,11 @@ async function schedulerPenalizacionesDiarias() {
     try {
         // Solo corre si ya pasó las 3:45 AR y no corrió hoy
         const ahora = new Date();
-        const offsetArg = -3 * 60;
-        const utc = ahora.getTime() + (ahora.getTimezoneOffset() * 60000);
-        const argNow = new Date(utc + (offsetArg * 60000));
-        const hora = argNow.getHours();
-        const min = argNow.getMinutes();
+        const utcMs = ahora.getTime();
+        const arMs = utcMs - (3 * 60 * 60 * 1000);
+        const argNow = new Date(arMs);
+        const hora = argNow.getUTCHours();
+        const min = argNow.getUTCMinutes();
         if (hora < 3 || (hora === 3 && min < 45)) return;
         const hoy = getFechaHoy();
         const { data: flag } = await supabase.from('bot_config').select('valor').eq('clave', 'penalizacion_ultimo_run').maybeSingle();
@@ -1263,13 +1263,12 @@ async function puedeExplorar(user) {
     const hoy = getFechaHoy();
     if (!user.ultimo_dia_exploracion || user.ultimo_dia_exploracion !== hoy) return { ok: true };
     const ahora = new Date();
-    const offsetArg = -3 * 60;
-    const utc = ahora.getTime() + (ahora.getTimezoneOffset() * 60000);
-    const argNow = new Date(utc + (offsetArg * 60000));
-    const manana = new Date(argNow);
-    manana.setDate(manana.getDate() + 1);
-    manana.setHours(0, 0, 0, 0);
-    return { ok: false, restante: manana.getTime() - argNow.getTime() };
+    const utcMs = ahora.getTime();
+    const arMs = utcMs - (3 * 60 * 60 * 1000);
+    const manana = new Date(arMs);
+    manana.setUTCDate(manana.getUTCDate() + 1);
+    manana.setUTCHours(0, 0, 0, 0);
+    return { ok: false, restante: manana.getTime() - arMs };
 }
 
 function formatTiempoRestante(ms) {
@@ -1546,6 +1545,8 @@ async function inicializarDiaLurkV2(username) {
 // Cache de live por canal (5 min TTL)
 const liveCache = {};
 const LIVE_CACHE_TTL = 5 * 60 * 1000;
+// Estado de "última vez que vi live por scan" para evitar spam de logs
+const canalesEstadoScan = {};
 
 async function canalEstaActivo(canal, canalDb) {
     const c = canalDb !== undefined ? canalDb : await getCanal(canal);
@@ -1614,7 +1615,11 @@ async function escanearChatters(canal) {
         // 1. ¿Está live el canal?
         const live = await checkLiveHelix(canal);
         if (!live) {
-            console.log('📺 Canal OFFLINE: ' + canal);
+            // Loguear OFFLINE solo si la última vez que se escaneó estaba EN VIVO
+            if (canalesEstadoScan[canal] === true) {
+                console.log('📺 Canal OFFLINE: ' + canal);
+            }
+            canalesEstadoScan[canal] = false;
             const { data: abiertos } = await supabase.from('lurkv2')
                 .select('usuario').not('join_actual', 'is', null);
             if (abiertos && abiertos.length > 0) {
@@ -1646,6 +1651,7 @@ async function escanearChatters(canal) {
         }
         const data = await res.json();
         const chatters = data.data || [];
+        canalesEstadoScan[canal] = true; // Marcar como online (próximo OFFLINE sí va a loguear)
 
         // 3. Usuarios registrados (todos los que interactuaron con el bot alguna vez)
         const { data: usuariosDb } = await supabase.from('usuarios').select('username');
@@ -1688,10 +1694,10 @@ async function escanearChatters(canal) {
 
 function msHastaProximoScan() {
     const ahora = new Date();
-    const offsetArg = -3 * 60;
-    const utc = ahora.getTime() + (ahora.getTimezoneOffset() * 60000);
-    const arg = new Date(utc + (offsetArg * 60000));
-    const minutosTotales = arg.getHours() * 60 + arg.getMinutes() + arg.getSeconds() / 60;
+    const utcMs = ahora.getTime();
+    const arMs = utcMs - (3 * 60 * 60 * 1000);
+    const arg = new Date(arMs);
+    const minutosTotales = arg.getUTCHours() * 60 + arg.getUTCMinutes() + arg.getUTCSeconds() / 60;
     let proximo = null;
     for (let h = 0; h < 24 && proximo === null; h++) {
         for (const m of [1, 21, 41]) {
@@ -1878,11 +1884,11 @@ async function anunciarNpc() {
 
 function msHastaProximoMedia() {
     const ahora = new Date();
-    const offsetArg = -3 * 60;
-    const utc = ahora.getTime() + (ahora.getTimezoneOffset() * 60000);
-    const arg = new Date(utc + (offsetArg * 60000));
-    const minutos = arg.getMinutes();
-    const segundos = arg.getSeconds();
+    const utcMs = ahora.getTime();
+    const arMs = utcMs - (3 * 60 * 60 * 1000);
+    const arDate = new Date(arMs);
+    const minutos = arDate.getUTCMinutes();
+    const segundos = arDate.getUTCSeconds();
     let minsFaltantes;
     if (minutos < 30) minsFaltantes = 30 - minutos;
     else minsFaltantes = 60 - minutos + 30;

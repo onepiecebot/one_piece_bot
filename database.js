@@ -27,11 +27,13 @@ const getFechaHoy = () => getFechaOffset(0);
 
 function getFechaNpc() {
     const ahora = new Date();
-    const offsetArg = -3 * 60;
-    const utc = ahora.getTime() + (ahora.getTimezoneOffset() * 60000);
-    const arg = new Date(utc + (offsetArg * 60000));
-    if (arg.getHours() < 3) arg.setDate(arg.getDate() - 1);
-    return arg.toISOString().split('T')[0];
+    const utcMs = ahora.getTime();
+    const arMs = utcMs - (3 * 60 * 60 * 1000);
+    const arDate = new Date(arMs);
+    if (arDate.getUTCHours() < 3) {
+        arDate.setUTCDate(arDate.getUTCDate() - 1);
+    }
+    return arDate.toISOString().split('T')[0];
 }
 
 // ==================== USUARIOS ====================
