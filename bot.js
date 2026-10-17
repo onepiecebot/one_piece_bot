@@ -1377,6 +1377,19 @@ async function lurkJoin(username, canal) {
     const c = await getCanal(canal);
     if (!c || !c.bot_activo) return;
     if (!(await canalEstaActivo(canal, c))) return;
+
+    // Si alguien entra al chat y el canal está en vivo, el streamer también está en vivo.
+    // Le abrimos el bloque al streamer si no lo tenía abierto todavía.
+    if (username !== canal) {
+        const streamerV2 = await getLurkV2(canal);
+        if (streamerV2 && !streamerV2.completo && !streamerV2.join_actual) {
+            await inicializarDiaLurkV2(canal);
+            await updateLurkV2(canal, { join_actual: new Date().toISOString() });
+            console.log('📺 Canal EN VIVO: ' + canal);
+            console.log('👁️ JOIN (bloque abierto): ' + canal);
+        }
+    }
+
     await inicializarDiaLurkV2(username);
     const v2 = await getLurkV2(username);
     if (!v2) return;
@@ -1601,6 +1614,7 @@ async function escanearChatters(canal) {
         // 1. ¿Está live el canal?
         const live = await checkLiveHelix(canal);
         if (!live) {
+            console.log('📺 Canal OFFLINE: ' + canal);
             const { data: abiertos } = await supabase.from('lurkv2')
                 .select('usuario').not('join_actual', 'is', null);
             if (abiertos && abiertos.length > 0) {
@@ -1691,9 +1705,6 @@ function msHastaProximoScan() {
 
 async function programarProximoScan() {
     const ms = msHastaProximoScan();
-    const mins = Math.floor(ms / 60000);
-    const secs = Math.floor((ms % 60000) / 1000);
-    console.log('👁️ Próximo scan de chatters en ' + mins + 'm ' + secs + 's');
     setTimeout(async () => {
         for (const canal of CANALES_CON_LURK) {
             try { await escanearChatters(canal); }
@@ -1755,9 +1766,6 @@ async function lurkChequeoPeriodico() {
         for (const c of canales) {
             if (!c.bot_activo) continue;
             const live = await checkLiveHelix(c.canal);
-            const estabaLive = (c.ultimo_dia_live === hoy && c.live_minutos_hoy > 0);
-            if (live && !estabaLive) console.log('📺 Canal EN VIVO: ' + c.canal);
-            if (!live && estabaLive) console.log('📺 Canal OFFLINE: ' + c.canal);
             if (!live) continue;
             huboStreamHoy = true;
             let liveMin = c.live_minutos_hoy || 0;
