@@ -15,11 +15,13 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 function getFechaOffset(diasOffset) {
     if (diasOffset === undefined) diasOffset = 0;
     const ahora = new Date();
-    ahora.setDate(ahora.getDate() + diasOffset);
-    const offsetArg = -3 * 60;
-    const utc = ahora.getTime() + (ahora.getTimezoneOffset() * 60000);
-    const arg = new Date(utc + (offsetArg * 60000));
-    return arg.toISOString().split('T')[0];
+    const utcMs = ahora.getTime() + (diasOffset * 24 * 60 * 60 * 1000);
+    const arMs = utcMs - (3 * 60 * 60 * 1000);
+    const arDate = new Date(arMs);
+    const y = arDate.getUTCFullYear();
+    const m = String(arDate.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(arDate.getUTCDate()).padStart(2, '0');
+    return y + '-' + m + '-' + d;
 }
 const getFechaHoy = () => getFechaOffset(0);
 
@@ -409,10 +411,20 @@ async function updateLurkReg(username, datos) {
 async function recalcularObservacionNueva(username) {
     const reg = await getLurkReg(username);
     if (!reg) return null;
-    let total = 0;
-    for (let i = 1; i <= 21; i++) {
-        if (i === reg.vigencia) continue;
-        total += reg['dia' + i] || 0;
+    const v = reg.vigencia || 0;
+    
+    let total21 = 0;
+    for (let i = 1; i <= 21; i++) total21 += reg['dia' + i] || 0;
+    
+    let total;
+    if (v <= 20) {
+        total = total21;
+    } else {
+        const slotActual = ((v - 1) % 21) + 1;
+        const slotNext = (slotActual % 21) + 1;
+        const vActual = reg['dia' + slotActual] || 0;
+        const vNext = reg['dia' + slotNext] || 0;
+        total = total21 - Math.min(vActual, vNext);
     }
     total = Math.max(0, total);
     await updateLurkReg(username, { puntos_actuales: total });
@@ -431,7 +443,7 @@ async function agregarPuntosObservacionNueva(username, puntos) {
         reg = await getLurkReg(username);
         if (!reg) return null;
     }
-    const slotActual = 'dia' + reg.vigencia;
+    const slotActual = 'dia' + (((reg.vigencia - 1) % 21) + 1);
     const valorActual = reg[slotActual] || 0;
     await updateLurkReg(username, { [slotActual]: valorActual + puntos });
     const v2 = await getLurkV2(username);
@@ -445,9 +457,8 @@ async function agregarPuntosObservacionNueva(username, puntos) {
 async function avanzarVigencia(username) {
     const reg = await getLurkReg(username);
     if (!reg) return null;
-    let nueva = (reg.vigencia || 0) + 1;
-    if (nueva > 21) nueva = 1;
-    const slotNuevo = 'dia' + nueva;
+    const nueva = (reg.vigencia || 0) + 1;
+    const slotNuevo = 'dia' + (((nueva - 1) % 21) + 1);
     await updateLurkReg(username, {
         vigencia: nueva,
         [slotNuevo]: 0
