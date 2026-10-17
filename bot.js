@@ -1728,18 +1728,16 @@ async function lurkChequeoPeriodico() {
         const hoy = getFechaHoy();
         const ayer = getFechaOffset(-1);
 
-        // 1. Cerrar bloques abiertos de días anteriores (por si el bot estuvo offline)
-        //    IMPORTANTE: esto va ANTES de avanzar la vigencia, para que los puntos
-        //    del bloque abierto caigan en el slot del día que correspondía.
-        const { data: activosPre } = await supabase.from('lurkv2')
+        // 1. Cerrar bloques y resetear a TODOS los que quedaron en el día anterior
+        const { data: desfasados } = await supabase.from('lurkv2')
             .select('usuario, join_actual, ultimo_dia')
-            .not('join_actual', 'is', null);
-        if (activosPre) {
-            for (const a of activosPre) {
-                if (a.ultimo_dia !== hoy) {
+            .neq('ultimo_dia', hoy);
+        if (desfasados) {
+            for (const a of desfasados) {
+                if (a.join_actual) {
                     await lurkCerrarBloque(a.usuario);
-                    await inicializarDiaLurkV2(a.usuario);
                 }
+                await inicializarDiaLurkV2(a.usuario);
             }
         }
 
@@ -1757,6 +1755,9 @@ async function lurkChequeoPeriodico() {
         for (const c of canales) {
             if (!c.bot_activo) continue;
             const live = await checkLiveHelix(c.canal);
+            const estabaLive = (c.ultimo_dia_live === hoy && c.live_minutos_hoy > 0);
+            if (live && !estabaLive) console.log('📺 Canal EN VIVO: ' + c.canal);
+            if (!live && estabaLive) console.log('📺 Canal OFFLINE: ' + c.canal);
             if (!live) continue;
             huboStreamHoy = true;
             let liveMin = c.live_minutos_hoy || 0;
@@ -1836,6 +1837,14 @@ async function anunciarNpc() {
         const desdeUlt = Date.now() - new Date(npcUltimoAnuncio).getTime();
         if (desdeUlt < 55 * 60 * 1000) return;
     }
+    // Verificar si hay al menos un canal live antes de anunciar
+    const canalesCheck = await getCanales();
+    let hayAlgunLive = false;
+    for (const c of canalesCheck) {
+        if (c.bot_activo && await checkLiveHelix(c.canal)) { hayAlgunLive = true; break; }
+    }
+    if (!hayAlgunLive) return; // Nadie en vivo, no anunciar ni gastar NPC
+
     const { data: todos } = await supabase.from('npcs').select('nombre');
     if (!todos || todos.length === 0) return;
     const disponibles = todos.filter(n =>
@@ -3638,7 +3647,7 @@ async function procesarMensajeChat(channel, tags, message, self) {
                 return;
             }
             if (user.fruta_pendiente && !user.fruta_pendiente.startsWith('meme:')) {
-                client.say(channel, '@' + tags.username + ' Tenés una fruta pendiente. Usá !comer o !rechazar primero.');
+                client.say(channel, '@' + tags.username + ' Tenés una fruta pendiente. Usá !comer, !rechazar o !frutapendiente para verla.');
                 return;
             }
             if (user.evento_fruta_estado === 'pendiente') {
