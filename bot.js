@@ -1198,7 +1198,7 @@ async function seleccionarNPCs(pcfUsuario) {
     const elegidos = new Set();
     const resultado = {};
     const orden = ['facil', 'dificil', 'medio'];
-    const rangos = { facil: [0.65, 0.97], medio: [0.21, 0.64], dificil: [0.03, 0.20] };
+    const rangos = { facil: [0.66, 0.95], medio: [0.40, 0.65], dificil: [0.20, 0.39] };
     for (const bucket of orden) {
         const [minP, maxP] = rangos[bucket];
         let cand = npcs.filter(n => {
@@ -1209,13 +1209,25 @@ async function seleccionarNPCs(pcfUsuario) {
             return prob >= minP && prob <= maxP;
         });
         if (cand.length === 0) {
-            cand = npcs.filter(n => {
+            // Fallback: buscar el NPC más cercano a la media del rango de probabilidad
+            const probMedia = (minP + maxP) / 2;
+            // Despejar PCF_NPC de la fórmula: prob = 1/(1 + (PCF_NPC/PCF_USER)^5.75)
+            const targetPcf = pcfUsuario * Math.pow((1 / probMedia) - 1, 1 / 5.75);
+            
+            const disponibles = npcs.filter(n => {
                 if (elegidos.has(n.nombre)) return false;
                 const p = n.pcf_final || n.pcf_calculado || 0;
-                if (p <= 0) return false;
-                const r = p / pcfUsuario;
-                return r >= 0.75 && r <= 1.25;
+                return p > 0;
             });
+            
+            if (disponibles.length > 0) {
+                disponibles.sort((a, b) => {
+                    const pcfA = a.pcf_final || a.pcf_calculado || 0;
+                    const pcfB = b.pcf_final || b.pcf_calculado || 0;
+                    return Math.abs(pcfA - targetPcf) - Math.abs(pcfB - targetPcf);
+                });
+                cand = [disponibles[0]]; // Solo el más cercano
+            }
         }
         // Fallback 2: usuarios muy débiles (PCF < 15) → dar los NPCs más débiles disponibles
         if (cand.length === 0 && pcfUsuario < 15) {
