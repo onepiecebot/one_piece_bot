@@ -1412,14 +1412,16 @@ async function lurkJoin(username, canal) {
         }
         await lurkCerrarBloque(username);
     }
-    await updateLurkV2(username, { join_actual: new Date().toISOString() });
+    await updateLurkV2(username, { join_actual: new Date().toISOString(), canal_actual: canal });
 }
 
-async function lurkPart(username) {
+async function lurkPart(username, canal) {
     const v2 = await getLurkV2(username);
     if (!v2 || !v2.join_actual) return;
+    // Solo cerrar si el usuario se va del canal donde estaba abierto el bloque
+    if (v2.canal_actual !== canal) return;
     if (v2.completo) {
-        await updateLurkV2(username, { join_actual: null });
+        await updateLurkV2(username, { join_actual: null, canal_actual: null });
         return;
     }
     await lurkCerrarBloque(username);
@@ -1495,6 +1497,7 @@ async function lurkCerrarBloque(username) {
         minutos_hoy: totalDespues,
         postas_hoy: postasNuevas,
         join_actual: null,
+        canal_actual: null,
         ultimo_chequeo: new Date().toISOString()
     };
     if (postasNuevas >= 3) updateV2.completo = true;
@@ -1627,13 +1630,13 @@ async function escanearChatters(canal) {
         // 1. ¿Está live el canal?
         const live = await checkLiveHelix(canal);
         if (!live) {
-            // Loguear OFFLINE solo si la última vez que se escaneó estaba EN VIVO
             if (canalesEstadoScan[canal] === true) {
                 console.log('📺 Canal OFFLINE: ' + canal);
             }
             canalesEstadoScan[canal] = false;
+            // Buscar SOLO los bloques abiertos en ESTE canal
             const { data: abiertos } = await supabase.from('lurkv2')
-                .select('usuario').not('join_actual', 'is', null);
+                .select('usuario').eq('canal_actual', canal).not('join_actual', 'is', null);
             if (abiertos && abiertos.length > 0) {
                 for (const a of abiertos) {
                     await lurkCerrarBloque(a.usuario);
@@ -1681,11 +1684,12 @@ async function escanearChatters(canal) {
             const v2 = await getLurkV2(username);
             if (!v2) continue;
             if (v2.completo) continue;
+            // Si estaba en otro canal, cerrar ese bloque primero
             if (v2.join_actual) await lurkCerrarBloque(username);
             await inicializarDiaLurkV2(username);
             const v2Fresh = await getLurkV2(username);
             if (v2Fresh && !v2Fresh.completo) {
-                await updateLurkV2(username, { join_actual: new Date().toISOString() });
+                await updateLurkV2(username, { join_actual: new Date().toISOString(), canal_actual: canal });
             }
         }
 
@@ -1764,9 +1768,14 @@ async function lurkChequeoPeriodico() {
         if (desfasados) {
             for (const a of desfasados) {
                 if (a.join_actual) {
-                    await lurkCerrarBloque(a.usuario);
+                    await lurkCerrarBloque(a.usuario); // Esto ya limpia canal_actual
                 }
                 await inicializarDiaLurkV2(a.usuario);
+            }
+            // Forzar un scan inmediato para reabrir bloques del nuevo día en canales live
+            for (const canal of CANALES_CON_LURK) {
+                try { await escanearChatters(canal); }
+                catch (e) { console.error('Error scan post-cierre ' + canal + ':', e); }
             }
         }
 
@@ -2051,7 +2060,7 @@ client.on('part', async (channel, username, self) => {
     const canal = channel.replace('#', '').toLowerCase();
     if (!canalTieneLurk(canal)) return;
     try {
-        await lurkPart(username.toLowerCase());
+        await lurkPart(username.toLowerCase(), canal);
     } catch (e) { console.error('Error lurk part:', e); }
 });
 
