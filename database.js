@@ -45,7 +45,7 @@ async function getUsuario(username, crearSiNoExiste = true) {
         const { data: newUser, error: insertError } = await supabase
             .from('usuarios')
             .insert([{
-                username, armadura: 0, observacion: 0, conquistador: 0,
+                username, armadura: 0, observacion: 0, conquistador: 5,
                 fruta: null, fruta_pendiente: null,
                 recompensa_publica: 0, recompensa_delta: 0,
                 minutos_lurk: 0,

@@ -142,7 +142,8 @@ const COMANDOS_CON_USUARIO = [
     '!continuar', '!retroceder', '!combatir', '!retirarse',
     '!exploracionpendiente', '!duelopendiente',
     '!observacion', '!personaje',
-    '!coliseo'
+    '!coliseo',
+    '!susurrame'
 ];
 
 // Comandos que funcionan también por chat en op_d_bot (redirigidos al handler de susurro).
@@ -523,16 +524,28 @@ async function verificarPenalizacionExplorar(username) {
     // Caso B: hay penalización → 1 solo update con todo
     const rangoConq = getRangoConquistadorTexto(user.conquistador || 0);
     const base = PENALIZACION_BASES[rangoConq];
-    const perdConq = base.conq * capped;
+    const perdConqTeorico = base.conq * capped;
     const perdBerries = base.berries * capped;
-    chequearHakiCambio('conquistador', user.conquistador, Math.max((user.conquistador || 0) - perdConq, 0));
+
+    // Piso 1 de Conquistador:
+    //   - si tenía >= 1, se resta con piso 1 (nunca baja a 0)
+    //   - si tenía 0, no se toca (evita subirlo a 1 por castigo)
+    const conqActual = user.conquistador || 0;
+    let conqNuevo = conqActual;
+    let perdConqAplicado = 0;
+    if (conqActual >= 1) {
+        conqNuevo = Math.max(conqActual - perdConqTeorico, 1);
+        perdConqAplicado = conqActual - conqNuevo;
+    }
+
+    chequearHakiCambio('conquistador', conqActual, conqNuevo);
     await updateUsuario(username, {
         ultimo_dia_penalizacion: hoy,
         dias_sin_explorar: capped,
-        conquistador: Math.max((user.conquistador || 0) - perdConq, 0),
+        conquistador: conqNuevo,
         recompensa_delta: (user.recompensa_delta || 0) - perdBerries
     });
-    return { dias: capped, perdConq, perdBerries };
+    return { dias: capped, perdConq: perdConqAplicado, perdConqTeorico, perdBerries };
 }
 
 // ============================================
@@ -659,29 +672,32 @@ async function esSupremoConquistador(username) {
 // ============================================
 function calcularAporteArmadura(puntos, esSupremo) {
     if (esSupremo) return 250;
-    if (puntos >= 100) return 250;
-    if (puntos >= 90) return 200;
-    if (puntos >= 70) return 125;
-    if (puntos >= 40) return 50;
-    if (puntos >= 1) return Math.floor(puntos * 1.2);
+    const p = puntos || 0;
+    if (p >= 100) return 250;
+    if (p >= 90) return 200;
+    if (p >= 70) return Math.floor(125 + (p - 70) * 37 / 19);
+    if (p >= 40) return Math.floor(50 + (p - 40) * 37 / 29);
+    if (p >= 1) return Math.floor(1 + (p - 1) * 24 / 38);
     return 0;
 }
 function calcularAporteObservacion(puntos, esSupremo) {
     if (esSupremo) return 180;
-    if (puntos >= 100) return 180;
-    if (puntos >= 90) return 144;
-    if (puntos >= 70) return 90;
-    if (puntos >= 40) return 36;
-    if (puntos >= 1) return Math.floor(puntos * 0.9);
+    const p = puntos || 0;
+    if (p >= 100) return 180;
+    if (p >= 90) return 144;
+    if (p >= 70) return Math.floor(90 + (p - 70) * 27 / 19);
+    if (p >= 40) return Math.floor(36 + (p - 40) * 27 / 29);
+    if (p >= 1) return Math.floor(1 + (p - 1) * 17 / 38);
     return 0;
 }
 function calcularAporteConquistador(puntos, esSupremo) {
     if (esSupremo) return 400;
-    if (puntos > 100) return 400;
-    if (puntos >= 95) return 250;
-    if (puntos >= 80) return 150;
-    if (puntos >= 60) return 100;
-    if (puntos >= 1) return Math.floor(puntos / 8);
+    const p = puntos || 0;
+    if (p > 100) return 400;
+    if (p >= 95) return 250;
+    if (p >= 80) return Math.floor(150 + (p - 80) * 50 / 14);
+    if (p >= 60) return Math.floor(100 + (p - 60) * 25 / 19);
+    if (p >= 1) return Math.floor(1 + (p - 1) * 49 / 58);
     return 0;
 }
 
@@ -2109,11 +2125,11 @@ async function notificar(username, toUserId, message) {
 // ============================================
 // ENVIAR SUSURRO
 // ============================================
-async function sendWhisper(toUserId, message) {
+async function sendWhisper(toUserId, message, forzarSusurro) {
     const ctx = contextoOpDBot.getStore();
-    if (ctx && ctx.fromUserId === toUserId) {
+    if (!forzarSusurro && ctx && ctx.fromUserId === toUserId) {
         client.say('op_d_bot', '@' + ctx.username + ' ' + message);
-        return;
+        return true;
     }
     const url = TWITCH_API_URL + '/whispers?from_user_id=' + config.botUserId + '&to_user_id=' + toUserId;
     try {
@@ -2128,12 +2144,44 @@ async function sendWhisper(toUserId, message) {
         });
         if (response.status === 204) {
             console.log('✅ Susurro → ' + toUserId + ': ' + message.replace(/\n/g, ' | '));
+            return true;
         } else {
             console.error('❌ Error susurro: ' + response.status, await response.text());
+            return false;
         }
-    } catch (err) { console.error('❌ Error red susurro:', err); }
+    } catch (err) {
+        console.error('❌ Error red susurro:', err);
+        return false;
+    }
 }
-
+// ============================================
+// !SUSURRAME — test de susurro
+// ============================================
+async function procesarSusurrame(username, twitchUserId, channel) {
+    if (!twitchUserId) {
+        client.say(channel, '@' + username + ' ❌ No puedo identificarte en Twitch.');
+        return;
+    }
+    const user = await getUsuario(username);
+    if (!user) {
+        client.say(channel, '@' + username + ' ❌ Error al obtener tus datos.');
+        return;
+    }
+    const antes = user.ha_susurrado;
+    if (!antes) {
+        await updateUsuario(username, { ha_susurrado: true });
+    }
+    const mensaje = '✅ ¡Funciona! Comandos que podés usar por susurro:\n' + AYUDA_SUSURRO;
+    const ok = await sendWhisper(twitchUserId, mensaje, true);
+    if (!ok) {
+        // Revertir el flag si lo habíamos cambiado
+        if (!antes) {
+            await updateUsuario(username, { ha_susurrado: false });
+        }
+        client.say(channel, '@' + username + ' ❌ No puedo mandarte susurros. Tu configuración de Twitch no lo permite.');
+    }
+    // Si ok, no avisamos nada en el chat: el usuario ya recibió el susurro
+}
 // ============================================
 // HANDLER DE SUSURROS
 // ============================================
@@ -2925,7 +2973,12 @@ async function procesarColiseo(username, canal, channel) {
         const nuevoParticipante = { username, pcf };
         await guardarColiseo(canal, { participantes: [...participantes, nuevoParticipante] });
         await updateUsuario(username, { coliseo_canal: canal, coliseos_hoy: (user.coliseos_hoy || 0) + 1 });
-        responder('✅ @' + username + ' inscripto en el Coliseo.');
+        let avisoCol = '';
+        if (!user.aviso_requisito_mostrado) {
+            avisoCol = ' ⚠️ Si no usás !explorar (por susurro o chat del bot), no vas a poder hacer duelos ni coliseos en un futuro.';
+            await updateUsuario(username, { aviso_requisito_mostrado: true });
+        }
+        responder('✅ @' + username + ' inscripto en el Coliseo.' + avisoCol);
         return;
     }
 
@@ -2999,6 +3052,10 @@ async function procesarColiseo(username, canal, channel) {
         if (participantesIniciales.length > 1) {
             client.say(channel, '🏟️ Ya hay ' + (participantesIniciales.length - 1) + ' luchador(es) esperando.');
         }
+        if (!user.aviso_requisito_mostrado) {
+            client.say(channel, '@' + username + ' ⚠️ Si no usás !explorar (por susurro o chat del bot), no vas a poder hacer duelos ni coliseos en un futuro.');
+            await updateUsuario(username, { aviso_requisito_mostrado: true });
+        }
         return;
     }
 
@@ -3053,6 +3110,10 @@ async function procesarColiseo(username, canal, channel) {
         });
         await updateUsuario(username, { coliseo_canal: canal, coliseos_hoy: (user.coliseos_hoy || 0) + 1 });
         client.say(channel, '🏟️ ¡Se reabrieron las puertas del Coliseo! Tenés ' + COLISEO_VENTANA_MINUTOS + ' minutos para entrar.');
+        if (!user.aviso_requisito_mostrado) {
+            client.say(channel, '@' + username + ' ⚠️ Si no usás !explorar (por susurro o chat del bot), no vas a poder hacer duelos ni coliseos en un futuro.');
+            await updateUsuario(username, { aviso_requisito_mostrado: true });
+        }
         return;
     }
 }
@@ -3213,11 +3274,16 @@ async function procesarRetar(username, targetRaw, fromUserId, esSusurro, chatCha
     };
     await updateUsuario(username, evento);
     await updateUsuario(target, evento);
+    let avisoRetador = '';
+    if (!user.aviso_requisito_mostrado) {
+        avisoRetador = ' ⚠️ Si no usás !explorar (por susurro o chat del bot), no vas a poder hacer duelos ni coliseos en un futuro.';
+        await updateUsuario(username, { aviso_requisito_mostrado: true });
+    }
     if (!esSusurro) {
-        client.say(chatChannel, '⚔️ @' + target + ', @' + username + ' te ha retado a un duelo.');
+        client.say(chatChannel, '⚔️ @' + target + ', @' + username + ' te ha retado a un duelo.' + avisoRetador);
     }
     await notificar(target, targetUser.twitch_user_id, '⚔️ @' + username + ' te ha retado a un duelo. Tenés 2 minutos para responder con !aceptarduelo o !rechazarduelo.');
-    if (esSusurro) await sendWhisper(fromUserId, '⚔️ Reto enviado a @' + target + '.');
+    if (esSusurro) await sendWhisper(fromUserId, '⚔️ Reto enviado a @' + target + '.' + avisoRetador);
 }
 // Calaveras para evento de fruta (calculadas al momento de mostrar)
 async function getCalaverasEventoFruta(user, frutaData) {
@@ -3351,11 +3417,20 @@ async function procesarAceptarDuelo(username, fromUserId, esSusurro, chatChannel
             texto = texto + ' | +' + conqCambio + ' Conq';
         }
     }
+    let avisoRetado = '';
+    if (!retadoUser.aviso_requisito_mostrado) {
+        avisoRetado = ' ⚠️ Si no usás !explorar (por susurro o chat del bot), no vas a poder hacer duelos ni coliseos en un futuro.';
+        await updateUsuario(retado, { aviso_requisito_mostrado: true });
+    }
     if (canalDuelo && canalDuelo !== 'op_d_bot') client.say(canalDuelo, texto);
     else client.say('op_d_bot', texto);
+    if (avisoRetado && !esSusurro) {
+        const canalAviso = (canalDuelo && canalDuelo !== 'op_d_bot') ? canalDuelo : 'op_d_bot';
+        client.say(canalAviso, '@' + retado + avisoRetado);
+    }
     await notificar(retador, retadorUser.twitch_user_id, '⚔️ ' + texto);
     await notificar(retado, retadoUser.twitch_user_id, '⚔️ ' + texto);
-    if (esSusurro) await sendWhisper(fromUserId, '⚔️ Duelo resuelto. ' + texto);
+    if (esSusurro) await sendWhisper(fromUserId, '⚔️ Duelo resuelto. ' + texto + avisoRetado);
 }
 
 async function procesarRechazarDuelo(username, fromUserId, esSusurro, chatChannel) {
@@ -3501,21 +3576,32 @@ async function procesarMensajeChat(channel, tags, message, self) {
         return;
     }
 
+    if (command === '!susurrame') {
+        await procesarSusurrame(username, twitchUserId, channel);
+        return;
+    }
+
     if (usaUsuario) {
         try {
-            // 1. Notificación pendiente del scheduler (evita reaplicar)
-            const userP = await getUsuario(username);
-            if (userP && userP.explorar_penal_pendiente) {
-                const p = userP.explorar_penal_pendiente;
-                client.say(channel, '@' + tags.username + ' 💤 No exploraste por ' + p.dias + ' día(s). Perdiste ' + p.perdConq + ' Conq y $' + p.perdBerries.toLocaleString('es-AR'));
-                await updateUsuario(username, { explorar_penal_pendiente: null });
-            } else {
-                // 2. Fallback: chequeo in-line (por si el scheduler no corrió)
-                const penal = await verificarPenalizacionExplorar(username);
-                if (penal) {
-                    client.say(channel, '@' + tags.username + ' 💤 No exploraste por ' + penal.dias + ' día(s). Perdiste ' + penal.perdConq + ' Conq y $' + penal.perdBerries.toLocaleString('es-AR'));
-                }
+        // 1. Notificación pendiente del scheduler (evita reaplicar)
+        const userP = await getUsuario(username);
+        if (userP && userP.explorar_penal_pendiente) {
+            const p = userP.explorar_penal_pendiente;
+            let msgPen = '💤 No exploraste por ' + p.dias + ' día(s).';
+            if (p.perdConq > 0) msgPen += ' Perdiste ' + p.perdConq + ' Conq y $' + p.perdBerries.toLocaleString('es-AR') + '.';
+            else msgPen += ' Perdiste $' + p.perdBerries.toLocaleString('es-AR') + '.';
+            client.say(channel, '@' + tags.username + ' ' + msgPen);
+            await updateUsuario(username, { explorar_penal_pendiente: null });
+        } else {
+            // 2. Fallback: chequeo in-line (por si el scheduler no corrió)
+            const penal = await verificarPenalizacionExplorar(username);
+            if (penal) {
+                let msgPen = '💤 No exploraste por ' + penal.dias + ' día(s).';
+                if (penal.perdConq > 0) msgPen += ' Perdiste ' + penal.perdConq + ' Conq y $' + penal.perdBerries.toLocaleString('es-AR') + '.';
+                else msgPen += ' Perdiste $' + penal.perdBerries.toLocaleString('es-AR') + '.';
+                client.say(channel, '@' + tags.username + ' ' + msgPen);
             }
+        }
         } catch (err) { console.error('Error penal:', err); }
     }
 
