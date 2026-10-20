@@ -1963,9 +1963,10 @@ const AYUDA_MENU = '📖 AYUDA op_d_bot — 💬 !ayudachat → Comandos de chat
 const AYUDA_TEMAS = {
     observacion: '📡 HAKI DE OBSERVACIÓN\n' +
         'Se entrena estando presente en el chat del stream.\n' +
-        '• Cada 20 min seguidos = 1 posta. Máximo 3 postas por día (60 min).\n' +
-        '• Al llegar a 3 postas ganás puntos según tu rango + bonus por racha.\n' +
-        '• Si no completás la hora, tu racha se reinicia.\n' +
+        '• Hitos de tiempo: 10 min (1ra posta), 30 min (2da posta) y 60 min (3ra posta).\n' +
+        '• Al llegar a cada posta ganás puntos automáticamente (1, 1 y 2 puntos).\n' +
+        '• Si acertás el avistamiento NPC del stream, ganás +2 puntos extra.\n' +
+        '• Completar las 3 postas mantiene tu racha y te da un bonus.\n' +
         '• Mirá tu progreso con !observacion y los canales activos con !canaleson.',
     armadura: '🛡️ HAKI DE ARMADURA\n' +
         'Se entrena con !op (máx 3 veces por día, cooldown 10 min).\n' +
@@ -1994,7 +1995,6 @@ const AYUDA_TEMAS = {
         '• Algunas frutas raras las tienen otros usuarios. ¡Competí por ellas!',
     duelos: '⚔️ DUELOS\n' +
         'Retás a otros con !retar @usuario (chat o susurro).\n' +
-        '• Necesitás haber explorado ese día.\n' +
         '• El retado tiene 2 min para !aceptarduelo o !rechazarduelo.\n' +
         '• El ganador se lleva Berries del perdedor (según recompensas).\n' +
         '• Máx 10 duelos por día, 3 contra la misma persona.',
@@ -2014,12 +2014,13 @@ const AYUDA_TEMAS = {
     coliseo: '🏟️ COLISEO\n' +
         'Se abre con !coliseo (solo el streamer del canal o el dueño global pueden abrirlo).\n' +
         '• Al abrirse, tenés unos minutos para inscribirte con !coliseo.\n' +
+        '• Para entrar necesitás al menos 1 de Conquistador. (Ya no hace falta explorar).\n' +
         '• Cuantos más entren, mejor. El ganador se lleva la gloria y una buena tajada.\n' +
         '• Si son 2, es un 1v1. Si son 3 o más, pelean todos contra todos.\n' +
         '• Entrar tiene un costo (reputación y berries). Los ganadores se reparten el botín.\n' +
         '• Mientras estás en el Coliseo no podés usar !op, !fruta, !comer, !pelear, !retar ni !aceptarduelo.'
 };
-const AYUDA_CHAT = '💬 COMANDOS DE CHAT 🎮 !op → Entrena Haki 📊 !infoop → Tu info 🍎 !fruta → Busca fruta ⚔️ !retar @usuario → Duelo 🏆 !historial @usuario';
+const AYUDA_CHAT = '💬 COMANDOS DE CHAT 🎮 !op → Entrena Haki 📊 !infoop → Tu info 🍎 !fruta → Busca fruta ⏳ !frutapendiente → Ver pendiente ⚔️ !retar @usuario → Duelo 🏆 !historial @usuario';
 const AYUDA_CHAT_STREAMER = '💬 COMANDOS DE CHAT 🎮 !op → Entrena Haki 📊 !infoop → Tu info 🍎 !fruta → Busca fruta ⚔️ !retar @usuario → Duelo 🏆 !historial @usuario 🔴 !offop / 🟢 !onop';
 const AYUDA_SUSURRO = '📩 COMANDOS DE SUSURRO (o chat de op_d_bot) 🗺️ !explorar ⏳ !exploracionpendiente ⚔️ !duelopendiente 📊 !infoop 👤 !infoop @usuario 🔄 !actualizacion 📡 !observacion 📡 !canaleson 👁️ !personaje <nombre>';
 
