@@ -2523,8 +2523,8 @@ async function handleWhisper(event) {
 
     if (command === '!infoop' && args[1]) {
         const target = args[1].replace('@', '').toLowerCase();
-        const targetUser = await getUsuario(target);
-        if (!targetUser) { await sendWhisper(fromUserId, 'No encontré a @' + target); return; }
+        const targetUser = await getUsuario(target, false);
+        if (!targetUser) { await sendWhisper(fromUserId, 'No encontré a @' + target + '. Verificá el nombre.'); return; }
         const supArm = await esSupremoArmadura(target);
         const supObs = await esSupremoObservacion(target);
         const supConq = await esSupremoConquistador(target);
@@ -3165,8 +3165,8 @@ async function procesarRetar(username, targetRaw, fromUserId, esSusurro, chatCha
         else client.say(chatChannel, '@' + username + ' ' + msg);
     };
     if (target === username) { await responder('No podés retarte a vos mismo.'); return; }
-    const targetUser = await getUsuario(target);
-    if (!targetUser) { await responder('@' + target + ' no está registrado.'); return; }
+    const targetUser = await getUsuario(target, false);
+    if (!targetUser) { await responder('@' + target + ' no existe. Verificá el nombre.'); return; }
     const user = await getUsuario(username);
     if (!user) return;
     if (user.evento_duelo_estado === 'pendiente') {
@@ -4124,8 +4124,8 @@ async function procesarMensajeChat(channel, tags, message, self) {
         const target = args[1].replace('@', '').toLowerCase();
         const cantidad = parseInt(args[2]);
         if (isNaN(cantidad)) return client.say(channel, '@' + tags.username + ' Cantidad inválida.');
-        const user = await getUsuario(target);
-        if (!user) return;
+        const user = await getUsuario(target, false);
+        if (!user) return client.say(channel, '@' + tags.username + ' El usuario @' + target + ' no existe.');
         const actual = user[info.campo] || 0;
         const nuevo = info.signo > 0 ? actual + cantidad : Math.max(actual - cantidad, 0);
         chequearHakiCambio(info.campo, actual, nuevo);
@@ -4137,8 +4137,8 @@ async function procesarMensajeChat(channel, tags, message, self) {
     if (command === '!quitarfruta') {
         if (args.length < 2) return client.say(channel, '@' + tags.username + ' Uso: !quitarfruta @usuario');
         const target = args[1].replace('@', '').toLowerCase();
-        const targetUser = await getUsuario(target);
-        if (!targetUser) return;
+        const targetUser = await getUsuario(target, false);
+        if (!targetUser) return client.say(channel, '@' + tags.username + ' El usuario @' + target + ' no existe.');
         const frutasQuitadas = [targetUser.fruta, targetUser.fruta_2].filter(Boolean);
         await updateUsuario(target, { fruta: null, fruta_2: null, fruta_pendiente: null, yami_aviso_mostrado: false });
         if (frutasQuitadas.length > 0) {

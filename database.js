@@ -37,10 +37,11 @@ function getFechaNpc() {
 }
 
 // ==================== USUARIOS ====================
-async function getUsuario(username) {
+async function getUsuario(username, crearSiNoExiste = true) {
     const { data, error } = await supabase.from('usuarios').select('*').eq('username', username);
     if (error) { console.error('❌ Error getUsuario:', error); return null; }
     if (!data || data.length === 0) {
+        if (!crearSiNoExiste) return null; // No crear usuarios nuevos en operaciones sobre otros
         const { data: newUser, error: insertError } = await supabase
             .from('usuarios')
             .insert([{
