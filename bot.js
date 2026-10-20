@@ -3800,7 +3800,26 @@ async function procesarMensajeChat(channel, tags, message, self) {
 
     if (command === '!frutapendiente') {
         const user = await getUsuario(username);
-        if (!user || user.evento_fruta_estado !== 'pendiente') {
+        if (!user) return;
+
+        // 1. Prioridad: Fruta normal pendiente (sin evento)
+        if (user.fruta_pendiente) {
+            if (user.fruta_pendiente.startsWith('meme:')) {
+                const meme = MEMES_FRUTAS.find(m => m.nombre === user.fruta_pendiente.slice(5));
+                if (meme) {
+                    client.say(channel, '@' + tags.username + ' Tenés pendiente la ' + meme.nombre + ' ' + meme.emoji + ' — !comer o !rechazar');
+                    return;
+                }
+            }
+            const { data: fruta } = await supabase.from('frutas').select('*').eq('nombre', user.fruta_pendiente).single();
+            if (fruta) {
+                client.say(channel, '@' + tags.username + ' Tenés pendiente la ' + fruta.nombre + ' ' + (fruta.emoji || '') + '. ' + (fruta.descripcion || '') + ' ⚔️ ' + displayStat(fruta.ataque || 0) + ' | 🛡️ ' + displayStat(fruta.defensa || 0) + ' | 🧠 ' + displayStat(fruta.utilidad || 0) + ' — !comer o !rechazar');
+                return;
+            }
+        }
+
+        // 2. Si no hay normal, buscar evento
+        if (user.evento_fruta_estado !== 'pendiente') {
             client.say(channel, '@' + tags.username + ' No tenés evento de fruta pendiente.'); return;
         }
         if (user.evento_fruta_comida_por_otro) {
