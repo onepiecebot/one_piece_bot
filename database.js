@@ -102,7 +102,8 @@ async function getTextoExplorar(situacion) {
 async function getHistorialH2H(userA, userB) {
     const { data, error } = await supabase
         .from('duelos').select('retador, retado, ganador, estado, monto')
-        .or(`and(retador.eq.${userA},retado.eq.${userB}),and(retador.eq.${userB},retado.eq.${userA})`);
+        .or(`and(retador.eq.${userA},retado.eq.${userB}),and(retador.eq.${userB},retado.eq.${userA})`)
+        .in('estado', ['finalizado', 'empate']);
     if (error || !data) return { total: 0, ganadosA: 0, empates: 0, ganadosB: 0, neto: 0 };
     let ganadosA = 0, ganadosB = 0, empates = 0, neto = 0;
     for (let i = 0; i < data.length; i++) {
@@ -111,7 +112,7 @@ async function getHistorialH2H(userA, userB) {
         else if (d.ganador === userA) { ganadosA++; neto += (d.monto || 0); }
         else if (d.ganador === userB) { ganadosB++; neto -= (d.monto || 0); }
     }
-    return { total: data.length, ganadosA, empates, ganadosB, neto };
+    return { total: ganadosA + ganadosB + empates, ganadosA, empates, ganadosB, neto };
 }
 
 async function contarDuelosHoy(username) {

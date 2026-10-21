@@ -22,9 +22,10 @@ const {
 // ============================================
 const COOLDOWN_FRUTA = 10 * 60 * 1000; // 10 min
 const FRUTA_LIMITE_DIARIO = 5;
-const TOTAL_PUERTAS_JUEGO = 15000;
+const TOTAL_PUERTAS_JUEGO = 12000;
 const FACTOR_RECOMPENSA = 3614500; // berries por punto de aporte de haki
 const TOPE_DELTA_MULT = 1.8; // tope delta = 1.8 × max base histórica
+const EXP_PROB = 3.5; // exponente de la fórmula de probabilidad (duelos, explorar, coliseo, fruta)
 const DUEÑO = 'fan_d_larana';
 const TWITCH_API_URL = 'https://api.twitch.tv/helix';
 const GITHUB_REPO = 'onepiecebot/one_piece_bot';
@@ -774,7 +775,7 @@ function obtenerMensajeCombate(victoria, porcentaje) {
 // ============================================
 function calcularProbabilidadVictoria(pcfU, pcfN) {
     const r = pcfN / pcfU;
-    return 1 / (1 + Math.pow(r, 5.75));
+    return 1 / (1 + Math.pow(r, EXP_PROB));
 }
 function getEscalon(ratio) {
     if (ratio <= 0.5) return 'mucho_mas_fuerte';
@@ -1075,7 +1076,7 @@ async function cerrarVentanaColiseo(coliseo) {
         const [a, b] = participantes;
         const pcfA = a.pcf || 0;
         const pcfB = b.pcf || 0;
-        const probA = pcfB === 0 ? 1 : (pcfA === 0 ? 0 : 1 / (1 + Math.pow(pcfB / pcfA, 5.75)));
+        const probA = pcfB === 0 ? 1 : (pcfA === 0 ? 0 : 1 / (1 + Math.pow(pcfB / pcfA, EXP_PROB)));
         const probDebil = Math.min(probA, 1 - probA);
         if (probDebil < COLISEO_PROB_MIN) {
             // No cumplen → espera
@@ -1227,8 +1228,7 @@ async function seleccionarNPCs(pcfUsuario) {
         if (cand.length === 0) {
             // Fallback: buscar el NPC más cercano a la media del rango de probabilidad
             const probMedia = (minP + maxP) / 2;
-            // Despejar PCF_NPC de la fórmula: prob = 1/(1 + (PCF_NPC/PCF_USER)^5.75)
-            const targetPcf = pcfUsuario * Math.pow((1 / probMedia) - 1, 1 / 5.75);
+            const targetPcf = pcfUsuario * Math.pow((1 / probMedia) - 1, 1 / EXP_PROB);
             
             const disponibles = npcs.filter(n => {
                 if (elegidos.has(n.nombre)) return false;
@@ -1367,11 +1367,16 @@ async function ejecutarTimeoutDuelos() {
             .eq('evento_duelo_estado', 'pendiente')
             .lt('evento_duelo_expira', ahoraISO);
         if (error || !data) return;
+        const procesados = new Set();
         for (const row of data) {
             const retador = row.evento_duelo_retador;
             const retado = row.evento_duelo_retado;
             const canal = row.evento_duelo_canal;
             const pcfRet = row.evento_duelo_pcf_retador;
+            if (!retador || !retado) continue;
+            const claveDuelo = retador < retado ? (retador + '|' + retado) : (retado + '|' + retador);
+            if (procesados.has(claveDuelo)) continue;
+            procesados.add(claveDuelo);
             await limpiarEventoDuelo(retador);
             if (retado && retado !== retador) await limpiarEventoDuelo(retado);
             const rU = await getUsuario(retador);
@@ -3253,7 +3258,7 @@ async function procesarRetar(username, targetRaw, fromUserId, esSusurro, chatCha
     const pcfRetador = await calcularPCFUsuario(user);
     const pcfRetado = await calcularPCFUsuario(targetUser);
     const rProb = pcfRetado / pcfRetador;
-    const probRetador = (rProb === 0) ? 1 : (rProb === Infinity || isNaN(rProb) ? 0 : 1 / (1 + Math.pow(rProb, 5.75)));
+    const probRetador = (rProb === 0) ? 1 : (rProb === Infinity || isNaN(rProb) ? 0 : 1 / (1 + Math.pow(rProb, EXP_PROB)));
     if (probRetador < 0.05) {
         await responder('⚔️ No podés retar a @' + target + '. Respetá los rangos.');
         return;
@@ -3302,7 +3307,7 @@ async function getCalaverasEventoFruta(user, frutaData) {
         poderEnemigo = (npc && (npc.pcf_final || npc.pcf_calculado)) || 80;
     } else poderEnemigo = 20 + (user.evento_fruta_nivel || 4) * 15;
     const r = poderEnemigo / poderUsuario;
-    const prob = 1 / (1 + Math.pow(r, 5.75));
+    const prob = 1 / (1 + Math.pow(r, EXP_PROB));
     return getCalaverasPorProb(prob);
 }
 
@@ -3338,7 +3343,7 @@ async function procesarAceptarDuelo(username, fromUserId, esSusurro, chatChannel
     }
     const pcfRetado = await calcularPCFUsuario(retadoUser);
     const r = pcfRetado / pcfRetador;
-    const probRetador = 1 / (1 + Math.pow(r, 5.75));
+    const probRetador = 1 / (1 + Math.pow(r, EXP_PROB));
     const res = resolverDuelo(probRetador, retador, retado);
     const ganador = res.ganador;
     const empate = res.empate;
