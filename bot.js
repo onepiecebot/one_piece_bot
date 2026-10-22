@@ -3890,6 +3890,8 @@ async function procesarMensajeChat(channel, tags, message, self) {
         await procesarFruta(username, tags.username, null, false, channel, canalDb);
         return;
     }
+
+    if (command === '!frutapendiente') {
         const user = await getUsuario(username);
         if (!user) return;
 
