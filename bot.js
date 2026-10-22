@@ -2867,7 +2867,7 @@ async function handleWhisper(event) {
         cooldowns[key] = Date.now();
         const h = await getHistorialH2H(username, target);
         if (h.total === 0) { await sendWhisper(fromUserId, 'Nunca te enfrentaste a @' + target + '.'); return; }
-        const netoTxt = h.neto > 0 ? 'le ganaste $' + formatBerries(h.neto) : h.neto < 0 ? 'le perdiste $' + formatBerries(Math.abs(h.neto)) : 'están a mano';
+        const netoTxt = h.neto > 0 ? 'Le ganaste $' + formatBerries(h.neto) : h.neto < 0 ? 'Te ganó $' + formatBerries(Math.abs(h.neto)) : 'Están a mano';
         await sendWhisper(fromUserId, '📊 vs @' + target + ': ' + h.total + ' duelos (' + h.ganadosA + '/' + h.empates + '/' + h.ganadosB + '). ' + netoTxt + '.');
         return;
     }
@@ -2956,10 +2956,6 @@ async function procesarColiseo(username, canal, channel) {
             responder('🏟️ @' + username + ' tenés un duelo pendiente. Resolvelo antes.');
             return;
         }
-        if (!(await completoExplorarHoy(username))) {
-            responder('🏟️ @' + username + ' necesitás completar tu exploración del día antes de entrar al Coliseo.');
-            return;
-        }
         if ((user.conquistador || 0) < COLISEO_CONQ_ENTRADA) {
             responder('🏟️ @' + username + ' necesitás al menos 1 de Conquistador para entrar al Coliseo.');
             return;
@@ -3006,10 +3002,6 @@ async function procesarColiseo(username, canal, channel) {
         if (!user) return;
         if (user.evento_duelo_estado === 'pendiente') {
             responder('🏟️ @' + username + ' tenés un duelo pendiente.');
-            return;
-        }
-        if (!(await completoExplorarHoy(username))) {
-            responder('🏟️ @' + username + ' necesitás completar tu exploración del día.');
             return;
         }
         if ((user.conquistador || 0) < COLISEO_CONQ_ENTRADA) {
@@ -3085,10 +3077,6 @@ async function procesarColiseo(username, canal, channel) {
         // Mismo flujo que CASO B para abrir nueva ventana con los viejos
         if (user.evento_duelo_estado === 'pendiente') {
             responder('🏟️ @' + username + ' tenés un duelo pendiente.');
-            return;
-        }
-        if (!(await completoExplorarHoy(username))) {
-            responder('🏟️ @' + username + ' necesitás completar tu exploración del día.');
             return;
         }
         if ((user.conquistador || 0) < COLISEO_CONQ_ENTRADA) {
@@ -3242,7 +3230,6 @@ async function procesarRetar(username, targetRaw, fromUserId, esSusurro, chatCha
     if (user.evento_explorar_estado === 'pendiente') {
         await responder('Tenés una exploración pendiente. Resolvela antes.'); return;
     }
-    if (!(await completoExplorarHoy(username))) { await responder('Necesitás completar tu !explorar del día.'); return; }
     if (user.ultimo_duelo_timestamp) {
         const diff = Date.now() - new Date(user.ultimo_duelo_timestamp).getTime();
         if (diff < DUELO_COOLDOWN_MS) { await responder('Esperá ' + Math.ceil((DUELO_COOLDOWN_MS - diff) / 60000) + ' min.'); return; }
@@ -3254,7 +3241,6 @@ async function procesarRetar(username, targetRaw, fromUserId, esSusurro, chatCha
     if (targetUser.evento_explorar_estado === 'pendiente') {
         await responder('@' + target + ' está en medio de una exploración.'); return;
     }
-    if (!(await completoExplorarHoy(target))) { await responder('@' + target + ' no completó su !explorar del día.'); return; }
     const pcfRetador = await calcularPCFUsuario(user);
     const pcfRetado = await calcularPCFUsuario(targetUser);
     const rProb = pcfRetado / pcfRetador;
@@ -3699,7 +3685,7 @@ async function procesarMensajeChat(channel, tags, message, self) {
         cooldowns[key] = Date.now();
         const h = await getHistorialH2H(username, target);
         if (h.total === 0) { client.say(channel, '@' + tags.username + ' Nunca te enfrentaste a @' + target + '.'); return; }
-        const netoTxt = h.neto > 0 ? 'le ganaste $' + formatBerries(h.neto) : h.neto < 0 ? 'le perdiste $' + formatBerries(Math.abs(h.neto)) : 'están a mano';
+        const netoTxt = h.neto > 0 ? 'Le ganaste $' + formatBerries(h.neto) : h.neto < 0 ? 'Te ganó $' + formatBerries(Math.abs(h.neto)) : 'Están a mano';
         client.say(channel, '📊 @' + username + ' vs @' + target + ': ' + h.total + ' duelos (' + h.ganadosA + '/' + h.empates + '/' + h.ganadosB + '). ' + netoTxt + '.');
         return;
     }
