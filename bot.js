@@ -2188,6 +2188,142 @@ async function procesarSusurrame(username, twitchUserId, channel) {
     // Si ok, no avisamos nada en el chat: el usuario ya recibió el susurro
 }
 // ============================================
+// !FRUTA — busca fruta (chat o susurro)
+// ============================================
+async function procesarFruta(username, displayName, fromUserId, esSusurro, chatChannel, canalDb) {
+    const responder = async (msg) => {
+        if (esSusurro) await sendWhisper(fromUserId, msg);
+        else client.say(chatChannel, msg);
+    };
+    try {
+        const user = await getUsuario(username);
+        if (!user) return;
+        const tieneYami = (user.fruta === 'Yami Yami no Mi' || user.fruta_2 === 'Yami Yami no Mi');
+        const yaTieneDos = user.fruta && user.fruta_2;
+        if (yaTieneDos) {
+            await responder('@' + displayName + ' 😤 PARAAAAA LOCO, ¿cuántas frutas querés? Ya tenés 2, dejá alguna para los demás piratas.');
+            return;
+        }
+        if (user.fruta && !tieneYami) {
+            await responder('@' + displayName + ' Ya tenés fruta.');
+            return;
+        }
+        if (user.fruta_pendiente && !user.fruta_pendiente.startsWith('meme:')) {
+            await responder('@' + displayName + ' Tenés una fruta pendiente. Usá !comer, !rechazar o !frutapendiente para verla.');
+            return;
+        }
+        if (user.evento_fruta_estado === 'pendiente') {
+            await responder('@' + displayName + ' Tenés evento de fruta pendiente.'); return;
+        }
+        // Yami Yami: descubrimiento épico (solo primera vez)
+        if (tieneYami && !user.fruta_2 && !user.yami_aviso_mostrado) {
+            await updateUsuario(username, { yami_aviso_mostrado: true });
+            await responder('@' + displayName + ' 🌑⚡ ¡ANOMALÍA! La Yami Yami no Mi pulsa con fuerza. Las tinieblas se retuercen dentro tuyo... y una puerta se abre. ¡Podés contener una SEGUNDA fruta del diablo! Los mares temblarán con tu nombre.');
+        }
+        // ¿Tiene premio consuelo pendiente? Si sí, esta tirada es extra: no cuenta para el límite diario ni consume cooldown.
+        const tienePremioConsuelo = !!user.fruta_perdida_pcf;
+
+        // Reset diario de intentos
+        const hoy = getFechaHoy();
+        let intentosHoy = user.fruta_intentos_hoy || 0;
+        if (user.ultimo_dia_fruta !== hoy) {
+            intentosHoy = 0;
+            await updateUsuario(username, { fruta_intentos_hoy: 0, ultimo_dia_fruta: hoy });
+        }
+        if (!tienePremioConsuelo && intentosHoy >= FRUTA_LIMITE_DIARIO) {
+            await responder('@' + displayName + ' Ya usaste tus 5 intentos de hoy. Volvé mañana.');
+            return;
+        }
+        if (!tienePremioConsuelo) {
+            const ahora = Date.now();
+            const ultimoUso = cooldowns['fruta_' + username] || 0;
+            const tiempoRestante = COOLDOWN_FRUTA - (ahora - ultimoUso);
+            if (tiempoRestante > 0) {
+                const min = Math.floor(tiempoRestante / 60000);
+                const seg = Math.floor((tiempoRestante % 60000) / 1000);
+                const tiempoTxt = min > 0 ? (min + 'm ' + seg + 's') : (seg + 's');
+                await responder('@' + displayName + ' Esperá ' + tiempoTxt + '.');
+                return;
+            }
+            cooldowns['fruta_' + username] = Date.now();
+            await updateUsuario(username, { fruta_intentos_hoy: intentosHoy + 1, ultimo_dia_fruta: hoy });
+        }
+        // Traer solo frutas con disponible = true (excluye las que ya comió alguien)
+        const { data: frutasDisponibles, error: errFrutas } = await supabase.from('frutas').select('*').eq('disponible', true);
+        if (errFrutas || !frutasDisponibles || !frutasDisponibles.length) {
+            await responder('@' + displayName + ' No hay frutas disponibles.'); return;
+        }
+        // Filtrar por episodio del canal
+        const filtroEp = canalDb ? canalDb.episodio_filtro : null;
+        const frutasFiltradas = frutasDisponibles.filter(f => pasaFiltroEpisodio(f, filtroEp));
+        if (frutasFiltradas.length === 0) {
+            await responder('@' + displayName + ' No hay frutas disponibles para este canal.'); return;
+        }
+        let selectedFruit = null;
+        if (tienePremioConsuelo) {
+            // Premio consuelo: elegir la fruta con PCF más cercano al perdido. Sin sortear, sin gastar intento.
+            const pcfObjetivo = user.fruta_perdida_pcf || 0;
+            let mejorDistancia = Infinity;
+            for (const f of frutasFiltradas) {
+                const dist = Math.abs((f.poder_fruta || 0) - pcfObjetivo);
+                if (dist < mejorDistancia) {
+                    mejorDistancia = dist;
+                    selectedFruit = f;
+                }
+            }
+            if (selectedFruit) {
+                await updateUsuario(username, { fruta_perdida_pcf: null });
+                console.log('🍎 Premio consuelo: ' + username + ' → ' + selectedFruit.nombre + ' (PCF objetivo ' + pcfObjetivo + ')');
+            }
+        } else {
+            // Sistema de puertas: sortear si encontrás fruta, después cuál
+            const puertasDisponibles = frutasFiltradas.reduce((s, f) => s + (Number(f.puertas) || 0), 0);
+            if (puertasDisponibles === 0) {
+                await responder('@' + displayName + ' No quedan frutas disponibles. Volvé más tarde.');
+                return;
+            }
+            const probExito = puertasDisponibles / TOTAL_PUERTAS_JUEGO;
+            if (Math.random() >= probExito) {
+                // 40% de las veces que fallás, en vez de nada, sale un meme
+                if (Math.random() < 0.40) {
+                    const meme = MEMES_FRUTAS[Math.floor(Math.random() * MEMES_FRUTAS.length)];
+                    await updateUsuario(username, { fruta_pendiente: 'meme:' + meme.nombre });
+                    console.log('🍊 Meme encontrado: ' + username + ' → ' + meme.nombre);
+                    await responder('@' + displayName + ' ¡Encontraste una ' + meme.nombre + ' ' + meme.emoji + '!');
+                    return;
+                }
+                await responder('@' + displayName + ' No encontraste nada esta vez. Volvé a intentar más tarde.');
+                return;
+            }
+            let rp = Math.random() * puertasDisponibles;
+            for (let i = 0; i < frutasFiltradas.length; i++) {
+                rp -= (Number(frutasFiltradas[i].puertas) || 0);
+                if (rp <= 0) { selectedFruit = frutasFiltradas[i]; break; }
+            }
+            if (!selectedFruit) selectedFruit = frutasFiltradas[frutasFiltradas.length - 1];
+        }
+        if (selectedFruit.evento) {
+            await updateUsuario(username, {
+                evento_fruta_tipo: 'fruta', evento_fruta_fase: 'avistamiento',
+                evento_fruta_nombre: selectedFruit.nombre, evento_fruta_nivel: selectedFruit.nivel || 1,
+                evento_fruta_estado: 'pendiente', evento_fruta_comandos: 'si_no',
+                evento_fruta_comida_por_otro: false
+            });
+            console.log('🍎 Fruta encontrada: ' + username + ' → ' + selectedFruit.nombre + ' (evento)');
+            await responder('@' + displayName + ' ' + selectedFruit.fase1 + ' — ✅ !si o ❌ !no');
+        } else {
+            await updateUsuario(username, { fruta_pendiente: selectedFruit.nombre });
+            console.log('🍎 Fruta encontrada: ' + username + ' → ' + selectedFruit.nombre + ' (sin evento)');
+            const descSinEvento = (selectedFruit.descripcion || '').replace(/\n/g, ' ').trim();
+            await responder('@' + displayName + ' ¡Encontraste la ' + selectedFruit.nombre + ' ' + (selectedFruit.emoji || '') + '! ' + descSinEvento + ' ⚔️ ' + displayStat(selectedFruit.ataque || 0) + ' | 🛡️ ' + displayStat(selectedFruit.defensa || 0) + ' | 🧠 ' + displayStat(selectedFruit.utilidad || 0) + ' — !comer o !rechazar');
+        }
+    } catch (err) {
+        console.error('❌ !fruta:', err);
+        await responder('@' + displayName + ' Error.');
+    }
+}
+
+// ============================================
 // HANDLER DE SUSURROS
 // ============================================
 async function handleWhisper(event) {
@@ -2593,6 +2729,11 @@ async function handleWhisper(event) {
         let sufijoRangoT = '';
         if (rangoRecT) sufijoRangoT = ' | ' + getEmojiRango(rangoRecT) + ' ' + getNombreRango(rangoRecT);
         await sendWhisper(fromUserId, '@' + target + ' | ' + frutaTexto + ' | 🛡️:' + eArm + ' | 👁️:' + eObs + ' | ⚜️:' + eConq + ' | 💰 $' + (targetUser.recompensa_publica || 0).toLocaleString('es-AR') + sufijoRangoT);
+        return;
+    }
+
+    if (command === '!fruta') {
+        await procesarFruta(username, fromUserLogin, fromUserId, true, null, null);
         return;
     }
 
@@ -3746,137 +3887,9 @@ async function procesarMensajeChat(channel, tags, message, self) {
     }
 
     if (command === '!fruta') {
-        try {
-            const user = await getUsuario(username);
-            if (!user) return;
-            const tieneYami = (user.fruta === 'Yami Yami no Mi' || user.fruta_2 === 'Yami Yami no Mi');
-            const yaTieneDos = user.fruta && user.fruta_2;
-            if (yaTieneDos) {
-                client.say(channel, '@' + tags.username + ' 😤 PARAAAAA LOCO, ¿cuántas frutas querés? Ya tenés 2, dejá alguna para los demás piratas.');
-                return;
-            }
-            if (user.fruta && !tieneYami) {
-                client.say(channel, '@' + tags.username + ' Ya tenés fruta.');
-                return;
-            }
-            if (user.fruta_pendiente && !user.fruta_pendiente.startsWith('meme:')) {
-                client.say(channel, '@' + tags.username + ' Tenés una fruta pendiente. Usá !comer, !rechazar o !frutapendiente para verla.');
-                return;
-            }
-            if (user.evento_fruta_estado === 'pendiente') {
-                client.say(channel, '@' + tags.username + ' Tenés evento de fruta pendiente.'); return;
-            }
-            // Yami Yami: descubrimiento épico (solo primera vez)
-            if (tieneYami && !user.fruta_2 && !user.yami_aviso_mostrado) {
-                await updateUsuario(username, { yami_aviso_mostrado: true });
-                client.say(channel, '@' + tags.username + ' 🌑⚡ ¡ANOMALÍA! La Yami Yami no Mi pulsa con fuerza. Las tinieblas se retuercen dentro tuyo... y una puerta se abre. ¡Podés contener una SEGUNDA fruta del diablo! Los mares temblarán con tu nombre.');
-            }
-            // ¿Tiene premio consuelo pendiente? Si sí, esta tirada es extra: no cuenta para el límite diario ni consume cooldown.
-            const tienePremioConsuelo = !!user.fruta_perdida_pcf;
-
-            // Reset diario de intentos
-            const hoy = getFechaHoy();
-            let intentosHoy = user.fruta_intentos_hoy || 0;
-            if (user.ultimo_dia_fruta !== hoy) {
-                intentosHoy = 0;
-                await updateUsuario(username, { fruta_intentos_hoy: 0, ultimo_dia_fruta: hoy });
-            }
-            if (!tienePremioConsuelo && intentosHoy >= FRUTA_LIMITE_DIARIO) {
-                client.say(channel, '@' + tags.username + ' Ya usaste tus 5 intentos de hoy. Volvé mañana.');
-                return;
-            }
-            if (!tienePremioConsuelo) {
-                const ahora = Date.now();
-                const ultimoUso = cooldowns['fruta_' + username] || 0;
-                const tiempoRestante = COOLDOWN_FRUTA - (ahora - ultimoUso);
-                if (tiempoRestante > 0) {
-                    const min = Math.floor(tiempoRestante / 60000);
-                    const seg = Math.floor((tiempoRestante % 60000) / 1000);
-                    const tiempoTxt = min > 0 ? (min + 'm ' + seg + 's') : (seg + 's');
-                    client.say(channel, '@' + tags.username + ' Esperá ' + tiempoTxt + '.');
-                    return;
-                }
-                cooldowns['fruta_' + username] = Date.now();
-                await updateUsuario(username, { fruta_intentos_hoy: intentosHoy + 1, ultimo_dia_fruta: hoy });
-            }
-            // Traer solo frutas con disponible = true (excluye las que ya comió alguien)
-            const { data: frutasDisponibles, error: errFrutas } = await supabase.from('frutas').select('*').eq('disponible', true);
-            if (errFrutas || !frutasDisponibles || !frutasDisponibles.length) {
-                client.say(channel, '@' + tags.username + ' No hay frutas disponibles.'); return;
-            }
-            // Filtrar por episodio del canal
-            const canalDbFruta = canalDb;
-            const filtroEp = canalDbFruta ? canalDbFruta.episodio_filtro : null;
-            const frutasFiltradas = frutasDisponibles.filter(f => pasaFiltroEpisodio(f, filtroEp));
-            if (frutasFiltradas.length === 0) {
-                client.say(channel, '@' + tags.username + ' No hay frutas disponibles para este canal.'); return;
-            }
-            let selectedFruit = null;
-            if (tienePremioConsuelo) {
-                // Premio consuelo: elegir la fruta con PCF más cercano al perdido. Sin sortear, sin gastar intento.
-                const pcfObjetivo = user.fruta_perdida_pcf || 0;
-                let mejorDistancia = Infinity;
-                for (const f of frutasFiltradas) {
-                    const dist = Math.abs((f.poder_fruta || 0) - pcfObjetivo);
-                    if (dist < mejorDistancia) {
-                        mejorDistancia = dist;
-                        selectedFruit = f;
-                    }
-                }
-                if (selectedFruit) {
-                    await updateUsuario(username, { fruta_perdida_pcf: null });
-                    console.log('🍎 Premio consuelo: ' + username + ' → ' + selectedFruit.nombre + ' (PCF objetivo ' + pcfObjetivo + ')');
-                }
-            } else {
-                // Sistema de puertas: sortear si encontrás fruta, después cuál
-                const puertasDisponibles = frutasFiltradas.reduce((s, f) => s + (Number(f.puertas) || 0), 0);
-                if (puertasDisponibles === 0) {
-                    client.say(channel, '@' + tags.username + ' No quedan frutas disponibles. Volvé más tarde.');
-                    return;
-                }
-                const probExito = puertasDisponibles / TOTAL_PUERTAS_JUEGO;
-                if (Math.random() >= probExito) {
-                    // 40% de las veces que fallás, en vez de nada, sale un meme
-                    if (Math.random() < 0.40) {
-                        const meme = MEMES_FRUTAS[Math.floor(Math.random() * MEMES_FRUTAS.length)];
-                        await updateUsuario(username, { fruta_pendiente: 'meme:' + meme.nombre });
-                        console.log('🍊 Meme encontrado: ' + username + ' → ' + meme.nombre);
-                        client.say(channel, '@' + tags.username + ' ¡Encontraste una ' + meme.nombre + ' ' + meme.emoji + '!');
-                        return;
-                    }
-                    client.say(channel, '@' + tags.username + ' No encontraste nada esta vez. Volvé a intentar más tarde.');
-                    return;
-                }
-                let rp = Math.random() * puertasDisponibles;
-                for (let i = 0; i < frutasFiltradas.length; i++) {
-                    rp -= (Number(frutasFiltradas[i].puertas) || 0);
-                    if (rp <= 0) { selectedFruit = frutasFiltradas[i]; break; }
-                }
-                if (!selectedFruit) selectedFruit = frutasFiltradas[frutasFiltradas.length - 1];
-            }
-            if (selectedFruit.evento) {
-                await updateUsuario(username, {
-                    evento_fruta_tipo: 'fruta', evento_fruta_fase: 'avistamiento',
-                    evento_fruta_nombre: selectedFruit.nombre, evento_fruta_nivel: selectedFruit.nivel || 1,
-                    evento_fruta_estado: 'pendiente', evento_fruta_comandos: 'si_no',
-                    evento_fruta_comida_por_otro: false
-                });
-                console.log('🍎 Fruta encontrada: ' + username + ' → ' + selectedFruit.nombre + ' (evento)');
-                client.say(channel, '@' + tags.username + ' ' + selectedFruit.fase1 + ' — ✅ !si o ❌ !no');
-            } else {
-                                await updateUsuario(username, { fruta_pendiente: selectedFruit.nombre });
-                console.log('🍎 Fruta encontrada: ' + username + ' → ' + selectedFruit.nombre + ' (sin evento)');
-                const descSinEvento = (selectedFruit.descripcion || '').replace(/\n/g, ' ').trim();
-                client.say(channel, '@' + tags.username + ' ¡Encontraste la ' + selectedFruit.nombre + ' ' + (selectedFruit.emoji || '') + '! ' + descSinEvento + ' ⚔️ ' + displayStat(selectedFruit.ataque || 0) + ' | 🛡️ ' + displayStat(selectedFruit.defensa || 0) + ' | 🧠 ' + displayStat(selectedFruit.utilidad || 0) + ' — !comer o !rechazar');
-            }
-        } catch (err) {
-            console.error('❌ !fruta:', err);
-            client.say(channel, '@' + tags.username + ' Error.');
-        }
+        await procesarFruta(username, tags.username, null, false, channel, canalDb);
         return;
     }
-
-    if (command === '!frutapendiente') {
         const user = await getUsuario(username);
         if (!user) return;
 
