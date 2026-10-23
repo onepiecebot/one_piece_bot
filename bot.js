@@ -2324,6 +2324,278 @@ async function procesarFruta(username, displayName, fromUserId, esSusurro, chatC
 }
 
 // ============================================
+// !COMER / !RECHAZAR / !SI / !NO / !PELEAR / !HUIR — fruta (chat o susurro)
+// ============================================
+async function procesarComer(username, displayName, fromUserId, esSusurro, chatChannel) {
+    const responder = async (msg) => {
+        if (esSusurro) await sendWhisper(fromUserId, msg);
+        else client.say(chatChannel, msg);
+    };
+    const user = await getUsuario(username);
+    if (user && user.fruta_pendiente && user.fruta_pendiente.startsWith('meme:')) {
+        const nombreMeme = user.fruta_pendiente.slice(5);
+        const meme = MEMES_FRUTAS.find(m => m.nombre === nombreMeme);
+        await updateUsuario(username, { fruta_pendiente: null });
+        if (meme) {
+            await responder('@' + displayName + ' ' + meme.comer);
+        } else {
+            await responder('@' + displayName + ' Te comiste algo raro.');
+        }
+        return;
+    }
+    if (user && user.fruta_pendiente) {
+        const frutaConsumida = user.fruta_pendiente;
+        const { data: frutaData } = await supabase.from('frutas').select('descripcion, emoji, poder_fruta').eq('nombre', frutaConsumida).single();
+        const updateData = user.fruta
+            ? { fruta_2: frutaConsumida, fruta_pendiente: null }
+            : { fruta: frutaConsumida, fruta_pendiente: null };
+        await updateUsuario(username, updateData);
+        await supabase.from('frutas').update({ disponible: false }).eq('nombre', frutaConsumida);
+        console.log('🍎 Fruta consumida: ' + username + ' → ' + frutaConsumida + (user.fruta ? ' (2da)' : ''));
+        await responder('@' + displayName + ' Consumiste la ' + frutaConsumida + ' ' + ((frutaData && frutaData.emoji) || '') + '.');
+        // Marcar a otros usuarios que tenían la misma fruta pendiente
+        const pcfFruta = (frutaData && frutaData.poder_fruta) ? Math.round(frutaData.poder_fruta) : 0;
+        const { data: otrosPendientes } = await supabase.from('usuarios')
+            .select('username, twitch_user_id')
+            .eq('fruta_pendiente', frutaConsumida)
+            .neq('username', username);
+        if (otrosPendientes && otrosPendientes.length > 0) {
+            for (const otro of otrosPendientes) {
+                await updateUsuario(otro.username, {
+                    fruta_pendiente: null,
+                    fruta_perdida_por: username,
+                    fruta_perdida_pcf: pcfFruta
+                });
+                await notificar(otro.username, otro.twitch_user_id, '¿Y tu fruta? ¿Habría jurado que había una fruta aquí... Nooo, pestañaste, y @' + username + ' te la primereó');
+            }
+        }
+    } else {
+        await responder('@' + displayName + ' FELICIDADES TE COMISTE... ESTA 🫱');
+    }
+}
+
+async function procesarRechazar(username, displayName, fromUserId, esSusurro, chatChannel) {
+    const responder = async (msg) => {
+        if (esSusurro) await sendWhisper(fromUserId, msg);
+        else client.say(chatChannel, msg);
+    };
+    const user = await getUsuario(username);
+    if (user && user.fruta_pendiente && user.fruta_pendiente.startsWith('meme:')) {
+        const nombreMeme = user.fruta_pendiente.slice(5);
+        const meme = MEMES_FRUTAS.find(m => m.nombre === nombreMeme);
+        await updateUsuario(username, { fruta_pendiente: null });
+        if (meme) {
+            await responder('@' + displayName + ' ' + meme.rechazar);
+        } else {
+            await responder('@' + displayName + ' La rechazaste.');
+        }
+        return;
+    }
+    if (user && user.fruta_pendiente) {
+        await updateUsuario(username, { fruta_pendiente: null });
+        await responder('@' + displayName + ' Rechazaste la ' + user.fruta_pendiente + '.');
+    } else if (user && user.fruta) {
+        await responder('@' + displayName + ' Ya tenés fruta.');
+    } else {
+        await responder('@' + displayName + ' Como te rechazaron toda tu vida, ¿no?');
+    }
+}
+
+async function procesarSi(username, displayName, fromUserId, esSusurro, chatChannel, canalDb) {
+    const responder = async (msg) => {
+        if (esSusurro) await sendWhisper(fromUserId, msg);
+        else client.say(chatChannel, msg);
+    };
+    const user = await getUsuario(username);
+    if (!user || user.evento_fruta_estado !== 'pendiente' || user.evento_fruta_fase !== 'avistamiento') {
+        await responder('@' + displayName + ' No corresponde.'); return;
+    }
+    const { data: frutaCheckSi } = await supabase.from('frutas').select('*').eq('nombre', user.evento_fruta_nombre).single();
+    const filtroSi = canalDb ? canalDb.episodio_filtro : null;
+    if (frutaCheckSi && !pasaFiltroEpisodio(frutaCheckSi, filtroSi)) {
+        await responder('@' + displayName + ' 📖 Esta fruta todavía no se vio en este canal. Podés continuar en el chat del canal donde la encontraste, o en el chat de op_d_bot.');
+        return;
+    }
+    if (user.evento_fruta_comida_por_otro) {
+        await updateUsuario(username, {
+            evento_fruta_tipo: null, evento_fruta_fase: null, evento_fruta_nombre: null,
+            evento_fruta_nivel: null, evento_fruta_estado: null, evento_fruta_comandos: null,
+            evento_fruta_comida_por_otro: false
+        });
+        await responder('@' + displayName + ' La fruta ya fue consumida.'); return;
+    }
+    await updateUsuario(username, { evento_fruta_fase: 'encuentro', evento_fruta_comandos: 'pelear_huir' });
+    const { data: fruta } = await supabase.from('frutas').select('*').eq('nombre', user.evento_fruta_nombre).single();
+    const calaverasSi = await getCalaverasEventoFruta(user, fruta);
+    await responder('@' + displayName + ' ' + calaverasSi + ' ' + fruta.fase2 + ' 🍎 ' + fruta.nombre + ' ' + (fruta.emoji || '') + ' ⚔️ ' + displayStat(fruta.ataque || 0) + ' | 🛡️ ' + displayStat(fruta.defensa || 0) + ' | 🧠 ' + displayStat(fruta.utilidad || 0) + ' ¿Qué harás? — ⚔️ !pelear o 🏃 !huir');
+}
+
+async function procesarNo(username, displayName, fromUserId, esSusurro, chatChannel, canalDb) {
+    const responder = async (msg) => {
+        if (esSusurro) await sendWhisper(fromUserId, msg);
+        else client.say(chatChannel, msg);
+    };
+    const user = await getUsuario(username);
+    if (!user || user.evento_fruta_estado !== 'pendiente' || user.evento_fruta_fase !== 'avistamiento') {
+        await responder('@' + displayName + ' No corresponde.'); return;
+    }
+    const { data: frutaFiltroNo } = await supabase.from('frutas').select('*').eq('nombre', user.evento_fruta_nombre).single();
+    const filtroNo = canalDb ? canalDb.episodio_filtro : null;
+    if (frutaFiltroNo && !pasaFiltroEpisodio(frutaFiltroNo, filtroNo)) {
+        await responder('@' + displayName + ' 📖 Esta fruta todavía no se vio en este canal. Podés continuar en el chat del canal donde la encontraste, o en el chat de op_d_bot.');
+        return;
+    }
+    await updateUsuario(username, {
+        evento_fruta_tipo: null, evento_fruta_fase: null, evento_fruta_nombre: null,
+        evento_fruta_nivel: null, evento_fruta_estado: null, evento_fruta_comandos: null,
+        evento_fruta_comida_por_otro: false
+    });
+    await responder('@' + displayName + ' Te retirás.');
+}
+
+async function procesarPelear(username, displayName, fromUserId, esSusurro, chatChannel, canalDb) {
+    const responder = async (msg) => {
+        if (esSusurro) await sendWhisper(fromUserId, msg);
+        else client.say(chatChannel, msg);
+    };
+    const user = await getUsuario(username);
+    if (!user || user.evento_fruta_estado !== 'pendiente' || user.evento_fruta_fase !== 'encuentro') {
+        await responder('@' + displayName + ' No corresponde.'); return;
+    }
+    const { data: frutaFiltroPl } = await supabase.from('frutas').select('*').eq('nombre', user.evento_fruta_nombre).single();
+    const filtroPl = canalDb ? canalDb.episodio_filtro : null;
+    if (frutaFiltroPl && !pasaFiltroEpisodio(frutaFiltroPl, filtroPl)) {
+        await responder('@' + displayName + ' 📖 Esta fruta todavía no se vio en este canal. Podés continuar en el chat del canal donde la encontraste, o en el chat de op_d_bot.');
+        return;
+    }
+    if (user.evento_fruta_comida_por_otro) {
+        await updateUsuario(username, {
+            evento_fruta_tipo: null, evento_fruta_fase: null, evento_fruta_nombre: null,
+            evento_fruta_nivel: null, evento_fruta_estado: null, evento_fruta_comandos: null,
+            evento_fruta_comida_por_otro: false
+        });
+        await responder('@' + displayName + ' La fruta ya fue consumida.'); return;
+    }
+    const { data: frutaData } = await supabase.from('frutas').select('poder_fruta, sombra, emoji').eq('nombre', user.evento_fruta_nombre).single();
+    const poderFrutaUsuario = (frutaData && frutaData.poder_fruta) ? frutaData.poder_fruta : 0;
+    const nombreSombra = (frutaData && frutaData.sombra) ? frutaData.sombra : null;
+    const emojiFruta = (frutaData && frutaData.emoji) || '';
+    const supArm = await esSupremoArmadura(username);
+    const supObs = await esSupremoObservacion(username);
+    const supConq = await esSupremoConquistador(username);
+    const poderUsuario = poderFrutaUsuario
+        + calcularAporteArmadura(user.armadura || 0, supArm)
+        + calcularAporteObservacion(user.observacion || 0, supObs)
+        + calcularAporteConquistador(user.conquistador || 0, supConq);
+    let poderEnemigoBase = 80;
+    let npcSombra = null;
+    if (nombreSombra) {
+        const { data: npc } = await supabase.from('npcs').select('pcf_final, pcf_calculado, recompensa_conquistador, recompensa_berries').eq('nombre', nombreSombra).maybeSingle();
+        npcSombra = npc;
+        poderEnemigoBase = (npc && (npc.pcf_final || npc.pcf_calculado)) || 80;
+    } else poderEnemigoBase = 20 + (user.evento_fruta_nivel || 4) * 15;
+    const resultado = calcularCombate(poderUsuario, poderEnemigoBase);
+    const nivel = user.evento_fruta_nivel || 4;
+    const mensaje = obtenerMensajeCombate(resultado.victoria, resultado.porcentaje);
+    const hakiUFrut = await formatearHakiLog(user);
+    const rivalLogFruta = nombreSombra ? (nombreSombra + ' (sombra)') : ('sombra nivel ' + nivel);
+    console.log('[FRUTA] ' + username + ' vs ' + rivalLogFruta + ' | PCF ' + poderUsuario + ' vs ' + poderEnemigoBase + ' | Haki U: ' + hakiUFrut + ' | ' + (resultado.victoria ? 'VICTORIA' : 'DERROTA'));
+    if (resultado.victoria) {
+        const recConq = nivel * 5;
+        const recBerries = redondearBonito(nivel * 1000000);
+        const { data: usuariosConFrutaLista } = await supabase.from('usuarios').select('username')
+            .or('fruta.eq."' + user.evento_fruta_nombre + '",fruta_2.eq."' + user.evento_fruta_nombre + '"').limit(1);
+        const usuarioConFruta = (usuariosConFrutaLista && usuariosConFrutaLista.length > 0) ? usuariosConFrutaLista[0] : null;
+        if (usuarioConFruta) {
+            await updateUsuario(username, {
+                conquistador: (user.conquistador || 0) + recConq,
+                recompensa_delta: (user.recompensa_delta || 0) + recBerries,
+                evento_fruta_tipo: null, evento_fruta_fase: null, evento_fruta_nombre: null,
+                evento_fruta_nivel: null, evento_fruta_estado: null, evento_fruta_comandos: null,
+                evento_fruta_comida_por_otro: false
+            });
+            await responder('@' + displayName + ' ' + mensaje + ' Pero ya fue consumida.'); return;
+        }
+        const updateFrutaData = user.fruta
+            ? { fruta_2: user.evento_fruta_nombre }
+            : { fruta: user.evento_fruta_nombre };
+        chequearHakiCambio('conquistador', user.conquistador, (user.conquistador || 0) + recConq);
+        await updateUsuario(username, {
+            conquistador: (user.conquistador || 0) + recConq,
+            recompensa_delta: (user.recompensa_delta || 0) + recBerries,
+            ...updateFrutaData,
+            evento_fruta_tipo: null, evento_fruta_fase: null, evento_fruta_nombre: null,
+            evento_fruta_nivel: null, evento_fruta_estado: null, evento_fruta_comandos: null,
+            evento_fruta_comida_por_otro: false
+        });
+        await supabase.from('frutas').update({ disponible: false }).eq('nombre', user.evento_fruta_nombre);
+        await responder('@' + displayName + ' ' + mensaje + ' 🍎 ¡Obtuviste la ' + user.evento_fruta_nombre + ' ' + emojiFruta + '!');
+        const { data: afectados } = await supabase.from('usuarios').select('username, twitch_user_id')
+            .eq('evento_fruta_nombre', user.evento_fruta_nombre)
+            .eq('evento_fruta_estado', 'pendiente').neq('username', username);
+        if (afectados && afectados.length > 0) {
+            const pcfFruta = Math.round(poderFrutaUsuario);
+            for (const a of afectados) {
+                await updateUsuario(a.username, {
+                    evento_fruta_tipo: null, evento_fruta_fase: null, evento_fruta_nombre: null,
+                    evento_fruta_nivel: null, evento_fruta_estado: null, evento_fruta_comandos: null,
+                    evento_fruta_comida_por_otro: false,
+                    fruta_perdida_por: username,
+                    fruta_perdida_pcf: pcfFruta
+                });
+                await notificar(a.username, a.twitch_user_id, '¿Y tu fruta? ¿Habría jurado que había una fruta aquí... Nooo, pestañaste, y @' + username + ' te la primereó');
+                console.log('🍎 Fruta perdida: ' + a.username + ' perdió evento de ' + user.evento_fruta_nombre);
+            }
+        }
+    } else {
+        let castigoConq = 1;
+        let castigoBerries = 2000000;
+        if (npcSombra && (npcSombra.pcf_final || npcSombra.pcf_calculado)) {
+            const pcfNpc = npcSombra.pcf_final || npcSombra.pcf_calculado;
+            const prob = calcularProbabilidadVictoria(poderUsuario, pcfNpc);
+            const castExplorar = calcularRecompensasExplorar(
+                { recompensa_conquistador: npcSombra.recompensa_conquistador, recompensa_berries: npcSombra.recompensa_berries },
+                prob, false
+            );
+            castigoConq = Math.max(Math.round(castExplorar.conq * 0.35), 1);
+            castigoBerries = Math.max(redondearBonito(castExplorar.berries * 0.35), 100000);
+        }
+        chequearHakiCambio('conquistador', user.conquistador, Math.max((user.conquistador || 0) - castigoConq, 0));
+        await updateUsuario(username, {
+            conquistador: Math.max((user.conquistador || 0) - castigoConq, 0),
+            recompensa_delta: (user.recompensa_delta || 0) - castigoBerries,
+            evento_fruta_tipo: null, evento_fruta_fase: null, evento_fruta_nombre: null,
+            evento_fruta_nivel: null, evento_fruta_estado: null, evento_fruta_comandos: null,
+            evento_fruta_comida_por_otro: false
+        });
+        await responder('@' + displayName + ' ' + mensaje + ' 💀 -' + castigoConq + ' Conq. -$' + castigoBerries.toLocaleString('es-AR'));
+    }
+}
+
+async function procesarHuir(username, displayName, fromUserId, esSusurro, chatChannel, canalDb) {
+    const responder = async (msg) => {
+        if (esSusurro) await sendWhisper(fromUserId, msg);
+        else client.say(chatChannel, msg);
+    };
+    const user = await getUsuario(username);
+    if (!user || user.evento_fruta_estado !== 'pendiente' || user.evento_fruta_fase !== 'encuentro') {
+        await responder('@' + displayName + ' No corresponde.'); return;
+    }
+    const { data: frutaFiltroHu } = await supabase.from('frutas').select('*').eq('nombre', user.evento_fruta_nombre).single();
+    const filtroHu = canalDb ? canalDb.episodio_filtro : null;
+    if (frutaFiltroHu && !pasaFiltroEpisodio(frutaFiltroHu, filtroHu)) {
+        await responder('@' + displayName + ' 📖 Esta fruta todavía no se vio en este canal. Podés continuar en el chat del canal donde la encontraste, o en el chat de op_d_bot.');
+        return;
+    }
+    await updateUsuario(username, {
+        evento_fruta_tipo: null, evento_fruta_fase: null, evento_fruta_nombre: null,
+        evento_fruta_nivel: null, evento_fruta_estado: null, evento_fruta_comandos: null,
+        evento_fruta_comida_por_otro: false
+    });
+    await responder('@' + displayName + ' Huiste.');
+}
+
+// ============================================
 // HANDLER DE SUSURROS
 // ============================================
 async function handleWhisper(event) {
@@ -2734,6 +3006,36 @@ async function handleWhisper(event) {
 
     if (command === '!fruta') {
         await procesarFruta(username, fromUserLogin, fromUserId, true, null, null);
+        return;
+    }
+
+    if (command === '!comer') {
+        await procesarComer(username, fromUserLogin, fromUserId, true, null);
+        return;
+    }
+
+    if (command === '!rechazar') {
+        await procesarRechazar(username, fromUserLogin, fromUserId, true, null);
+        return;
+    }
+
+    if (command === '!si') {
+        await procesarSi(username, fromUserLogin, fromUserId, true, null, null);
+        return;
+    }
+
+    if (command === '!no') {
+        await procesarNo(username, fromUserLogin, fromUserId, true, null, null);
+        return;
+    }
+
+    if (command === '!pelear') {
+        await procesarPelear(username, fromUserLogin, fromUserId, true, null, null);
+        return;
+    }
+
+    if (command === '!huir') {
+        await procesarHuir(username, fromUserLogin, fromUserId, true, null, null);
         return;
     }
 
@@ -3941,261 +4243,32 @@ async function procesarMensajeChat(channel, tags, message, self) {
     }
 
     if (command === '!si') {
-        const user = await getUsuario(username);
-        if (!user || user.evento_fruta_estado !== 'pendiente' || user.evento_fruta_fase !== 'avistamiento') {
-            client.say(channel, '@' + tags.username + ' No corresponde.'); return;
-        }
-        const { data: frutaCheckSi } = await supabase.from('frutas').select('*').eq('nombre', user.evento_fruta_nombre).single();
-        const canalDbSi = await getCanal(canal);
-        const filtroSi = canalDbSi ? canalDbSi.episodio_filtro : null;
-        if (frutaCheckSi && !pasaFiltroEpisodio(frutaCheckSi, filtroSi)) {
-            client.say(channel, '@' + tags.username + ' 📖 Esta fruta todavía no se vio en este canal. Podés continuar en el chat del canal donde la encontraste, o en el chat de op_d_bot.');
-            return;
-        }
-        if (user.evento_fruta_comida_por_otro) {
-            await updateUsuario(username, {
-                evento_fruta_tipo: null, evento_fruta_fase: null, evento_fruta_nombre: null,
-                evento_fruta_nivel: null, evento_fruta_estado: null, evento_fruta_comandos: null,
-                evento_fruta_comida_por_otro: false
-            });
-            client.say(channel, '@' + tags.username + ' La fruta ya fue consumida.'); return;
-        }
-        await updateUsuario(username, { evento_fruta_fase: 'encuentro', evento_fruta_comandos: 'pelear_huir' });
-        const { data: fruta } = await supabase.from('frutas').select('*').eq('nombre', user.evento_fruta_nombre).single();
-        const calaverasSi = await getCalaverasEventoFruta(user, fruta);
-        client.say(channel, '@' + tags.username + ' ' + calaverasSi + ' ' + fruta.fase2 + ' 🍎 ' + fruta.nombre + ' ' + (fruta.emoji || '') + ' ⚔️ ' + displayStat(fruta.ataque || 0) + ' | 🛡️ ' + displayStat(fruta.defensa || 0) + ' | 🧠 ' + displayStat(fruta.utilidad || 0) + ' ¿Qué harás? — ⚔️ !pelear o 🏃 !huir');
+        await procesarSi(username, tags.username, null, false, channel, canalDb);
         return;
     }
 
     if (command === '!no') {
-        const user = await getUsuario(username);
-        if (!user || user.evento_fruta_estado !== 'pendiente' || user.evento_fruta_fase !== 'avistamiento') {
-            client.say(channel, '@' + tags.username + ' No corresponde.'); return;
-        }
-        const { data: frutaFiltroNo } = await supabase.from('frutas').select('*').eq('nombre', user.evento_fruta_nombre).single();
-        const canalDbNo = canalDb;
-        const filtroNo = canalDbNo ? canalDbNo.episodio_filtro : null;
-        if (frutaFiltroNo && !pasaFiltroEpisodio(frutaFiltroNo, filtroNo)) {
-            client.say(channel, '@' + tags.username + ' 📖 Esta fruta todavía no se vio en este canal. Podés continuar en el chat del canal donde la encontraste, o en el chat de op_d_bot.');
-            return;
-        }
-        await updateUsuario(username, {
-            evento_fruta_tipo: null, evento_fruta_fase: null, evento_fruta_nombre: null,
-            evento_fruta_nivel: null, evento_fruta_estado: null, evento_fruta_comandos: null,
-            evento_fruta_comida_por_otro: false
-        });
-        client.say(channel, '@' + tags.username + ' Te retirás.'); return;
+        await procesarNo(username, tags.username, null, false, channel, canalDb);
+        return;
     }
 
     if (command === '!pelear') {
-        const user = await getUsuario(username);
-        if (!user || user.evento_fruta_estado !== 'pendiente' || user.evento_fruta_fase !== 'encuentro') {
-            client.say(channel, '@' + tags.username + ' No corresponde.'); return;
-        }
-        const { data: frutaFiltroPl } = await supabase.from('frutas').select('*').eq('nombre', user.evento_fruta_nombre).single();
-        const canalDbPl = canalDb;
-        const filtroPl = canalDbPl ? canalDbPl.episodio_filtro : null;
-        if (frutaFiltroPl && !pasaFiltroEpisodio(frutaFiltroPl, filtroPl)) {
-            client.say(channel, '@' + tags.username + ' 📖 Esta fruta todavía no se vio en este canal. Podés continuar en el chat del canal donde la encontraste, o en el chat de op_d_bot.');
-            return;
-        }
-        if (user.evento_fruta_comida_por_otro) {
-            await updateUsuario(username, {
-                evento_fruta_tipo: null, evento_fruta_fase: null, evento_fruta_nombre: null,
-                evento_fruta_nivel: null, evento_fruta_estado: null, evento_fruta_comandos: null,
-                evento_fruta_comida_por_otro: false
-            });
-            client.say(channel, '@' + tags.username + ' La fruta ya fue consumida.'); return;
-        }
-        const { data: frutaData } = await supabase.from('frutas').select('poder_fruta, sombra, emoji').eq('nombre', user.evento_fruta_nombre).single();
-        const poderFrutaUsuario = (frutaData && frutaData.poder_fruta) ? frutaData.poder_fruta : 0;
-        const nombreSombra = (frutaData && frutaData.sombra) ? frutaData.sombra : null;
-        const emojiFruta = (frutaData && frutaData.emoji) || '';
-        const supArm = await esSupremoArmadura(username);
-        const supObs = await esSupremoObservacion(username);
-        const supConq = await esSupremoConquistador(username);
-        const poderUsuario = poderFrutaUsuario
-            + calcularAporteArmadura(user.armadura || 0, supArm)
-            + calcularAporteObservacion(user.observacion || 0, supObs)
-            + calcularAporteConquistador(user.conquistador || 0, supConq);
-        let poderEnemigoBase = 80;
-        let npcSombra = null;
-        if (nombreSombra) {
-            const { data: npc } = await supabase.from('npcs').select('pcf_final, pcf_calculado, recompensa_conquistador, recompensa_berries').eq('nombre', nombreSombra).maybeSingle();
-            npcSombra = npc;
-            poderEnemigoBase = (npc && (npc.pcf_final || npc.pcf_calculado)) || 80;
-        } else poderEnemigoBase = 20 + (user.evento_fruta_nivel || 4) * 15;
-        const resultado = calcularCombate(poderUsuario, poderEnemigoBase);
-        const nivel = user.evento_fruta_nivel || 4;
-        const mensaje = obtenerMensajeCombate(resultado.victoria, resultado.porcentaje);
-        const hakiUFrut = await formatearHakiLog(user);
-        const rivalLogFruta = nombreSombra ? (nombreSombra + ' (sombra)') : ('sombra nivel ' + nivel);
-        console.log('[FRUTA] ' + username + ' vs ' + rivalLogFruta + ' | PCF ' + poderUsuario + ' vs ' + poderEnemigoBase + ' | Haki U: ' + hakiUFrut + ' | ' + (resultado.victoria ? 'VICTORIA' : 'DERROTA'));
-        if (resultado.victoria) {
-            const recConq = nivel * 5;
-            const recBerries = redondearBonito(nivel * 1000000);
-            const { data: usuariosConFrutaLista } = await supabase.from('usuarios').select('username')
-                .or('fruta.eq."' + user.evento_fruta_nombre + '",fruta_2.eq."' + user.evento_fruta_nombre + '"').limit(1);
-            const usuarioConFruta = (usuariosConFrutaLista && usuariosConFrutaLista.length > 0) ? usuariosConFrutaLista[0] : null;
-            if (usuarioConFruta) {
-                await updateUsuario(username, {
-                    conquistador: (user.conquistador || 0) + recConq,
-                    recompensa_delta: (user.recompensa_delta || 0) + recBerries,
-                    evento_fruta_tipo: null, evento_fruta_fase: null, evento_fruta_nombre: null,
-                    evento_fruta_nivel: null, evento_fruta_estado: null, evento_fruta_comandos: null,
-                    evento_fruta_comida_por_otro: false
-                });
-                client.say(channel, '@' + tags.username + ' ' + mensaje + ' Pero ya fue consumida.'); return;
-            }
-            const updateFrutaData = user.fruta
-                ? { fruta_2: user.evento_fruta_nombre }
-                : { fruta: user.evento_fruta_nombre };
-            chequearHakiCambio('conquistador', user.conquistador, (user.conquistador || 0) + recConq);
-            await updateUsuario(username, {
-                conquistador: (user.conquistador || 0) + recConq,
-                recompensa_delta: (user.recompensa_delta || 0) + recBerries,
-                ...updateFrutaData,
-                evento_fruta_tipo: null, evento_fruta_fase: null, evento_fruta_nombre: null,
-                evento_fruta_nivel: null, evento_fruta_estado: null, evento_fruta_comandos: null,
-                evento_fruta_comida_por_otro: false
-            });
-            await supabase.from('frutas').update({ disponible: false }).eq('nombre', user.evento_fruta_nombre);
-            const msgGanada = '@' + tags.username + ' ' + mensaje + ' 🍎 ¡Obtuviste la ' + user.evento_fruta_nombre + ' ' + emojiFruta + '!';
-            client.say(channel, msgGanada);
-            const { data: afectados } = await supabase.from('usuarios').select('username, twitch_user_id')
-                .eq('evento_fruta_nombre', user.evento_fruta_nombre)
-                .eq('evento_fruta_estado', 'pendiente').neq('username', username);
-            if (afectados && afectados.length > 0) {
-                const pcfFruta = Math.round(poderFrutaUsuario);
-                for (const a of afectados) {
-                    await updateUsuario(a.username, {
-                        evento_fruta_tipo: null, evento_fruta_fase: null, evento_fruta_nombre: null,
-                        evento_fruta_nivel: null, evento_fruta_estado: null, evento_fruta_comandos: null,
-                        evento_fruta_comida_por_otro: false,
-                        fruta_perdida_por: username,
-                        fruta_perdida_pcf: pcfFruta
-                    });
-                    await notificar(a.username, a.twitch_user_id, '¿Y tu fruta? ¿Habría jurado que había una fruta aquí... Nooo, pestañaste, y @' + username + ' te la primereó');
-                    console.log('🍎 Fruta perdida: ' + a.username + ' perdió evento de ' + user.evento_fruta_nombre);
-                }
-            }
-        } else {
-            let castigoConq = 1;
-            let castigoBerries = 2000000;
-            if (npcSombra && (npcSombra.pcf_final || npcSombra.pcf_calculado)) {
-                const pcfNpc = npcSombra.pcf_final || npcSombra.pcf_calculado;
-                const prob = calcularProbabilidadVictoria(poderUsuario, pcfNpc);
-                const castExplorar = calcularRecompensasExplorar(
-                    { recompensa_conquistador: npcSombra.recompensa_conquistador, recompensa_berries: npcSombra.recompensa_berries },
-                    prob, false
-                );
-                castigoConq = Math.max(Math.round(castExplorar.conq * 0.35), 1);
-                castigoBerries = Math.max(redondearBonito(castExplorar.berries * 0.35), 100000);
-            }
-            chequearHakiCambio('conquistador', user.conquistador, Math.max((user.conquistador || 0) - castigoConq, 0));
-            await updateUsuario(username, {
-                conquistador: Math.max((user.conquistador || 0) - castigoConq, 0),
-                recompensa_delta: (user.recompensa_delta || 0) - castigoBerries,
-                evento_fruta_tipo: null, evento_fruta_fase: null, evento_fruta_nombre: null,
-                evento_fruta_nivel: null, evento_fruta_estado: null, evento_fruta_comandos: null,
-                evento_fruta_comida_por_otro: false
-            });
-            client.say(channel, '@' + tags.username + ' ' + mensaje + ' 💀 -' + castigoConq + ' Conq. -$' + castigoBerries.toLocaleString('es-AR'));
-        }
+        await procesarPelear(username, tags.username, null, false, channel, canalDb);
         return;
     }
 
     if (command === '!huir') {
-        const user = await getUsuario(username);
-        if (!user || user.evento_fruta_estado !== 'pendiente' || user.evento_fruta_fase !== 'encuentro') {
-            client.say(channel, '@' + tags.username + ' No corresponde.'); return;
-        }
-        const { data: frutaFiltroHu } = await supabase.from('frutas').select('*').eq('nombre', user.evento_fruta_nombre).single();
-        const canalDbHu = canalDb;
-        const filtroHu = canalDbHu ? canalDbHu.episodio_filtro : null;
-        if (frutaFiltroHu && !pasaFiltroEpisodio(frutaFiltroHu, filtroHu)) {
-            client.say(channel, '@' + tags.username + ' 📖 Esta fruta todavía no se vio en este canal. Podés continuar en el chat del canal donde la encontraste, o en el chat de op_d_bot.');
-            return;
-        }
-        await updateUsuario(username, {
-            evento_fruta_tipo: null, evento_fruta_fase: null, evento_fruta_nombre: null,
-            evento_fruta_nivel: null, evento_fruta_estado: null, evento_fruta_comandos: null,
-            evento_fruta_comida_por_otro: false
-        });
-        client.say(channel, '@' + tags.username + ' Huiste.'); return;
+        await procesarHuir(username, tags.username, null, false, channel, canalDb);
+        return;
     }
 
     if (command === '!comer') {
-        const user = await getUsuario(username);
-        // Meme pendiente: manejo especial
-        if (user && user.fruta_pendiente && user.fruta_pendiente.startsWith('meme:')) {
-            const nombreMeme = user.fruta_pendiente.slice(5);
-            const meme = MEMES_FRUTAS.find(m => m.nombre === nombreMeme);
-            await updateUsuario(username, { fruta_pendiente: null });
-            if (meme) {
-                client.say(channel, '@' + tags.username + ' ' + meme.comer);
-            } else {
-                client.say(channel, '@' + tags.username + ' Te comiste algo raro.');
-            }
-            return;
-        }
-        if (user && user.fruta_pendiente) {
-            const frutaConsumida = user.fruta_pendiente;
-            const { data: frutaData } = await supabase.from('frutas').select('descripcion, emoji, poder_fruta').eq('nombre', frutaConsumida).single();
-            const updateData = user.fruta
-                ? { fruta_2: frutaConsumida, fruta_pendiente: null }
-                : { fruta: frutaConsumida, fruta_pendiente: null };
-            await updateUsuario(username, updateData);
-            await supabase.from('frutas').update({ disponible: false }).eq('nombre', frutaConsumida);
-            console.log('🍎 Fruta consumida: ' + username + ' → ' + frutaConsumida + (user.fruta ? ' (2da)' : ''));
-            const msgComida = '@' + tags.username + ' Consumiste la ' + frutaConsumida + ' ' + ((frutaData && frutaData.emoji) || '') + '.';
-            client.say(channel, msgComida);
-
-
-            // Marcar a otros usuarios que tenían la misma fruta pendiente
-            const pcfFruta = (frutaData && frutaData.poder_fruta) ? Math.round(frutaData.poder_fruta) : 0;
-            const { data: otrosPendientes } = await supabase.from('usuarios')
-                .select('username, twitch_user_id')
-                .eq('fruta_pendiente', frutaConsumida)
-                .neq('username', username);
-            if (otrosPendientes && otrosPendientes.length > 0) {
-                for (const otro of otrosPendientes) {
-                    await updateUsuario(otro.username, {
-                        fruta_pendiente: null,
-                        fruta_perdida_por: username,
-                        fruta_perdida_pcf: pcfFruta
-                    });
-                    await notificar(otro.username, otro.twitch_user_id, '¿Y tu fruta? ¿Habría jurado que había una fruta aquí... Nooo, pestañaste, y @' + username + ' te la primereó');
-                }
-            }
-        } else {
-            client.say(channel, '@' + tags.username + ' FELICIDADES TE COMISTE... ESTA 🫱');
-        }
+        await procesarComer(username, tags.username, null, false, channel);
         return;
     }
 
     if (command === '!rechazar') {
-        const user = await getUsuario(username);
-        // Meme pendiente: manejo especial
-        if (user && user.fruta_pendiente && user.fruta_pendiente.startsWith('meme:')) {
-            const nombreMeme = user.fruta_pendiente.slice(5);
-            const meme = MEMES_FRUTAS.find(m => m.nombre === nombreMeme);
-            await updateUsuario(username, { fruta_pendiente: null });
-            if (meme) {
-                client.say(channel, '@' + tags.username + ' ' + meme.rechazar);
-            } else {
-                client.say(channel, '@' + tags.username + ' La rechazaste.');
-            }
-            return;
-        }
-        if (user && user.fruta_pendiente) {
-            await updateUsuario(username, { fruta_pendiente: null });
-            client.say(channel, '@' + tags.username + ' Rechazaste la ' + user.fruta_pendiente + '.');
-        } else if (user && user.fruta) {
-            client.say(channel, '@' + tags.username + ' Ya tenés fruta.');
-        } else {
-            client.say(channel, '@' + tags.username + ' Como te rechazaron toda tu vida, ¿no?');
-        }
+        await procesarRechazar(username, tags.username, null, false, channel);
         return;
     }
 
