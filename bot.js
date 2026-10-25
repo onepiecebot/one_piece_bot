@@ -1152,6 +1152,14 @@ async function revisarColiseosExpirados() {
 }
 
 // Redondea a 4 cifras significativas (ej: 123456789 → 123500000)
+function getFactorRango(conq) {
+    if (conq < 60) return 1.8;
+    if (conq < 80) return 1.4;
+    if (conq < 95) return 1.1;
+    if (conq < 100) return 1.0;
+    return 0.9;
+}
+
 function redondearBonito(n) {
     if (!n || n === 0) return 0;
     const signo = n < 0 ? -1 : 1;
@@ -1194,32 +1202,22 @@ async function calcularBonusRachaExplorar(user) {
 function calcularRecompensasExplorar(npc, prob, victoria, dificultad) {
     const baseConq = npc.recompensa_conquistador || 0;
     const baseBerries = npc.recompensa_berries || 0;
-    // Retrocompatible: si no se pasa dificultad, usar la fórmula vieja (k=2.5)
-    if (!dificultad) {
-        const mult = victoria
-            ? Math.max(1 + (0.50 - prob) * 2, 0.1)
-            : Math.max(1 + (prob - 0.50) * 2, 0.1);
-        return {
-            conq: Math.max(Math.round(baseConq * mult), 1),
-            berries: Math.max(redondearBonito(baseBerries * mult), 0)
-        };
-    }
+    const config = {
+        facil:   { min: 0.69, max: 0.88, vic: 0.593, der: 1.20, k: 0.5 },
+        medio:   { min: 0.32, max: 0.69, vic: 0.575, der: 0.20, k: 0.5 },
+        dificil: { min: 0.07, max: 0.32, vic: 2.15,  der: 0.40, k: 2.0 }
+    };
+    const cfg = config[dificultad];
+    const centro = (cfg.min + cfg.max) / 2;
+    const delta = centro - prob;
     let mult;
-    if (victoria) {
-        if (dificultad === 'facil') mult = 0.52;
-        else if (dificultad === 'medio') mult = 0.49;
-        else mult = 2.35;
-    } else {
-        if (dificultad === 'facil') mult = 1.20;
-        else if (dificultad === 'medio') mult = 0.20;
-        else mult = 0.40;
-    }
+    if (victoria) mult = Math.max(cfg.vic + cfg.k * delta, 0.05);
+    else mult = Math.max(cfg.der - cfg.k * delta, 0.05);
     return {
         conq: Math.max(baseConq * mult, 1),
         berries: Math.max(redondearBonito(baseBerries * mult), 0)
     };
 }
-
 async function getMensajeContextualExplorar(victoria, escalon, margenKey) {
     let s;
     if (victoria) {
@@ -1238,7 +1236,7 @@ async function getMensajeContextualExplorar(victoria, escalon, margenKey) {
     return await getTextoExplorar(s);
 }
 
-async function seleccionarNPCs(pcfUsuario) {
+async function seleccionarNPCs(pcfUsuario, conq, factorF) {
     const { data: npcs } = await supabase.from('npcs').select('*');
     if (!npcs || npcs.length === 0) return null;
     const elegidos = new Set();
@@ -1255,8 +1253,6 @@ async function seleccionarNPCs(pcfUsuario) {
             return prob >= minP && prob <= maxP;
         });
         if (cand.length === 0) {
-            // Fallback: solo NPCs con prob <= maxP (dentro del bucket o mas dificiles).
-            // NUNCA dar un NPC mas facil de lo que el bucket permite (causa loop de PCF).
             const probMedia = (minP + maxP) / 2;
             const disponibles = npcs.filter(n => {
                 if (elegidos.has(n.nombre)) return false;
@@ -1274,7 +1270,6 @@ async function seleccionarNPCs(pcfUsuario) {
                 cand = [disponibles[0]];
             }
         }
-        // Fallback 2: usuarios muy débiles (PCF < 15) → dar los NPCs más débiles disponibles
         if (cand.length === 0 && pcfUsuario < 15) {
             cand = npcs
                 .filter(n => {
@@ -1290,22 +1285,76 @@ async function seleccionarNPCs(pcfUsuario) {
                 .slice(0, 3);
         }
         if (cand.length === 0) continue;
-        const el = cand[Math.floor(Math.random() * cand.length)];
-        elegidos.add(el.nombre);
+
+        let el = cand[Math.floor(Math.random() * cand.length)];
         const pcfNpc = el.pcf_final || el.pcf_calculado || 0;
-        const prob = calcularProbabilidadVictoria(pcfUsuario, pcfNpc);
+        let prob = calcularProbabilidadVictoria(pcfUsuario, pcfNpc);
+        let victoria = Math.random() < prob;
+        let cast = calcularRecompensasExplorar(el, prob, false, bucket);
+
+        // Red de seguridad: si la derrota mandaría a 0 o negativo, buscar alternativa segura.
+        if (!victoria && cast.conq * factorF > conq) {
+            const alternativos = npcs.filter(n => {
+                if (elegidos.has(n.nombre)) return false;
+                if (n.nombre === el.nombre) return false;
+                const p = n.pcf_final || n.pcf_calculado || 0;
+                if (p <= 0) return false;
+                const pr = calcularProbabilidadVictoria(pcfUsuario, p);
+                return pr >= minP && pr <= maxP;
+            });
+            if (alternativos.length > 0) {
+                let minCastigoNpc = null;
+                let minCastigoVal = Infinity;
+                for (const alt of alternativos) {
+                    const p = alt.pcf_final || alt.pcf_calculado || 0;
+                    const pr = calcularProbabilidadVictoria(pcfUsuario, p);
+                    const c = calcularRecompensasExplorar(alt, pr, false, bucket).conq;
+                    if (c < minCastigoVal) {
+                        minCastigoVal = c;
+                        minCastigoNpc = alt;
+                    }
+                }
+                if (minCastigoVal * factorF <= conq) {
+                    el = minCastigoNpc;
+                    const pcfAlt = el.pcf_final || el.pcf_calculado || 0;
+                    prob = calcularProbabilidadVictoria(pcfUsuario, pcfAlt);
+                    victoria = Math.random() < prob;
+                    cast = calcularRecompensasExplorar(el, prob, false, bucket);
+                } else {
+                    let minRecNpc = null;
+                    let minRecVal = Infinity;
+                    for (const alt of alternativos) {
+                        const p = alt.pcf_final || alt.pcf_calculado || 0;
+                        const pr = calcularProbabilidadVictoria(pcfUsuario, p);
+                        const r = calcularRecompensasExplorar(alt, pr, true, bucket).conq;
+                        if (r < minRecVal) {
+                            minRecVal = r;
+                            minRecNpc = alt;
+                        }
+                    }
+                    el = minRecNpc;
+                    const pcfAlt = el.pcf_final || el.pcf_calculado || 0;
+                    prob = calcularProbabilidadVictoria(pcfUsuario, pcfAlt);
+                    victoria = true;
+                    cast = calcularRecompensasExplorar(el, prob, false, bucket);
+                }
+            } else {
+                victoria = true;
+            }
+        }
+
+        elegidos.add(el.nombre);
+        const pcfNpcFinal = el.pcf_final || el.pcf_calculado || 0;
         const pcfU = aplicarVariacion(pcfUsuario);
-        const pcfN = aplicarVariacion(pcfNpc);
-        const victoria = Math.random() < prob;
+        const pcfN = aplicarVariacion(pcfNpcFinal);
         const gan = Math.max(pcfU, pcfN), per = Math.min(pcfU, pcfN);
         const margen = (gan - per) / per;
-        const ratio = pcfNpc / pcfUsuario;
+        const ratio = pcfNpcFinal / pcfUsuario;
         const escalon = getEscalon(ratio);
         const margenKey = margen < 0.10 ? 'bajo' : margen < 0.30 ? 'medio' : 'alto';
         const rec = calcularRecompensasExplorar(el, prob, true, bucket);
-        const cast = calcularRecompensasExplorar(el, prob, false, bucket);
         resultado[bucket] = {
-            npc: el.nombre, nivel: el.nivel, pcf_npc: pcfNpc, pcf_usuario: pcfUsuario,
+            npc: el.nombre, nivel: el.nivel, pcf_npc: pcfNpcFinal, pcf_usuario: pcfUsuario,
             prob, victoria, escalon, margen_key: margenKey,
             recompensa_conq: rec.conq, recompensa_berries: rec.berries,
             castigo_conq: cast.conq, castigo_berries: cast.berries
@@ -2593,7 +2642,7 @@ async function procesarPelear(username, displayName, fromUserId, esSusurro, chat
             const prob = calcularProbabilidadVictoria(poderUsuario, pcfNpc);
             const castExplorar = calcularRecompensasExplorar(
                 { recompensa_conquistador: npcSombra.recompensa_conquistador, recompensa_berries: npcSombra.recompensa_berries },
-                prob, false
+                prob, false, 'medio'
             );
             castigoConq = Math.max(Math.round(castExplorar.conq * 0.35), 1);
             castigoBerries = Math.max(redondearBonito(castExplorar.berries * 0.35), 100000);
@@ -3169,7 +3218,8 @@ async function handleWhisper(event) {
             await sendWhisper(fromUserId, '🗺️ El mar es peligroso para alguien sin experiencia. Probá con !op o mirando un stream (podés usar !canaleson para ver si hay alguien activo con el bot)');
             return;
         }
-        const opciones = await seleccionarNPCs(pcfUsuario);
+        const factorF = getFactorRango(user.conquistador || 0);
+        const opciones = await seleccionarNPCs(pcfUsuario, user.conquistador || 0, factorF);
         if (!opciones) { await sendWhisper(fromUserId, '🗺️ No encontrás rivales a tu altura todavía. Entrená con !op o mirá el stream para ganar stats y volvé a intentar.'); return; }
         await updateUsuario(username, {
             evento_explorar_estado: 'pendiente', evento_explorar_fase: 'menu',
@@ -3183,9 +3233,9 @@ async function handleWhisper(event) {
         const total = [f, m, d].filter(Boolean).length;
         const plural = total === 3 ? 'tres caminos' : total === 2 ? 'dos caminos' : 'un camino';
         let msg = '🗺️ ¡Zarpás! Se divisan ' + plural + ':';
-        if (f) msg += ' 🟢 !facil ' + getCalaverasPorProb(f.prob) + ' (+' + Math.round(f.recompensa_conq) + ' Conq / +$' + f.recompensa_berries.toLocaleString('es-AR') + ')';
-        if (m) msg += ' 🟡 !medio ' + getCalaverasPorProb(m.prob) + ' (+' + Math.round(m.recompensa_conq) + ' Conq / +$' + m.recompensa_berries.toLocaleString('es-AR') + ')';
-        if (d) msg += ' 🔴 !dificil ' + getCalaverasPorProb(d.prob) + ' (+' + Math.round(d.recompensa_conq) + ' Conq / +$' + d.recompensa_berries.toLocaleString('es-AR') + ')';
+        if (f) msg += ' 🟢 !facil ' + getCalaverasPorProb(f.prob) + ' (+' + Math.round(f.recompensa_conq * factorF) + ' Conq / +$' + f.recompensa_berries.toLocaleString('es-AR') + ')';
+        if (m) msg += ' 🟡 !medio ' + getCalaverasPorProb(m.prob) + ' (+' + Math.round(m.recompensa_conq * factorF) + ' Conq / +$' + m.recompensa_berries.toLocaleString('es-AR') + ')';
+        if (d) msg += ' 🔴 !dificil ' + getCalaverasPorProb(d.prob) + ' (+' + Math.round(d.recompensa_conq * factorF) + ' Conq / +$' + d.recompensa_berries.toLocaleString('es-AR') + ')';
         await sendWhisper(fromUserId, msg);
         return;
     }
@@ -3258,26 +3308,29 @@ async function handleWhisper(event) {
         console.log('[EXPLORAR] ' + username + ' vs ' + op.npc + ' | PCF ' + op.pcf_usuario + ' vs ' + op.pcf_npc + ' | Haki U: ' + hakiUExpl + ' | ' + (op.victoria ? 'VICTORIA' : 'DERROTA'));
         const rachaExpl = await calcularBonusRachaExplorar(user);
         const msgRachaExpl = rachaExpl.yaContado ? '' : ' | 🔥 Racha ' + rachaExpl.racha + 'd: +' + rachaExpl.bonus;
+        const factorF = getFactorRango(user.conquistador || 0);
+        const recConqF = op.recompensa_conq * factorF;
+        const castConqF = op.castigo_conq * factorF;
         if (op.victoria) {
-            chequearHakiCambio('conquistador', user.conquistador, (user.conquistador || 0) + op.recompensa_conq + rachaExpl.bonus);
+            chequearHakiCambio('conquistador', user.conquistador, (user.conquistador || 0) + recConqF + rachaExpl.bonus);
             await updateUsuario(username, {
-                conquistador: (user.conquistador || 0) + op.recompensa_conq + rachaExpl.bonus,
+                conquistador: (user.conquistador || 0) + recConqF + rachaExpl.bonus,
                 recompensa_delta: (user.recompensa_delta || 0) + op.recompensa_berries,
                 evento_explorar_estado: null, evento_explorar_fase: null, evento_explorar_dificultad: null,
                 evento_explorar_npc: null, evento_explorar_nivel: null, evento_explorar_pcf_usuario: null,
                 evento_explorar_pcf_npc: null, evento_explorar_comandos: null, evento_explorar_opciones: null
             });
-            await sendWhisper(fromUserId, msgCtx + '🏆 ¡Victoria! Derrotaste a ' + op.npc + '. +' + Math.round(op.recompensa_conq) + ' Conq. +$' + op.recompensa_berries.toLocaleString('es-AR') + msgRachaExpl);
+            await sendWhisper(fromUserId, msgCtx + '🏆 ¡Victoria! Derrotaste a ' + op.npc + '. +' + Math.round(recConqF) + ' Conq. +$' + op.recompensa_berries.toLocaleString('es-AR') + msgRachaExpl);
         } else {
-            chequearHakiCambio('conquistador', user.conquistador, Math.max((user.conquistador || 0) - op.castigo_conq, 0) + rachaExpl.bonus);
+            chequearHakiCambio('conquistador', user.conquistador, Math.max((user.conquistador || 0) - castConqF, 0) + rachaExpl.bonus);
             await updateUsuario(username, {
-                conquistador: Math.max((user.conquistador || 0) - op.castigo_conq, 0) + rachaExpl.bonus,
+                conquistador: Math.max((user.conquistador || 0) - castConqF, 0) + rachaExpl.bonus,
                 recompensa_delta: (user.recompensa_delta || 0) - op.castigo_berries,
                 evento_explorar_estado: null, evento_explorar_fase: null, evento_explorar_dificultad: null,
                 evento_explorar_npc: null, evento_explorar_nivel: null, evento_explorar_pcf_usuario: null,
                 evento_explorar_pcf_npc: null, evento_explorar_comandos: null, evento_explorar_opciones: null
             });
-            await sendWhisper(fromUserId, msgCtx + '💀 Derrota. ' + op.npc + ' te superó. -' + Math.round(op.castigo_conq) + ' Conq. -$' + op.castigo_berries.toLocaleString('es-AR') + msgRachaExpl);
+            await sendWhisper(fromUserId, msgCtx + '💀 Derrota. ' + op.npc + ' te superó. -' + Math.round(castConqF) + ' Conq. -$' + op.castigo_berries.toLocaleString('es-AR') + msgRachaExpl);
         }
         return;
     }
