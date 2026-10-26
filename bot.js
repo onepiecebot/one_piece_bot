@@ -172,7 +172,9 @@ const COMANDOS_DEL_BOT = new Set([
     '!onop', '!offop',
     '!setepisodio',
     '!deploylisto',
-    '!perder'
+    '!perder',
+    '!deploy', '!dep',
+    '!deplis'
 ]);
 
 // ============================================
@@ -1438,6 +1440,7 @@ async function seleccionarNPCs(pcfUsuario, conq, factorF) {
         let prob = calcularProbabilidadVictoria(pcfUsuario, pcfNpc);
         let victoria = Math.random() < prob;
         let cast = calcularRecompensasExplorar(el, prob, false, bucket);
+        let forzadoTipo = null;
 
         // Red de seguridad: si la derrota mandaría a 0 o negativo, buscar alternativa segura.
         if (!victoria && cast.conq * factorF > conq) {
@@ -1467,6 +1470,7 @@ async function seleccionarNPCs(pcfUsuario, conq, factorF) {
                     prob = calcularProbabilidadVictoria(pcfUsuario, pcfAlt);
                     victoria = Math.random() < prob;
                     cast = calcularRecompensasExplorar(el, prob, false, bucket);
+                    forzadoTipo = 'castigo_seguro';
                 } else {
                     let minRecNpc = null;
                     let minRecVal = Infinity;
@@ -1484,9 +1488,11 @@ async function seleccionarNPCs(pcfUsuario, conq, factorF) {
                     prob = calcularProbabilidadVictoria(pcfUsuario, pcfAlt);
                     victoria = true;
                     cast = calcularRecompensasExplorar(el, prob, false, bucket);
+                    forzadoTipo = 'victoria_forzada';
                 }
             } else {
                 victoria = true;
+                forzadoTipo = 'victoria_forzada';
             }
         }
 
@@ -1504,7 +1510,8 @@ async function seleccionarNPCs(pcfUsuario, conq, factorF) {
             npc: el.nombre, nivel: el.nivel, pcf_npc: pcfNpcFinal, pcf_usuario: pcfUsuario,
             prob, victoria, escalon, margen_key: margenKey,
             recompensa_conq: rec.conq, recompensa_berries: rec.berries,
-            castigo_conq: cast.conq, castigo_berries: cast.berries
+            castigo_conq: cast.conq, castigo_berries: cast.berries,
+            forzado: forzadoTipo
         };
     }
     if (Object.keys(resultado).length < 2) return null;
@@ -3024,12 +3031,13 @@ async function handleWhisper(event) {
         return;
     }
 
-    // !deploy (solo dueño)
-    if (command === '!deploy') {
+    // !deploy / !dep (solo dueño). !dep = sin avisos a canales.
+    if (command === '!deploy' || command === '!dep') {
         if (username !== DUEÑO) {
             await sendWhisper(fromUserId, '❌ No tenés permiso para usar este comando.');
             return;
         }
+        const avisarCanales = (command === '!deploy');
         // Snapshot: guardar quiénes tienen bloque abierto y timestamp
         const { data: abiertos } = await supabase.from('lurkv2')
             .select('usuario').not('join_actual', 'is', null);
@@ -3046,29 +3054,36 @@ async function handleWhisper(event) {
                 cerrados++;
             }
         }
-        // Avisar a todos los canales (incluye los offop)
-        const canales = await getCanales();
-        const msg = '🔧 El bot entrará en mantenimiento. No va a funcionar hasta nuevo aviso. Disculpen las molestias.';
         const avisados = [];
-        for (const c of canales) {
-            // Si es canal con lurk, solo avisamos si está live
-            if (canalTieneLurk(c.canal)) {
-                const live = await checkLiveHelix(c.canal);
-                if (!live) continue;
+        if (avisarCanales) {
+            // Avisar a todos los canales (incluye los offop)
+            const canales = await getCanales();
+            const msg = '🔧 El bot entrará en mantenimiento. No va a funcionar hasta nuevo aviso. Disculpen las molestias.';
+            for (const c of canales) {
+                // Si es canal con lurk, solo avisamos si está live
+                if (canalTieneLurk(c.canal)) {
+                    const live = await checkLiveHelix(c.canal);
+                    if (!live) continue;
+                }
+                try { client.say(c.canal, msg); avisados.push(c.canal); } catch (e) {}
             }
-            try { client.say(c.canal, msg); avisados.push(c.canal); } catch (e) {}
         }
-        console.log('🚀 Deploy preparado. Bloques cerrados: ' + cerrados + '. Avisados: ' + avisados.join(', '));
-        await sendWhisper(fromUserId, '✅ Deploy preparado. Bloques: ' + cerrados + '. Avisados: ' + (avisados.join(', ') || 'ninguno'));
+        console.log('🚀 Deploy preparado (' + (avisarCanales ? 'con avisos' : 'SILENCIOSO') + '). Bloques cerrados: ' + cerrados + '. Avisados: ' + avisados.join(', '));
+        if (avisarCanales) {
+            await sendWhisper(fromUserId, '✅ Deploy preparado. Bloques: ' + cerrados + '. Avisados: ' + (avisados.join(', ') || 'ninguno'));
+        } else {
+            await sendWhisper(fromUserId, '✅ Deploy preparado (SILENCIOSO). Bloques cerrados: ' + cerrados + '.');
+        }
         return;
     }
 
-    // !deploylisto (solo dueño)
-    if (command === '!deploylisto') {
+    // !deploylisto / !deplis (solo dueño). !deplis = sin avisos a canales.
+    if (command === '!deploylisto' || command === '!deplis') {
         if (username !== DUEÑO) {
             await sendWhisper(fromUserId, '❌ No tenés permiso para usar este comando.');
             return;
         }
+        const avisarCanales = (command === '!deploylisto');
         // Leer snapshot
         const { data: snapData } = await supabase.from('bot_config').select('valor').eq('clave', 'deploy_snapshot').maybeSingle();
         const { data: tsData } = await supabase.from('bot_config').select('valor').eq('clave', 'deploy_timestamp').maybeSingle();
@@ -3104,19 +3119,25 @@ async function handleWhisper(event) {
         await supabase.from('bot_config').upsert({ clave: 'deploy_timestamp', valor: '' });
         await setMantenimiento(false);
         await setPredeploy(false);
-        // Avisar a canales
-        const canales = await getCanales();
-        const msg = '✅ El bot ya está funcionando de nuevo. ¡Gracias por esperar!';
         const avisados = [];
-        for (const c of canales) {
-            if (canalTieneLurk(c.canal)) {
-                const live = await checkLiveHelix(c.canal);
-                if (!live) continue;
+        if (avisarCanales) {
+            // Avisar a canales
+            const canales = await getCanales();
+            const msg = '✅ El bot ya está funcionando de nuevo. ¡Gracias por esperar!';
+            for (const c of canales) {
+                if (canalTieneLurk(c.canal)) {
+                    const live = await checkLiveHelix(c.canal);
+                    if (!live) continue;
+                }
+                try { client.say(c.canal, msg); avisados.push(c.canal); } catch (e) {}
             }
-            try { client.say(c.canal, msg); avisados.push(c.canal); } catch (e) {}
         }
-        console.log('🚀 Deploy confirmado. Avisados: ' + avisados.join(', '));
-        await sendWhisper(fromUserId, '✅ Aviso enviado a: ' + (avisados.join(', ') || 'ninguno'));
+        console.log('🚀 Deploy confirmado (' + (avisarCanales ? 'con avisos' : 'SILENCIOSO') + '). Avisados: ' + avisados.join(', '));
+        if (avisarCanales) {
+            await sendWhisper(fromUserId, '✅ Aviso enviado a: ' + (avisados.join(', ') || 'ninguno'));
+        } else {
+            await sendWhisper(fromUserId, '✅ Deploy confirmado (SILENCIOSO). Bot activo de nuevo.');
+        }
         return;
     }
 
@@ -3297,7 +3318,7 @@ async function handleWhisper(event) {
             '👁️ ' + rangoObs.nombre + ' (' + (user.observacion || 0) + ') ' + rangoObs.emoji,
             '⚜️ ' + rangoConq.nombre + ' (' + Math.round(user.conquistador || 0) + ') ' + rangoConq.emoji,
             opTxt,
-            '🚩 Postas ' + postasHoy + '/3 (' + minLurkHoy + 'min)',
+            '🚩 Postas ' + postasHoy + '/3 (' + Math.min(minLurkHoy, 60) + 'min)',
             estadoExplorar,
             '⚔️ Duelos ' + duelosHoy + '/10',
             '💰 $' + recompensaReal.toLocaleString('es-AR') + sufijoRangoS
@@ -3415,6 +3436,23 @@ async function handleWhisper(event) {
             ultima_exploracion: new Date().toISOString(),
             ultimo_dia_exploracion: getFechaHoy(), dias_sin_explorar: 0
         });
+        // Log verbose de opciones generadas (debug)
+        const _fmtSignBerries = (n) => (n >= 0 ? '+' : '-') + '$' + formatBerries(Math.abs(n));
+        console.log('[EXPLORAR] ' + username + ' | PCF ' + pcfUsuario + ' | F ' + factorF + ' | conq ' + (Math.round((user.conquistador || 0) * 100) / 100) + ' | max base $' + formatBerries(user.max_base_historica || 0) + ' | delta ' + _fmtSignBerries(user.recompensa_delta || 0));
+        for (const _b of ['facil', 'medio', 'dificil']) {
+            const _op = opciones[_b];
+            if (!_op) continue;
+            let _res;
+            if (_op.victoria) {
+                _res = 'VICTORIA | +' + Math.round(_op.recompensa_conq * factorF) + 'c / +$' + formatBerries(_op.recompensa_berries);
+            } else {
+                _res = 'DERROTA | -' + Math.round(_op.castigo_conq * factorF) + 'c / -$' + formatBerries(_op.castigo_berries);
+            }
+            let _forz = '';
+            if (_op.forzado === 'castigo_seguro') _forz = ' | ⚠️ castigo seguro';
+            else if (_op.forzado === 'victoria_forzada') _forz = ' | 🚨 VICTORIA FORZADA';
+            console.log('[EXPLORAR]   ' + _b + ': ' + _op.npc + ' | PCF ' + _op.pcf_npc + ' | prob ' + (_op.prob * 100).toFixed(1) + '% | ' + _res + _forz);
+        }
         const f = opciones.facil, m = opciones.medio, d = opciones.dificil;
         const total = [f, m, d].filter(Boolean).length;
         const plural = total === 3 ? 'tres caminos' : total === 2 ? 'dos caminos' : 'un camino';
@@ -3660,8 +3698,11 @@ async function mostrarObservacion(username, fromUserId) {
     if (postasActuales < 3) faltan = 'Faltan: ' + (3 - postasActuales) + ' posta' + (postasActuales === 2 ? '' : 's') + ' para completar el día';
     else faltan = '¡Día completo!';
 
+    // Al usuario le mostramos los minutos topeados a 60 (el máximo que da postas).
+    // Si tiene 24, ve 24. Si tiene 63, ve 60. Coherente con las postas mostradas.
+    const minutosMostrar = Math.min(minutosActuales, 60);
     const msg = '📡 Haki de Observación\n' +
-        '🚩 Postas hoy: ' + postasActuales + '/3 (' + minutosActuales + ' min)\n' +
+        '🚩 Postas hoy: ' + postasActuales + '/3 (' + minutosMostrar + ' min)\n' +
         '📈 Puntos hoy: +' + ptsHoy + (ptsPendientes > 0 ? ' (+' + ptsPendientes + ' pendiente)' : '') + '\n' +
         '🔥 Racha: ' + racha + ' día' + (racha === 1 ? '' : 's') + (bonusRacha > 0 ? ' (bonus +' + bonusRacha + ')' : '') + '\n' +
         '🔭 Avistamiento: ' + avistamiento + '\n' +
