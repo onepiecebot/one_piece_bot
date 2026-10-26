@@ -44,11 +44,12 @@ const LURK_LIVE_MINIMO_2H = 120;
 const NPC_VENTANA_MINUTOS = 10;
 
 // Coliseo
-const COLISEO_VENTANA_MINUTOS = 5;
-const COLISEO_DELTA_ENTRADA = 10000000; // $10M
-const COLISEO_CONQ_ENTRADA = 1;
+const COLISEO_VENTANA_MINUTOS = 3;
+const COLISEO_CONQ_MINIMO = 5;
 const COLISEO_PROB_MIN = 0.15; // si el más débil tiene menos de 15%, no pelean (nadie supera 85%)
 const COLISEO_EXP_BR = 1.2; // exponente para battle royale
+const COLISEO_TOPE_PARTICIPANTES = 12;
+const COLISEO_BERRIES_POR_CONQ = 10000000; // $10M por punto de Conq arriesgado
 
 // Frutas meme (aparecen al fallar el sorteo, 40% de las veces)
 const MEMES_FRUTAS = [
@@ -170,7 +171,8 @@ const COMANDOS_DEL_BOT = new Set([
     ...COMANDOS_SUSURRO_EN_OP_D_BOT,
     '!onop', '!offop',
     '!setepisodio',
-    '!deploylisto'
+    '!deploylisto',
+    '!perder'
 ]);
 
 // ============================================
@@ -969,78 +971,157 @@ function sortearBR(participantes) {
     return resultado;
 }
 
+// Costo de entrada al Coliseo según la probabilidad de ganar (bandas)
+function calcularCostoColiseo(prob) {
+    let conq;
+    if (prob <= 0.20) conq = 1;
+    else if (prob <= 0.40) conq = 2;
+    else if (prob <= 0.60) conq = 3;
+    else if (prob <= 0.80) conq = 4;
+    else conq = 5;
+    return { conq, berries: conq * COLISEO_BERRIES_POR_CONQ };
+}
+
 async function repartirPremiosColiseo(participantes, ordenGanadores) {
-    // participantes: array de {username, pcf}
+    // participantes: array de {username, pcf, costo_conq, costo_berries, conquistador_actual, forzar_derrota?}
     // ordenGanadores: array ordenado por puesto (1º, 2º, 3º...)
     const total = participantes.length;
-    const pozoConq = total * COLISEO_CONQ_ENTRADA;
-    const pozoDelta = total * COLISEO_DELTA_ENTRADA;
-    // Determinar cuántos premios hay
-    let numPremios = 1;
-    let dist = [1.0];
-    if (total >= 10) { numPremios = 3; dist = [0.55, 0.30, 0.15]; }
-    else if (total >= 5) { numPremios = 2; dist = [0.70, 0.30]; }
-    // Calcular montos por puesto (redondeando siempre al ganador, ajustando los demás)
-    const premiosConq = [];
-    const premiosDelta = [];
-    let acumConq = 0;
-    let acumDelta = 0;
-    for (let i = 0; i < numPremios; i++) {
-        if (i < numPremios - 1) {
-            const c = Math.floor(pozoConq * dist[i]);
-            const d = Math.floor(pozoDelta * dist[i]);
-            premiosConq.push(c);
-            premiosDelta.push(d);
-            acumConq += c;
-            acumDelta += d;
-        } else {
-            // Último: lo que sobra (redondeo al ganador)
-            premiosConq.push(pozoConq - acumConq);
-            premiosDelta.push(pozoDelta - acumDelta);
-        }
+    const numPremios = total >= 5 ? 2 : 1;
+    const potConq = participantes.reduce((s, p) => s + (p.costo_conq || 0), 0);
+    const potBerries = participantes.reduce((s, p) => s + (p.costo_berries || 0), 0);
+    // Premios: 1 premio = 100%, 2 premios = 70/30
+    let premiosConq, premiosBerries;
+    if (numPremios === 1) {
+        premiosConq = [potConq];
+        premiosBerries = [potBerries];
+    } else {
+        const p1Conq = Math.floor(potConq * 0.70);
+        const p1Berries = Math.floor(potBerries * 0.70);
+        premiosConq = [p1Conq, potConq - p1Conq];
+        premiosBerries = [p1Berries, potBerries - p1Berries];
     }
-    // Ganadores (top numPremios)
+    // Netos por ganador (premio - costo)
     const ganadores = ordenGanadores.slice(0, numPremios);
     const perdedores = ordenGanadores.slice(numPremios);
-    // Aplicar
+    const netosConq = [];
+    const netosBerries = [];
+    for (let i = 0; i < ganadores.length; i++) {
+        netosConq.push(premiosConq[i] - (ganadores[i].costo_conq || 0));
+        netosBerries.push(premiosBerries[i] - (ganadores[i].costo_berries || 0));
+    }
+    // Mitigación de neto negativo en ganadores (solo puede disparar en el 2º de 5+)
+    if (numPremios === 2) {
+        if (netosConq[1] < 0) {
+            netosConq[0] += netosConq[1];
+            netosConq[1] = 0;
+        }
+        if (netosBerries[1] < 0) {
+            netosBerries[0] += netosBerries[1];
+            netosBerries[1] = 0;
+        }
+    }
+    // Aplicar a ganadores + capturar datos para mensajes
     for (let i = 0; i < ganadores.length; i++) {
         const u = ganadores[i].username;
         const userU = await getUsuario(u);
         if (!userU) continue;
-        const conqNeto = premiosConq[i] - COLISEO_CONQ_ENTRADA;
-        const deltaNeto = premiosDelta[i] - COLISEO_DELTA_ENTRADA;
-        chequearHakiCambio('conquistador', userU.conquistador, Math.max((userU.conquistador || 0) + conqNeto, 0));
+        const deltaConq = netosConq[i];
+        const deltaBerries = netosBerries[i];
+        chequearHakiCambio('conquistador', userU.conquistador, Math.max((userU.conquistador || 0) + deltaConq, 0));
         await updateUsuario(u, {
-            conquistador: Math.max((userU.conquistador || 0) + conqNeto, 0),
-            recompensa_delta: (userU.recompensa_delta || 0) + deltaNeto,
+            conquistador: Math.max((userU.conquistador || 0) + deltaConq, 0),
+            recompensa_delta: (userU.recompensa_delta || 0) + deltaBerries,
             coliseo_canal: null
         });
     }
+    // Aplicar a perdedores + capturar quién puede recibir susurro
+    const susurrosPerdedores = [];
+    const perdedoresChat = []; // { username, costo_conq, costo_berries }
     for (const p of perdedores) {
         const userP = await getUsuario(p.username);
         if (!userP) continue;
-        chequearHakiCambio('conquistador', userP.conquistador, Math.max((userP.conquistador || 0) - COLISEO_CONQ_ENTRADA, 0));
+        const deltaConq = -(p.costo_conq || 0);
+        const deltaBerries = -(p.costo_berries || 0);
+        chequearHakiCambio('conquistador', userP.conquistador, Math.max((userP.conquistador || 0) + deltaConq, 0));
         await updateUsuario(p.username, {
-            conquistador: Math.max((userP.conquistador || 0) - COLISEO_CONQ_ENTRADA, 0),
-            recompensa_delta: (userP.recompensa_delta || 0) - COLISEO_DELTA_ENTRADA,
+            conquistador: Math.max((userP.conquistador || 0) + deltaConq, 0),
+            recompensa_delta: (userP.recompensa_delta || 0) + deltaBerries,
             coliseo_canal: null
         });
+        const pc = Math.round(p.costo_conq || 0);
+        const pb = Math.round(p.costo_berries || 0);
+        const msgSusurro = '🏟️ Coliseo: quedaste eliminado. -' + pc + ' Conq / -$' + formatBerries(pb) + '.';
+        if (userP.ha_susurrado && userP.twitch_user_id) {
+            susurrosPerdedores.push({
+                username: userP.username,
+                twitch_user_id: userP.twitch_user_id,
+                mensaje: msgSusurro
+            });
+        } else {
+            perdedoresChat.push({ username: userP.username, costo_conq: pc, costo_berries: pb });
+        }
     }
-    // Armar mensaje
-    let msg = '🏟️ COLISEO — ' + total + ' participantes\n';
-    for (let i = 0; i < ganadores.length; i++) {
-        const conqNeto = premiosConq[i] - COLISEO_CONQ_ENTRADA;
-        const deltaNeto = premiosDelta[i] - COLISEO_DELTA_ENTRADA;
-        const emoji = getEmojiRangoColiseo(i + 1);
-        const conqTxt = conqNeto > 0 ? '+' + conqNeto + ' Conq, ' : '';
-        const deltaSigno = deltaNeto >= 0 ? '+' : '';
-        msg += emoji + ' @' + ganadores[i].username + ' (' + conqTxt + deltaSigno + '$' + formatBerries(deltaNeto) + ')\n';
+    // ============================================
+    // ARMAR MENSAJES
+    // ============================================
+    // msgGanadores: siempre
+    // msgPerdedoresChat: null si no hay perdedores sin susurro
+    // susurrosPerdedores: array (vacío si todos tienen ha_susurrado)
+    let msgGanadores = '';
+    let msgPerdedoresChat = null;
+    if (total === 2) {
+        // 1v1 unificado
+        const g = ganadores[0];
+        const p = perdedores[0];
+        const gc = Math.round(netosConq[0]);
+        const gb = Math.round(netosBerries[0]);
+        const pc = Math.round(p.costo_conq || 0);
+        const pb = Math.round(p.costo_berries || 0);
+        const gcb = (gc >= 0 ? '+' : '') + gc + ' Conq';
+        const gbb = (gb >= 0 ? '+' : '-') + '$' + formatBerries(Math.abs(gb));
+        msgGanadores = '🏟️ @' + g.username + ' venció a @' + p.username + ' | @' + g.username + ': ' + gcb + ' / ' + gbb + ' | @' + p.username + ': -' + pc + ' Conq / -$' + formatBerries(pb);
+        // En 1v1, la parte de perdedores ya está en msgGanadores. No hay chat ni susurro extra.
+        return { msgGanadores, msgPerdedoresChat: null, susurrosPerdedores: [] };
+    } else if (total <= 4) {
+        // BR chico, 1 premio
+        const g = ganadores[0];
+        const gc = Math.round(netosConq[0]);
+        const gb = Math.round(netosBerries[0]);
+        const gcb = (gc >= 0 ? '+' : '') + gc + ' Conq';
+        const gbb = (gb >= 0 ? '+' : '-') + '$' + formatBerries(Math.abs(gb));
+        msgGanadores = '🏟️ ¡' + total + ' gladiadores! 🥇 @' + g.username + ' se lleva todo: ' + gcb + ' / ' + gbb + '.';
+    } else {
+        // BR grande, 2 premios
+        const g1 = ganadores[0];
+        const g2 = ganadores[1];
+        const g1c = Math.round(netosConq[0]);
+        const g1b = Math.round(netosBerries[0]);
+        const g2c = Math.round(netosConq[1]);
+        const g2b = Math.round(netosBerries[1]);
+        const g1cb = (g1c >= 0 ? '+' : '') + g1c + ' Conq';
+        const g1bb = (g1b >= 0 ? '+' : '-') + '$' + formatBerries(Math.abs(g1b));
+        const g2cb = (g2c >= 0 ? '+' : '') + g2c + ' Conq';
+        const g2bb = (g2b >= 0 ? '+' : '-') + '$' + formatBerries(Math.abs(g2b));
+        msgGanadores = '🏟️ ¡' + total + ' gladiadores! 🥇 @' + g1.username + ' REINÓ EN LA ARENA: ' + g1cb + ' / ' + g1bb + '. 🥈 @' + g2.username + ': ' + g2cb + ' / ' + g2bb + '.';
     }
-    if (perdedores.length > 0) {
-        msg += '💀 ' + perdedores.length + ' derrotados en la arena (-1 Conq, -$10M)';
+    // msgPerdedoresChat (solo si hay perdedores sin susurro en BR)
+    if (perdedoresChat.length > 0) {
+        const grupos = {};
+        for (const p of perdedoresChat) {
+            const key = p.costo_conq + '|' + p.costo_berries;
+            if (!grupos[key]) grupos[key] = { usuarios: [], costo_conq: p.costo_conq, costo_berries: p.costo_berries };
+            grupos[key].usuarios.push('@' + p.username);
+        }
+        const partes = [];
+        for (const k in grupos) {
+            const g = grupos[k];
+            partes.push(g.usuarios.join(', ') + ': -' + g.costo_conq + ' Conq/-$' + formatBerries(g.costo_berries));
+        }
+        msgPerdedoresChat = '💀 ' + partes.join(' | ');
     }
-    return msg;
+    return { msgGanadores, msgPerdedoresChat, susurrosPerdedores };
 }
+
 
 async function usuarioEnColiseo(username) {
     const { data } = await supabase.from('usuarios').select('coliseo_canal').eq('username', username).maybeSingle();
@@ -1050,75 +1131,141 @@ async function usuarioEnColiseo(username) {
 async function cerrarVentanaColiseo(coliseo) {
     const canal = coliseo.canal;
     const participantes = coliseo.participantes || [];
-    // Recalcular PCF de cada uno (por si entrenaron durante la ventana o en espera)
+    // Recalcular PCF y Conq actual de cada uno (puede haber cambiado durante la ventana)
     for (const p of participantes) {
         const uFresh = await getUsuario(p.username);
         if (uFresh) {
             p.pcf = await calcularPCFUsuario(uFresh);
+            p.conquistador_actual = uFresh.conquistador || 0;
+        } else {
+            p.conquistador_actual = 0;
         }
     }
-    // Caso 1: 0-1 participantes → espera
+    // ============================================
+    // Caso 1 participante o menos → CANCELAR
+    // ============================================
     if (participantes.length <= 1) {
-        await guardarColiseo(canal, { estado: 'espera', participantes, ventana_inicio: null, ventana_fin: null });
-        if (participantes.length === 1) {
-            client.say(canal, '🏟️ El Coliseo queda en espera. Se reabrirá cuando alguien más lo active.');
-        } else {
-            await borrarColiseo(canal);
-        }
-        // Limpiar coliseo_canal para que puedan hacer otros comandos
+        client.say(canal, '🏟️ El Coliseo se cancela.');
         for (const p of participantes) {
             await updateUsuario(p.username, { coliseo_canal: null });
         }
+        await borrarColiseo(canal);
         return;
     }
-    // Caso 2: 2 participantes → verificar condición
+    // ============================================
+    // Caso 2 participantes → 1v1 (verificar 15%)
+    // ============================================
     if (participantes.length === 2) {
         const [a, b] = participantes;
         const pcfA = a.pcf || 0;
         const pcfB = b.pcf || 0;
-        const probA = pcfB === 0 ? 1 : (pcfA === 0 ? 0 : 1 / (1 + Math.pow(pcfB / pcfA, EXP_PROB)));
+        let probA;
+        if (pcfA === 0 && pcfB === 0) probA = 0.5;
+        else if (pcfB === 0) probA = 1;
+        else if (pcfA === 0) probA = 0;
+        else probA = 1 / (1 + Math.pow(pcfB / pcfA, EXP_PROB));
         const probDebil = Math.min(probA, 1 - probA);
         if (probDebil < COLISEO_PROB_MIN) {
-            // No cumplen → espera
-            await guardarColiseo(canal, { estado: 'espera', participantes, ventana_inicio: null, ventana_fin: null });
-            client.say(canal, '🏟️ No cumplen las condiciones para pelear. El Coliseo queda en espera.');
+            client.say(canal, '🏟️ El Coliseo se cancela: los luchadores no son rivales parejos.');
             for (const p of participantes) {
                 await updateUsuario(p.username, { coliseo_canal: null });
             }
+            await borrarColiseo(canal);
             return;
         }
-        // Cumplen → pelear 1v1
-        const res = resolverDuelo(probA, a.username, b.username);
+        // Asignar costos (capados por conquistador actual)
+        const costoA = Math.min(calcularCostoColiseo(probA).conq, Math.max(a.conquistador_actual, 0));
+        const costoB = Math.min(calcularCostoColiseo(1 - probA).conq, Math.max(b.conquistador_actual, 0));
+        a.costo_conq = costoA;
+        a.costo_berries = costoA * COLISEO_BERRIES_POR_CONQ;
+        b.costo_conq = costoB;
+        b.costo_berries = costoB * COLISEO_BERRIES_POR_CONQ;
+        // Resolver 1v1 SIN EMPATE (random < probA)
+        const ganador = Math.random() < probA ? a : b;
+        const perdedor = ganador === a ? b : a;
+        // Aplicar forzar_derrota si existe
         let orden;
-        if (res.empate) {
-            // Desempate: mayor PCF
-            orden = pcfA >= pcfB ? [a, b] : [b, a];
-        } else {
-            const ganador = res.ganador;
-            const perdedor = ganador === a.username ? b : a;
-            const ganadorObj = ganador === a.username ? a : b;
-            orden = [ganadorObj, perdedor];
+        if (a.forzar_derrota && !b.forzar_derrota) orden = [b, a];
+        else if (b.forzar_derrota && !a.forzar_derrota) orden = [a, b];
+        else orden = [ganador, perdedor];
+        // Incrementar coliseos_hoy (recién acá, solo participantes que pelearon)
+        for (const p of participantes) {
+            const uP = await getUsuario(p.username);
+            if (uP) await updateUsuario(p.username, { coliseos_hoy: (uP.coliseos_hoy || 0) + 1 });
         }
-        const msg = await repartirPremiosColiseo(participantes, orden);
-        client.say(canal, msg);
+        // Repartir
+        const resPremios = await repartirPremiosColiseo(participantes, orden);
+        client.say(canal, resPremios.msgGanadores);
+        // Registrar 1v1 en duelos para !historial.
+        // Usamos fecha vieja (2020-01-01) para que contarDuelosHoy NO lo cuente.
+        // getHistorialH2H no filtra por fecha, así que sí aparece en !historial.
+        const pcfRet = orden[0].pcf || 0;
+        const pcfRetado = orden[1].pcf || 0;
+        let probRetadorDuelo;
+        if (pcfRet === 0 && pcfRetado === 0) probRetadorDuelo = 0.5;
+        else if (pcfRetado === 0) probRetadorDuelo = 1;
+        else if (pcfRet === 0) probRetadorDuelo = 0;
+        else probRetadorDuelo = 1 / (1 + Math.pow(pcfRetado / pcfRet, EXP_PROB));
+        await crearDuelo({
+            retador: orden[0].username, retado: orden[1].username,
+            fecha: '2020-01-01T00:00:00+00:00',
+            estado: 'finalizado',
+            ganador: orden[0].username,
+            pcf_retador: pcfRet, pcf_retado: pcfRetado,
+            prob_retador: parseFloat(probRetadorDuelo.toFixed(4)),
+            monto: 0,
+            delta_retador: 0, delta_retado: 0,
+            canal: 'op_d_bot'
+        });
         const probLogA = (probA * 100).toFixed(1);
         const probLogB = ((1 - probA) * 100).toFixed(1);
-        console.log('[COLISEO] ' + canal + ' → 1v1 | ' + a.username + ' (PCF ' + pcfA + ', ' + probLogA + '%) vs ' + b.username + ' (PCF ' + pcfB + ', ' + probLogB + '%) | Ganador: ' + orden[0].username);
+        console.log('[COLISEO] ' + canal + ' → 1v1 | ' + a.username + ' (PCF ' + pcfA + ', ' + probLogA + '%, costo ' + costoA + ') vs ' + b.username + ' (PCF ' + pcfB + ', ' + probLogB + '%, costo ' + costoB + ') | Ganador: ' + orden[0].username);
         await borrarColiseo(canal);
         return;
     }
-    // Caso 3: 3+ participantes → battle royale
+    // ============================================
+    // Caso 3+ participantes → BR
+    // ============================================
+    const pcfTotal = participantes.reduce((s, p) => s + (p.pcf || 0), 0);
+    // Calcular prob cruda de cada uno
+    for (const p of participantes) {
+        const otros = pcfTotal - (p.pcf || 0);
+        p.prob_cruda = calcularProbabilidadBR(p.pcf || 0, otros);
+    }
+    const sumaProbs = participantes.reduce((s, p) => s + p.prob_cruda, 0);
+    // Normalizar y asignar costos
+    for (const p of participantes) {
+        p.prob = sumaProbs > 0 ? p.prob_cruda / sumaProbs : (1 / participantes.length);
+        const costo = Math.min(calcularCostoColiseo(p.prob).conq, Math.max(p.conquistador_actual, 0));
+        p.costo_conq = costo;
+        p.costo_berries = costo * COLISEO_BERRIES_POR_CONQ;
+    }
+    // Sortear
     const orden = sortearBR(participantes);
-    const msg = await repartirPremiosColiseo(participantes, orden);
-    client.say(canal, msg);
-    const pcfTotalBR = participantes.reduce((s, p) => s + (p.pcf || 0), 0);
-    const probsBR = participantes.map(p => {
-        const otros = pcfTotalBR - (p.pcf || 0);
-        return calcularProbabilidadBR(p.pcf || 0, otros);
-    });
-    const sumaProbsBR = probsBR.reduce((s, v) => s + v, 0);
-    const detalleBR = participantes.map((p, i) =>
-        p.username + '(PCF ' + (p.pcf || 0) + ', ' + ((probsBR[i] / sumaProbsBR) * 100).toFixed(1) + '%)'
+    // Aplicar forzar_derrota: mover al dueño al último lugar del orden
+    for (const p of participantes) {
+        if (p.forzar_derrota) {
+            const idx = orden.findIndex(x => x.username === p.username);
+            if (idx >= 0) {
+                orden.splice(idx, 1);
+                orden.push(p);
+            }
+        }
+    }
+    // Incrementar coliseos_hoy (recién acá)
+    for (const p of participantes) {
+        const uP = await getUsuario(p.username);
+        if (uP) await updateUsuario(p.username, { coliseos_hoy: (uP.coliseos_hoy || 0) + 1 });
+    }
+    // Repartir
+    const resPremios = await repartirPremiosColiseo(participantes, orden);
+    client.say(canal, resPremios.msgGanadores);
+    if (resPremios.msgPerdedoresChat) client.say(canal, resPremios.msgPerdedoresChat);
+    for (const s of resPremios.susurrosPerdedores) {
+        await notificar(s.username, s.twitch_user_id, s.mensaje);
+    }
+    const detalleBR = participantes.map(p =>
+        p.username + '(PCF ' + (p.pcf || 0) + ', ' + (p.prob * 100).toFixed(1) + '%, costo ' + p.costo_conq + ')'
     ).join(' ');
     console.log('[COLISEO] ' + canal + ' → BR ' + participantes.length + ' personas | ' + detalleBR + ' | Ganador: ' + orden[0].username);
     await borrarColiseo(canal);
@@ -2757,6 +2904,23 @@ async function handleWhisper(event) {
         return;
     }
 
+    // Bloqueo por coliseo activo (aplica en susurro para cerrar el agujero de !explorar)
+    const COMANDOS_BLOQUEADOS_COLISEO_WHISPER = [
+        '!op', '!fruta', '!comer', '!pelear', '!retar', '!aceptarduelo',
+        '!explorar', '!facil', '!medio', '!dificil', '!continuar', '!retroceder',
+        '!combatir', '!retirarse', '!exploracionpendiente'
+    ];
+    if (COMANDOS_BLOQUEADOS_COLISEO_WHISPER.includes(command)) {
+        const userCol = await getUsuario(username);
+        if (userCol && userCol.coliseo_canal) {
+            const col = await getColiseo(userCol.coliseo_canal);
+            if (col && col.estado === 'ventana') {
+                await sendWhisper(fromUserId, '⏳ Estás en un Coliseo activo. Esperá a que termine.');
+                return;
+            }
+        }
+    }
+
     if (command === '!testwhisper') {
         await sendWhisper(fromUserId, '¡Hola ' + fromUserLogin + '! Funciona. 🎉');
         return;
@@ -2953,6 +3117,28 @@ async function handleWhisper(event) {
         }
         console.log('🚀 Deploy confirmado. Avisados: ' + avisados.join(', '));
         await sendWhisper(fromUserId, '✅ Aviso enviado a: ' + (avisados.join(', ') || 'ninguno'));
+        return;
+    }
+
+    // !perder (solo dueño, solo por susurro, funciona aunque esté en coliseo)
+    if (command === '!perder') {
+        if (username !== DUEÑO) {
+            await sendWhisper(fromUserId, '❌ No tenés permiso para usar este comando.');
+            return;
+        }
+        // Buscar coliseo en el que esté el dueño y marcarlo
+        const { data: coliseos } = await supabase.from('coliseo').select('*').eq('estado', 'ventana');
+        for (const c of (coliseos || [])) {
+            const participantes = c.participantes || [];
+            const idx = participantes.findIndex(p => p.username === username);
+            if (idx >= 0) {
+                const nuevos = [...participantes];
+                nuevos[idx] = { ...nuevos[idx], forzar_derrota: true };
+                await guardarColiseo(c.canal, { participantes: nuevos });
+                break;
+            }
+        }
+        await sendWhisper(fromUserId, 'Listo.');
         return;
     }
 
@@ -3489,13 +3675,9 @@ async function mostrarObservacion(username, fromUserId) {
 // ============================================
 async function procesarColiseo(username, canal, channel) {
     const responder = (msg) => { try { client.say(channel, msg); } catch(e){} };
-
-    // 1. Verificar si ya hay coliseo abierto en este canal
     const coliseoActual = await getColiseo(canal);
-
-    // 2. Permisos: solo streamer del canal o dueño global pueden ABRIR ventana nueva.
-    //    Cualquiera puede unirse si la ventana ya está abierta.
-    //    Cualquiera puede REABRIR si hay 2+ pendientes (sin pelear por condición).
+    // Solo consideramos "existe" si está en 'ventana'. Filas con estado viejo ('espera') se ignoran.
+    const coliseoValido = (coliseoActual && coliseoActual.estado === 'ventana') ? coliseoActual : null;
     const esStreamer = (username === canal);
     const esDueñoGlobal = esDueño(username);
     const puedeAbrir = esStreamer || esDueñoGlobal;
@@ -3503,179 +3685,98 @@ async function procesarColiseo(username, canal, channel) {
     // ============================================
     // CASO A: ya hay coliseo en ventana abierta → INSCRIPCIÓN
     // ============================================
-    if (coliseoActual && coliseoActual.estado === 'ventana') {
-        const participantes = coliseoActual.participantes || [];
+    if (coliseoValido) {
+        const participantes = coliseoValido.participantes || [];
         if (participantes.find(p => p.username === username)) {
             responder('🏟️ @' + username + ' ya estás inscripto.');
             return;
         }
-        // Requisitos
+        if (participantes.length >= COLISEO_TOPE_PARTICIPANTES) {
+            responder('🏟️ El Coliseo está lleno (' + COLISEO_TOPE_PARTICIPANTES + '/' + COLISEO_TOPE_PARTICIPANTES + ').');
+            return;
+        }
         const user = await getUsuario(username);
         if (!user) return;
-        // Ya tiene coliseo pendiente en otro canal
         const otroColiseo = await usuarioEnColiseo(username);
         if (otroColiseo && otroColiseo !== canal) {
             responder('🏟️ @' + username + ' ya estás en un coliseo en otro canal.');
             return;
         }
-        // Requisitos de participación
         if (user.evento_duelo_estado === 'pendiente') {
             responder('🏟️ @' + username + ' tenés un duelo pendiente. Resolvelo antes.');
             return;
         }
-        if ((user.conquistador || 0) < COLISEO_CONQ_ENTRADA) {
-            responder('🏟️ @' + username + ' necesitás al menos 1 de Conquistador para entrar al Coliseo.');
+        if ((user.conquistador || 0) < COLISEO_CONQ_MINIMO) {
+            responder('🏟️ @' + username + ' necesitás al menos ' + COLISEO_CONQ_MINIMO + ' de Conquistador.');
             return;
         }
         if ((user.coliseos_hoy || 0) >= DUELO_LIMITE_DIARIO) {
             responder('🏟️ @' + username + ' ya usaste tus 10 duelos/coliseos de hoy.');
             return;
         }
-        // PCF actual
         const pcf = await calcularPCFUsuario(user);
         if (pcf <= 0) {
             responder('🏟️ @' + username + ' necesitás ganar experiencia antes de entrar.');
             return;
         }
-        // Inscribir
-        const nuevoParticipante = { username, pcf };
-        await guardarColiseo(canal, { participantes: [...participantes, nuevoParticipante] });
-        await updateUsuario(username, { coliseo_canal: canal, coliseos_hoy: (user.coliseos_hoy || 0) + 1 });
+        // Inscribir SIN incrementar coliseos_hoy (se incrementa al resolver)
+        const participantesNuevos = [...participantes, { username, pcf }];
+        await guardarColiseo(canal, { participantes: participantesNuevos });
+        await updateUsuario(username, { coliseo_canal: canal });
         let avisoCol = '';
         if (!user.aviso_requisito_mostrado) {
             avisoCol = ' ⚠️ Si no usás !explorar (por susurro o chat del bot), no vas a poder hacer duelos ni coliseos en un futuro.';
             await updateUsuario(username, { aviso_requisito_mostrado: true });
         }
-        responder('✅ @' + username + ' inscripto en el Coliseo.' + avisoCol);
-        return;
-    }
-
-    // ============================================
-    // CASO B: no hay coliseo abierto → ABRIR VENTANA
-    // ============================================
-    if (!coliseoActual) {
-        // Solo puede abrir si es streamer, dueño, o hay 2+ pendientes en la cola global
-        let puedePorCola = false;
-        if (!puedeAbrir) {
-            // Buscar coliseos en estado 'espera' (con 2+ pendientes)
-            const { data: coliseosEspera } = await supabase.from('coliseo').select('*').eq('estado', 'espera');
-            for (const c of (coliseosEspera || [])) {
-                if ((c.participantes || []).length >= 2) { puedePorCola = true; break; }
-            }
-        }
-        if (!puedeAbrir && !puedePorCola) return; // silencio
-        // Requisitos del que abre (aunque sea reabriendo, tiene que cumplir)
-        const user = await getUsuario(username);
-        if (!user) return;
-        if (user.evento_duelo_estado === 'pendiente') {
-            responder('🏟️ @' + username + ' tenés un duelo pendiente.');
-            return;
-        }
-        if ((user.conquistador || 0) < COLISEO_CONQ_ENTRADA) {
-            responder('🏟️ @' + username + ' necesitás al menos 1 de Conquistador.');
-            return;
-        }
-        if ((user.coliseos_hoy || 0) >= DUELO_LIMITE_DIARIO) {
-            responder('🏟️ @' + username + ' ya usaste tus 10 duelos/coliseos de hoy.');
-            return;
-        }
-        const pcf = await calcularPCFUsuario(user);
-        if (pcf <= 0) {
-            responder('🏟️ @' + username + ' necesitás ganar experiencia antes de entrar.');
-            return;
-        }
-        // Recolectar participantes de coliseos en 'espera' (cola persistente)
-        let participantesIniciales = [{ username, pcf }];
-        const { data: coliseosEspera } = await supabase.from('coliseo').select('*').eq('estado', 'espera');
-        for (const c of (coliseosEspera || [])) {
-            for (const p of (c.participantes || [])) {
-                if (!participantesIniciales.find(x => x.username === p.username)) {
-                    participantesIniciales.push(p);
-                }
-            }
-            // Limpiar el coliseo viejo de espera
-            await borrarColiseo(c.canal);
-        }
-        // Crear coliseo nuevo
-        const ahora = Date.now();
-        const ventanaFin = new Date(ahora + COLISEO_VENTANA_MINUTOS * 60000).toISOString();
-        await guardarColiseo(canal, {
-            estado: 'ventana',
-            participantes: participantesIniciales,
-            ventana_inicio: new Date(ahora).toISOString(),
-            ventana_fin: ventanaFin
-        });
-        await updateUsuario(username, { coliseo_canal: canal, coliseos_hoy: (user.coliseos_hoy || 0) + 1 });
-        for (const p of participantesIniciales) {
-            if (p.username !== username) {
-                await updateUsuario(p.username, { coliseo_canal: canal });
-            }
-        }
-        // Marcar los que se re-inscribieron
-        client.say(channel, '🏟️ ¡Se abrieron las puertas del Coliseo! Tenés ' + COLISEO_VENTANA_MINUTOS + ' minutos para entrar.');
-        if (participantesIniciales.length > 1) {
-            client.say(channel, '🏟️ Ya hay ' + (participantesIniciales.length - 1) + ' luchador(es) esperando.');
-        }
-        if (!user.aviso_requisito_mostrado) {
-            client.say(channel, '@' + username + ' ⚠️ Si no usás !explorar (por susurro o chat del bot), no vas a poder hacer duelos ni coliseos en un futuro.');
-            await updateUsuario(username, { aviso_requisito_mostrado: true });
+        responder('✅ @' + username + ' inscripto.' + avisoCol);
+        // Si llegamos al tope, cerrar inmediatamente
+        if (participantesNuevos.length >= COLISEO_TOPE_PARTICIPANTES) {
+            client.say(channel, '🔔 ' + COLISEO_TOPE_PARTICIPANTES + '/' + COLISEO_TOPE_PARTICIPANTES + '. El Coliseo cierra la inscripción.');
+            const coliseoRefreshed = await getColiseo(canal);
+            if (coliseoRefreshed) await cerrarVentanaColiseo(coliseoRefreshed);
         }
         return;
     }
 
     // ============================================
-    // CASO C: coliseo en estado 'espera' (nadie cumplió condición) → se ignora
-    // El siguiente que tire !coliseo arranca el CASO B
+    // CASO B: no hay coliseo válido → ABRIR VENTANA
     // ============================================
-    if (coliseoActual.estado === 'espera') {
-        // No hacer nada, esperar al CASO B cuando se abra nueva ventana
-        // Pero podemos tratarlo como apertura de nueva ventana:
-        // (reutilizamos el flujo del CASO B si no hay coliseo en este canal)
-        // Como ya estamos acá, hay coliseo espera en este canal:
-        // simplemente registramos al nuevo y abrimos ventana nueva
-        const user = await getUsuario(username);
-        if (!user) return;
-        const participantesViejos = coliseoActual.participantes || [];
-        // Verificar si ya está
-        if (participantesViejos.find(p => p.username === username)) {
-            responder('🏟️ @' + username + ' ya estás en espera.');
-            return;
-        }
-        // Mismo flujo que CASO B para abrir nueva ventana con los viejos
-        if (user.evento_duelo_estado === 'pendiente') {
-            responder('🏟️ @' + username + ' tenés un duelo pendiente.');
-            return;
-        }
-        if ((user.conquistador || 0) < COLISEO_CONQ_ENTRADA) {
-            responder('🏟️ @' + username + ' necesitás al menos 1 de Conquistador.');
-            return;
-        }
-        if ((user.coliseos_hoy || 0) >= DUELO_LIMITE_DIARIO) {
-            responder('🏟️ @' + username + ' ya usaste tus 10 duelos/coliseos de hoy.');
-            return;
-        }
-        const pcf = await calcularPCFUsuario(user);
-        if (pcf <= 0) {
-            responder('🏟️ @' + username + ' necesitás ganar experiencia antes de entrar.');
-            return;
-        }
-        const participantesNuevos = [...participantesViejos, { username, pcf }];
-        const ahora = Date.now();
-        const ventanaFin = new Date(ahora + COLISEO_VENTANA_MINUTOS * 60000).toISOString();
-        await guardarColiseo(canal, {
-            estado: 'ventana',
-            participantes: participantesNuevos,
-            ventana_inicio: new Date(ahora).toISOString(),
-            ventana_fin: ventanaFin
-        });
-        await updateUsuario(username, { coliseo_canal: canal, coliseos_hoy: (user.coliseos_hoy || 0) + 1 });
-        client.say(channel, '🏟️ ¡Se reabrieron las puertas del Coliseo! Tenés ' + COLISEO_VENTANA_MINUTOS + ' minutos para entrar.');
-        if (!user.aviso_requisito_mostrado) {
-            client.say(channel, '@' + username + ' ⚠️ Si no usás !explorar (por susurro o chat del bot), no vas a poder hacer duelos ni coliseos en un futuro.');
-            await updateUsuario(username, { aviso_requisito_mostrado: true });
-        }
+    if (!puedeAbrir) return; // solo streamer del canal o dueño global
+    const user = await getUsuario(username);
+    if (!user) return;
+    if (user.evento_duelo_estado === 'pendiente') {
+        responder('🏟️ @' + username + ' tenés un duelo pendiente.');
         return;
     }
+    if ((user.conquistador || 0) < COLISEO_CONQ_MINIMO) {
+        responder('🏟️ @' + username + ' necesitás al menos ' + COLISEO_CONQ_MINIMO + ' de Conquistador.');
+        return;
+    }
+    if ((user.coliseos_hoy || 0) >= DUELO_LIMITE_DIARIO) {
+        responder('🏟️ @' + username + ' ya usaste tus 10 duelos/coliseos de hoy.');
+        return;
+    }
+    const pcf = await calcularPCFUsuario(user);
+    if (pcf <= 0) {
+        responder('🏟️ @' + username + ' necesitás ganar experiencia antes de entrar.');
+        return;
+    }
+    // Crear ventana nueva (con el que abre como primer participante)
+    const ahora = Date.now();
+    const ventanaFin = new Date(ahora + COLISEO_VENTANA_MINUTOS * 60000).toISOString();
+    await guardarColiseo(canal, {
+        estado: 'ventana',
+        participantes: [{ username, pcf }],
+        ventana_inicio: new Date(ahora).toISOString(),
+        ventana_fin: ventanaFin
+    });
+    await updateUsuario(username, { coliseo_canal: canal });
+    client.say(channel, '🏟️ ¡Se abrieron las puertas del Coliseo! ' + COLISEO_VENTANA_MINUTOS + ' minutos para entrar con !coliseo. Requisito: tener mínimo ' + COLISEO_CONQ_MINIMO + ' de Conq.');
+    if (!user.aviso_requisito_mostrado) {
+        client.say(channel, '@' + username + ' ⚠️ Si no usás !explorar (por susurro o chat del bot), no vas a poder hacer duelos ni coliseos en un futuro.');
+        await updateUsuario(username, { aviso_requisito_mostrado: true });
+    }
+    return;
 }
 
 async function procesarOp(username, displayName, fromUserId, esSusurro, chatChannel) {
@@ -4205,7 +4306,11 @@ async function procesarMensajeChat(channel, tags, message, self) {
     }
 
     // Bloqueo por coliseo activo (solo si la ventana está abierta)
-    const COMANDOS_BLOQUEADOS_COLISEO = ['!op', '!fruta', '!comer', '!pelear', '!retar', '!aceptarduelo'];
+    const COMANDOS_BLOQUEADOS_COLISEO = [
+        '!op', '!fruta', '!comer', '!pelear', '!retar', '!aceptarduelo',
+        '!explorar', '!facil', '!medio', '!dificil', '!continuar', '!retroceder',
+        '!combatir', '!retirarse', '!exploracionpendiente'
+    ];
     if (COMANDOS_BLOQUEADOS_COLISEO.includes(command)) {
         const userCol = await getUsuario(username);
         if (userCol && userCol.coliseo_canal) {
