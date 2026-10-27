@@ -138,7 +138,7 @@ const COMANDOS_CON_USUARIO = [
     '!op', '!fruta', '!comer', '!rechazar', '!frutapendiente',
     '!retar', '!aceptarduelo', '!rechazarduelo', '!historial',
     '!infoop', '!si', '!no', '!pelear', '!huir',
-    '!sumar1', '!sumar2', '!sumar3', '!restar1', '!restar2', '!restar3',
+    '!sumar1', '!sumar2', '!sumar3', '!sumar4', '!restar1', '!restar2', '!restar3', '!restar4',
     '!quitarfruta',
     '!explorar', '!facil', '!medio', '!dificil',
     '!continuar', '!retroceder', '!combatir', '!retirarse',
@@ -367,6 +367,13 @@ function getCalaverasPorProb(prob) {
     if (prob > 0.40) return '💀💀💀';
     if (prob > 0.18) return '💀💀💀💀';
     return '💀💀💀💀💀';
+}
+
+// Para Supremos de Observación: muestra calaveras + % exacto
+function formatearProbExplorar(prob, esSupObs) {
+    const cal = getCalaverasPorProb(prob);
+    if (!esSupObs) return cal;
+    return cal + ' (' + (prob * 100).toFixed(1) + '%)';
 }
 
 // ============================================
@@ -2230,6 +2237,7 @@ const AYUDA_TEMAS = {
         '• Al llegar a cada posta ganás puntos automáticamente (1, 1 y 2 puntos).\n' +
         '• Si acertás el avistamiento NPC del stream, ganás +2 puntos extra.\n' +
         '• Completar las 3 postas mantiene tu racha y te da un bonus.\n' +
+        '⚠️ IMPORTANTE: Twitch deja de registrar tu presencia en el chat si pasás 20 minutos sin escribir. Aunque estés viendo el stream, no se te cuentan los minutos. Para que el bot te cuente, escribí algo cada tanto.\n' +
         '• Mirá tu progreso con !observacion y los canales activos con !canaleson.',
     armadura: '🛡️ HAKI DE ARMADURA\n' +
         'Se entrena con !op (máx 3 veces por día, cooldown 10 min).\n' +
@@ -2248,7 +2256,8 @@ const AYUDA_TEMAS = {
         '• Elegís uno (!facil / !medio / !dificil).\n' +
         '• Enfrentás a un NPC. Podés !continuar o !retroceder.\n' +
         '• Al combatir ganás/perdés Conquistador y Berries según el resultado.\n' +
-        '• Si te retirás en fases posteriores, perdés Conquistador.',
+        '• Si te retirás en fases posteriores, perdés Conquistador.\n' +
+        '• Las recompensas dependen de tu rango de Conquistador: a menor rango, más ganás (para poder subir rápido).',
     fruta: '🍎 FRUTAS DEL DIABLO\n' +
         'Buscás frutas con !fruta (máx 5 intentos por día).\n' +
         '• Si encontrás una, elegís !comer o !rechazar.\n' +
@@ -2260,7 +2269,8 @@ const AYUDA_TEMAS = {
         'Retás a otros con !retar @usuario (chat o susurro).\n' +
         '• El retado tiene 2 min para !aceptarduelo o !rechazarduelo.\n' +
         '• El ganador se lleva Berries del perdedor (según recompensas).\n' +
-        '• Máx 10 duelos por día, 3 contra la misma persona.',
+        '• Máx 10 duelos por día, 3 contra la misma persona.\n' +
+        '• El ganador también gana Conquistador (1 a 3 según lo parejo del duelo).',
     infoop: '📊 TU INFO (!infoop)\n' +
         'Muestra: 🍎 fruta | 🛡️ Armadura | 👁️ Observación | ⚜️ Conquistador | 🏴‍☠️💰 recompensa.\n' +
         '• En chat muestra tu info resumida (actualiza tu recompensa pública).\n' +
@@ -2276,12 +2286,13 @@ const AYUDA_TEMAS = {
         '• Por susurro: ves tu recompensa real siempre actualizada.',
     coliseo: '🏟️ COLISEO\n' +
         'Se abre con !coliseo (solo el streamer del canal o el dueño global pueden abrirlo).\n' +
-        '• Al abrirse, tenés unos minutos para inscribirte con !coliseo.\n' +
-        '• Para entrar necesitás al menos 1 de Conquistador. (Ya no hace falta explorar).\n' +
-        '• Cuantos más entren, mejor. El ganador se lleva la gloria y una buena tajada.\n' +
-        '• Si son 2, es un 1v1. Si son 3 o más, pelean todos contra todos.\n' +
-        '• Entrar tiene un costo (reputación y berries). Los ganadores se reparten el botín.\n' +
-        '• Mientras estás en el Coliseo no podés usar !op, !fruta, !comer, !pelear, !retar ni !aceptarduelo.'
+        '• Ventana de 3 minutos para inscribirte con !coliseo. Máximo 12 participantes.\n' +
+        '• Requisito: tener al menos 5 de Conquistador.\n' +
+        '• El costo de entrada depende de tu chance de ganar: el favorito paga hasta 5 de Conq + $50M, el underdog paga menos.\n' +
+        '• Si son 2, es un 1v1. Si son 3 o más, pelean todos contra todos (Battle Royale).\n' +
+        '• El ganador se lleva la mayor parte del pozo. El 2º (si son 5+) también recibe premio.\n' +
+        '• Si solo hay 1 inscripto o los rivales no están parejos (<15% chance), el Coliseo se cancela sin cobrar.\n' +
+        '• Mientras estás en el Coliseo no podés usar !op, !fruta, !comer, !pelear, !retar, !aceptarduelo ni !explorar.'
 };
 const AYUDA_CHAT = '💬 COMANDOS DE CHAT 🎮 !op → Entrena Haki 📊 !infoop → Tu info 🍎 !fruta → Busca fruta ⏳ !frutapendiente → Ver pendiente ⚔️ !retar @usuario → Duelo 🏆 !historial @usuario';
 const AYUDA_CHAT_STREAMER = '💬 COMANDOS DE CHAT 🎮 !op → Entrena Haki 📊 !infoop → Tu info 🍎 !fruta → Busca fruta ⚔️ !retar @usuario → Duelo 🏆 !historial @usuario 🔴 !offop / 🟢 !onop';
@@ -2447,15 +2458,49 @@ async function procesarFruta(username, displayName, fromUserId, esSusurro, chatC
             return;
         }
         if (user.fruta && !tieneYami) {
-            await responder('@' + displayName + ' Ya tenés fruta.');
+            // Mostrar info de la fruta equipada
+            const { data: fEq } = await supabase.from('frutas').select('descripcion, emoji, ataque, defensa, utilidad').eq('nombre', user.fruta).single();
+            if (fEq) {
+                const desc = (fEq.descripcion || '').replace(/\n/g, ' ').trim();
+                await responder('@' + displayName + ' Ya tenés la ' + user.fruta + ' ' + (fEq.emoji || '') + '. ' + desc + ' ⚔️ ' + displayStat(fEq.ataque || 0) + ' | 🛡️ ' + displayStat(fEq.defensa || 0) + ' | 🧠 ' + displayStat(fEq.utilidad || 0));
+            } else {
+                await responder('@' + displayName + ' Ya tenés fruta.');
+            }
             return;
         }
         if (user.fruta_pendiente && !user.fruta_pendiente.startsWith('meme:')) {
-            await responder('@' + displayName + ' Tenés una fruta pendiente. Usá !comer, !rechazar o !frutapendiente para verla.');
+            // Mostrar info de la fruta pendiente
+            const { data: fPend } = await supabase.from('frutas').select('descripcion, emoji, ataque, defensa, utilidad').eq('nombre', user.fruta_pendiente).single();
+            if (fPend) {
+                const desc = (fPend.descripcion || '').replace(/\n/g, ' ').trim();
+                await responder('[Pendiente] @' + displayName + ' Tenés pendiente la ' + user.fruta_pendiente + ' ' + (fPend.emoji || '') + '. ' + desc + ' ⚔️ ' + displayStat(fPend.ataque || 0) + ' | 🛡️ ' + displayStat(fPend.defensa || 0) + ' | 🧠 ' + displayStat(fPend.utilidad || 0) + ' — !comer o !rechazar');
+            } else {
+                await responder('[Pendiente] @' + displayName + ' Tenés una fruta pendiente. Usá !comer, !rechazar o !frutapendiente para verla.');
+            }
             return;
         }
         if (user.evento_fruta_estado === 'pendiente') {
-            await responder('@' + displayName + ' Tenés evento de fruta pendiente.'); return;
+            if (user.evento_fruta_comida_por_otro) {
+                await responder('[Pendiente] @' + displayName + ' La fruta de tu evento ya fue consumida.');
+                return;
+            }
+            const { data: frutaEv } = await supabase.from('frutas').select('*').eq('nombre', user.evento_fruta_nombre).single();
+            if (frutaEv) {
+                const filtroEv = canalDb ? canalDb.episodio_filtro : null;
+                if (!pasaFiltroEpisodio(frutaEv, filtroEv)) {
+                    await responder('[Pendiente] @' + displayName + ' Tenés un evento de fruta pendiente, pero todavía no se vio en este canal. Podés continuar en el chat de op_d_bot.');
+                    return;
+                }
+                if (user.evento_fruta_fase === 'avistamiento') {
+                    await responder('[Pendiente] @' + displayName + ' ' + frutaEv.fase1 + ' — ✅ !si o ❌ !no');
+                } else {
+                    const calaverasEv = await getCalaverasEventoFruta(user, frutaEv);
+                    await responder('[Pendiente] @' + displayName + ' ' + calaverasEv + ' ' + frutaEv.fase2 + ' 🍎 ' + frutaEv.nombre + ' ' + (frutaEv.emoji || '') + ' ⚔️ ' + displayStat(frutaEv.ataque || 0) + ' | 🛡️ ' + displayStat(frutaEv.defensa || 0) + ' | 🧠 ' + displayStat(frutaEv.utilidad || 0) + ' ¿Qué harás? — ⚔️ !pelear o 🏃 !huir');
+                }
+            } else {
+                await responder('[Pendiente] @' + displayName + ' Tenés un evento de fruta pendiente.');
+            }
+            return;
         }
         // Yami Yami: descubrimiento épico (solo primera vez)
         if (tieneYami && !user.fruta_2 && !user.yami_aviso_mostrado) {
@@ -3408,13 +3453,15 @@ async function handleWhisper(event) {
             await sendWhisper(fromUserId, '⚔️ Tenés un duelo pendiente con @' + otro + '. Resolvelo antes.');
             return;
         }
+        const esSupObsUser = await esSupremoObservacion(username);
         if (user.evento_explorar_estado === 'pendiente') {
+            // Estado pendiente: mostramos con [Pendiente] al comienzo
             if (user.evento_explorar_fase === 'menu') {
                 const o = user.evento_explorar_opciones || {};
-                let msg = '⏳ Ya tenés exploración en curso:';
-                if (o.facil) msg += ' 🟢 !facil ' + getCalaverasPorProb(o.facil.prob);
-                if (o.medio) msg += ' 🟡 !medio ' + getCalaverasPorProb(o.medio.prob);
-                if (o.dificil) msg += ' 🔴 !dificil ' + getCalaverasPorProb(o.dificil.prob);
+                let msg = '[Pendiente] ⏳ Ya tenés exploración en curso:';
+                if (o.facil) msg += ' 🟢 !facil ' + formatearProbExplorar(o.facil.prob, esSupObsUser);
+                if (o.medio) msg += ' 🟡 !medio ' + formatearProbExplorar(o.medio.prob, esSupObsUser);
+                if (o.dificil) msg += ' 🔴 !dificil ' + formatearProbExplorar(o.dificil.prob, esSupObsUser);
                 await sendWhisper(fromUserId, msg); return;
             }
             const { data: npc } = await supabase.from('npcs').select('*').eq('nombre', user.evento_explorar_npc).single();
@@ -3422,9 +3469,9 @@ async function handleWhisper(event) {
             const o = user.evento_explorar_opciones || {};
             const op = o[user.evento_explorar_dificultad];
             if (user.evento_explorar_fase === 'avistamiento') {
-                await sendWhisper(fromUserId, '📍 Pendiente. ' + npc.fase1 + ' — ➡️ !continuar o ⬅️ !retroceder');
+                await sendWhisper(fromUserId, '[Pendiente] 📍 ' + npc.fase1 + ' ➡️ !continuar o ⬅️ !retroceder');
             } else {
-                await sendWhisper(fromUserId, '📍 Pendiente. ' + getCalaverasPorProb(op.prob) + ' ' + npc.fase2 + ' ¿Qué harás? — ⚔️ !combatir o 🏃 !retirarse');
+                await sendWhisper(fromUserId, '[Pendiente] 📍 ' + formatearProbExplorar(op.prob, esSupObsUser) + ' ' + npc.fase2 + ' ¿Qué harás? — ⚔️ !combatir o 🏃 !retirarse');
             }
             return;
         }
@@ -3467,9 +3514,9 @@ async function handleWhisper(event) {
         const total = [f, m, d].filter(Boolean).length;
         const plural = total === 3 ? 'tres caminos' : total === 2 ? 'dos caminos' : 'un camino';
         let msg = '🗺️ ¡Zarpás! Se divisan ' + plural + ':';
-        if (f) msg += ' 🟢 !facil ' + getCalaverasPorProb(f.prob) + ' (+' + Math.round(f.recompensa_conq * factorF) + ' Conq / +$' + f.recompensa_berries.toLocaleString('es-AR') + ')';
-        if (m) msg += ' 🟡 !medio ' + getCalaverasPorProb(m.prob) + ' (+' + Math.round(m.recompensa_conq * factorF) + ' Conq / +$' + m.recompensa_berries.toLocaleString('es-AR') + ')';
-        if (d) msg += ' 🔴 !dificil ' + getCalaverasPorProb(d.prob) + ' (+' + Math.round(d.recompensa_conq * factorF) + ' Conq / +$' + d.recompensa_berries.toLocaleString('es-AR') + ')';
+        if (f) msg += ' 🟢 !facil ' + formatearProbExplorar(f.prob, esSupObsUser) + ' (+' + Math.round(f.recompensa_conq * factorF) + ' Conq / +$' + f.recompensa_berries.toLocaleString('es-AR') + ')';
+        if (m) msg += ' 🟡 !medio ' + formatearProbExplorar(m.prob, esSupObsUser) + ' (+' + Math.round(m.recompensa_conq * factorF) + ' Conq / +$' + m.recompensa_berries.toLocaleString('es-AR') + ')';
+        if (d) msg += ' 🔴 !dificil ' + formatearProbExplorar(d.prob, esSupObsUser) + ' (+' + Math.round(d.recompensa_conq * factorF) + ' Conq / +$' + d.recompensa_berries.toLocaleString('es-AR') + ')';
         await sendWhisper(fromUserId, msg);
         return;
     }
@@ -3503,7 +3550,8 @@ async function handleWhisper(event) {
         const { data: npc } = await supabase.from('npcs').select('*').eq('nombre', user.evento_explorar_npc).single();
         const o = user.evento_explorar_opciones || {};
         const op = o[user.evento_explorar_dificultad];
-        await sendWhisper(fromUserId, getCalaverasPorProb(op.prob) + ' ' + npc.fase2 + ' ¿Qué harás? — ⚔️ !combatir o 🏃 !retirarse');
+        const esSupObs = await esSupremoObservacion(username);
+        await sendWhisper(fromUserId, formatearProbExplorar(op.prob, esSupObs) + ' ' + npc.fase2 + ' ¿Qué harás? — ⚔️ !combatir o 🏃 !retirarse');
         return;
     }
 
@@ -3606,6 +3654,7 @@ async function handleWhisper(event) {
         if (!user || user.evento_explorar_estado !== 'pendiente') {
             await sendWhisper(fromUserId, 'No tenés exploración pendiente.'); return;
         }
+        const esSupObs = await esSupremoObservacion(username);
         if (user.evento_explorar_fase === 'menu') {
             const o = user.evento_explorar_opciones || {};
             let msg = '📍 Pendiente:';
@@ -3621,7 +3670,7 @@ async function handleWhisper(event) {
         } else {
             const o = user.evento_explorar_opciones || {};
             const op = o[user.evento_explorar_dificultad];
-            await sendWhisper(fromUserId, '📍 ' + getCalaverasPorProb(op.prob) + ' ' + npc.fase2 + ' ¿Qué harás? — ⚔️ !combatir o 🏃 !retirarse');
+            await sendWhisper(fromUserId, '📍 ' + formatearProbExplorar(op.prob, esSupObs) + ' ' + npc.fase2 + ' ¿Qué harás? — ⚔️ !combatir o 🏃 !retirarse');
         }
         return;
     }
@@ -3671,6 +3720,22 @@ async function handleWhisper(event) {
         const netoTxt = h.neto > 0 ? 'Le ganaste $' + formatBerries(h.neto) : h.neto < 0 ? 'Te ganó $' + formatBerries(Math.abs(h.neto)) : 'Están a mano';
         await sendWhisper(fromUserId, '📊 vs @' + target + ': ' + h.total + ' duelos (' + h.ganadosA + '/' + h.empates + '/' + h.ganadosB + '). ' + netoTxt + '.');
         return;
+    }
+
+    // Fallback: susurro con comando desconocido (cooldown 60s por usuario)
+    const COMANDOS_SUSURRO_CONOCIDOS = [
+        '!testwhisper', '!ayuda', '!ayudaop', '!ayudachat', '!ayudasusurro',
+        '!actualizacion', '!scan', '!agregarcanal', '!predeploy',
+        '!deploy', '!dep', '!deploylisto', '!deplis', '!perder',
+        '!op', '!observacion', '!canaleson', '!personaje', '!infoop',
+        '!fruta', '!comer', '!rechazar', '!si', '!no', '!pelear', '!huir', '!frutapendiente',
+        '!explorar', '!facil', '!medio', '!dificil', '!continuar', '!retroceder', '!combatir', '!retirarse', '!exploracionpendiente',
+        '!retar', '!aceptarduelo', '!rechazarduelo', '!duelopendiente', '!historial'
+    ];
+    if (COMANDOS_SUSURRO_CONOCIDOS.includes(command)) return;
+    if (!cooldowns['unk_' + username] || Date.now() - cooldowns['unk_' + username] > 60 * 1000) {
+        cooldowns['unk_' + username] = Date.now();
+        await sendWhisper(fromUserId, '🤔 Eh? No reconozco ese comando, máquina. Si querés, usá !ayuda para ver la lista completa.');
     }
 }
 
@@ -4516,9 +4581,11 @@ async function procesarMensajeChat(channel, tags, message, self) {
         sumar1: { campo: 'armadura', nombre: 'armadura', signo: 1 },
         sumar2: { campo: 'observacion', nombre: 'observación', signo: 1 },
         sumar3: { campo: 'conquistador', nombre: 'conquistador', signo: 1 },
+        sumar4: { campo: 'recompensa_delta', nombre: 'recompensa delta', signo: 1, esBerries: true, permiteNegativo: true },
         restar1: { campo: 'armadura', nombre: 'armadura', signo: -1 },
         restar2: { campo: 'observacion', nombre: 'observación', signo: -1 },
-        restar3: { campo: 'conquistador', nombre: 'conquistador', signo: -1 }
+        restar3: { campo: 'conquistador', nombre: 'conquistador', signo: -1 },
+        restar4: { campo: 'recompensa_delta', nombre: 'recompensa delta', signo: -1, esBerries: true, permiteNegativo: true }
     };
     const cmdName = command.substring(1);
     if (ADMIN_STATS[cmdName]) {
@@ -4530,11 +4597,22 @@ async function procesarMensajeChat(channel, tags, message, self) {
         const user = await getUsuario(target, false);
         if (!user) return client.say(channel, '@' + tags.username + ' El usuario @' + target + ' no existe.');
         const actual = user[info.campo] || 0;
-        const nuevo = info.signo > 0 ? actual + cantidad : Math.max(actual - cantidad, 0);
+        let nuevo;
+        if (info.signo > 0) {
+            nuevo = actual + cantidad;
+        } else if (info.permiteNegativo) {
+            nuevo = actual - cantidad;
+        } else {
+            nuevo = Math.max(actual - cantidad, 0);
+        }
         chequearHakiCambio(info.campo, actual, nuevo);
         await updateUsuario(target, { [info.campo]: nuevo });
-        console.log('🔧 Admin: ' + username + ' ' + (info.signo > 0 ? 'sumó' : 'restó') + ' ' + cantidad + ' ' + info.nombre + ' a ' + target);
-        client.say(channel, '@' + tags.username + ' ' + (info.signo > 0 ? 'Sumado' : 'Restado') + ' ' + cantidad + ' ' + info.nombre + ' a @' + target + '. Ahora: ' + nuevo);
+        const accion = info.signo > 0 ? 'sumó' : 'restó';
+        const accionMsg = info.signo > 0 ? 'Sumado' : 'Restado';
+        const cantFmt = info.esBerries ? '$' + formatBerries(cantidad) : String(cantidad);
+        const nuevoFmt = info.esBerries ? '$' + formatBerries(nuevo) : String(nuevo);
+        console.log('🔧 Admin: ' + username + ' ' + accion + ' ' + cantidad + ' ' + info.nombre + ' a ' + target);
+        client.say(channel, '@' + tags.username + ' ' + accionMsg + ' ' + cantFmt + ' ' + info.nombre + ' a @' + target + '. Ahora: ' + nuevoFmt);
         return;
     }
     if (command === '!quitarfruta') {
