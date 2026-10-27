@@ -22,7 +22,7 @@ const {
 // ============================================
 const COOLDOWN_FRUTA = 10 * 60 * 1000; // 10 min
 const FRUTA_LIMITE_DIARIO = 5;
-const TOTAL_PUERTAS_JUEGO = 12000;
+const TOTAL_PUERTAS_JUEGO = 10000;
 const FACTOR_RECOMPENSA = 3614500; // berries por punto de aporte de haki
 const TOPE_DELTA_MULT = 1.8; // tope delta = 1.8 × max base histórica
 const EXP_PROB = 4.0; // exponente de la fórmula de probabilidad (duelos, explorar, coliseo, fruta)
@@ -1659,6 +1659,7 @@ async function lurkJoin(username, canal) {
     if (!v2) return;
     if (v2.completo) return;
     if (v2.join_actual) {
+        if (v2.canal_actual === canal) return;
         const desde = Date.now() - new Date(v2.join_actual).getTime();
         if (desde < LURK_MICRO_COOLDOWN_MS) {
             return;
@@ -1937,21 +1938,30 @@ async function escanearChatters(canal) {
             const v2 = await getLurkV2(username);
             if (!v2) continue;
             if (v2.completo) continue;
+            // Si ya está abierto en este canal, solo renovar heartbeat
+            if (v2.join_actual && v2.canal_actual === canal) {
+                await updateLurkV2(username, { ultimo_chequeo: new Date().toISOString() });
+                continue;
+            }
             // Si estaba en otro canal, cerrar ese bloque primero
             if (v2.join_actual) await lurkCerrarBloque(username);
             await inicializarDiaLurkV2(username);
             const v2Fresh = await getLurkV2(username);
             if (v2Fresh && !v2Fresh.completo) {
-                await updateLurkV2(username, { join_actual: new Date().toISOString(), canal_actual: canal });
+                await updateLurkV2(username, { join_actual: new Date().toISOString(), canal_actual: canal, ultimo_chequeo: new Date().toISOString() });
             }
         }
 
         // 6. Cerrar bloques de registrados que ya NO están en el chat
         const { data: conBloque } = await supabase.from('lurkv2')
-            .select('usuario').not('join_actual', 'is', null);
+            .select('usuario, canal_actual, ultimo_chequeo').not('join_actual', 'is', null);
         if (conBloque) {
             for (const row of conBloque) {
-                if (!enChat.has(row.usuario) && usuariosSet.has(row.usuario)) {
+                if (enChat.has(row.usuario) || !usuariosSet.has(row.usuario)) continue;
+                if (row.canal_actual !== canal) continue; // proteger streamer (null) y otros canales
+                if (!row.ultimo_chequeo) continue;
+                const minSinVer = (Date.now() - new Date(row.ultimo_chequeo).getTime()) / 60000;
+                if (minSinVer > 20) {
                     await lurkCerrarBloque(row.usuario);
                 }
             }
@@ -3701,6 +3711,8 @@ async function mostrarObservacion(username, fromUserId) {
     // Al usuario le mostramos los minutos topeados a 60 (el máximo que da postas).
     // Si tiene 24, ve 24. Si tiene 63, ve 60. Coherente con las postas mostradas.
     const minutosMostrar = Math.min(minutosActuales, 60);
+    const _rangoObs = getRangoObservacion(user.observacion || 0, supObs);
+    console.log('[OBSERVACION] ' + username + ' | min ' + minutosActuales + ' (postas ' + postasActuales + '/3) | pts_hoy ' + ptsHoy + ' | pend ' + ptsPendientes + ' | racha ' + racha + ' | avist_recl ' + (v2.avist_reclamado ? 'true' : 'false') + ' | rango ' + _rangoObs.nombre + '(' + (user.observacion || 0) + ') | F ' + getFactorRango(user.conquistador || 0));
     const msg = '📡 Haki de Observación\n' +
         '🚩 Postas hoy: ' + postasActuales + '/3 (' + minutosMostrar + ' min)\n' +
         '📈 Puntos hoy: +' + ptsHoy + (ptsPendientes > 0 ? ' (+' + ptsPendientes + ' pendiente)' : '') + '\n' +
