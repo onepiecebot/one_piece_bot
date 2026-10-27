@@ -2912,8 +2912,8 @@ async function handleWhisper(event) {
     if (!fromUserId) return;
     if (!command.startsWith('!')) return;
 
-    // Modo mantenimiento: solo !deploylisto funciona
-    if (mantenimientoActivo && command !== '!deploylisto') return;
+    // Modo mantenimiento: solo los comandos de deploy confirm funcionan
+    if (mantenimientoActivo && command !== '!deploylisto' && command !== '!deplis') return;
 
     // Predeploy: bloquea duelos y coliseos
     if (predeployActivo && (command === '!retar' || command === '!duelo' || command === '!coliseo')) {
@@ -4208,8 +4208,8 @@ async function procesarMensajeChat(channel, tags, message, self) {
 
     if (!command.startsWith('!')) return;
 
-    // Modo mantenimiento: solo !deploylisto funciona
-    if (mantenimientoActivo && command !== '!deploylisto') return;
+    // Modo mantenimiento: solo los comandos de deploy confirm funcionan
+    if (mantenimientoActivo && command !== '!deploylisto' && command !== '!deplis') return;
 
     // Predeploy: bloquea duelos y coliseos
     if (predeployActivo && (command === '!retar' || command === '!duelo' || command === '!coliseo')) {
