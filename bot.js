@@ -3735,7 +3735,7 @@ async function handleWhisper(event) {
     if (COMANDOS_SUSURRO_CONOCIDOS.includes(command)) return;
     if (!cooldowns['unk_' + username] || Date.now() - cooldowns['unk_' + username] > 60 * 1000) {
         cooldowns['unk_' + username] = Date.now();
-        await sendWhisper(fromUserId, '🤔 Eh? No reconozco ese comando, máquina. Si querés, usá !ayuda para ver la lista completa.');
+        await sendWhisper(fromUserId, '🤔 Eh? Cual es ese comando máquina? Si querés, usá !ayuda para ver los disponibles.');
     }
 }
 
