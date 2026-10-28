@@ -742,7 +742,7 @@ async function formatearHakiLog(user) {
     const supArm = await esSupremoArmadura(user.username);
     const supObs = await esSupremoObservacion(user.username);
     const supConq = await esSupremoConquistador(user.username);
-    const fmt = (v, s) => (s ? 'S' : '') + Math.round(v || 0);
+    const fmt = (v, s) => (s ? 'S' : '') + Math.floor(v || 0);
     return fmt(user.armadura, supArm) + '/' + fmt(user.observacion, supObs) + '/' + fmt(user.conquistador, supConq);
 }
 
@@ -1309,11 +1309,11 @@ async function revisarColiseosExpirados() {
 
 // Redondea a 4 cifras significativas (ej: 123456789 → 123500000)
 function getFactorRango(conq) {
-    if (conq < 60) return 1.5;
-    if (conq < 80) return 1.25;
-    if (conq < 95) return 1.1;
+    if (conq < 60) return 1.6;
+    if (conq < 80) return 1.30;
+    if (conq < 95) return 1.12;
     if (conq < 100) return 1.0;
-    return 0.95;
+    return 0.90;
 }
 
 function redondearBonito(n) {
@@ -1356,16 +1356,18 @@ async function calcularBonusRachaExplorar(user) {
 }
 
 function calcularRecompensasExplorar(npc, prob, victoria, dificultad) {
-    // Fórmula exponencial por probabilidad real. Devuelve floats puros.
-    // Victoria: mult = 2^((0.5 - prob)/0.38) → 1.0 en 50%, 2.0 en 12%, 0.5 en 88%.
-    // Derrota:  mult = 2^((prob - 0.5)/0.2)  → 1.0 en 50%, 2.0 en 82%, 0.5 en 32%.
-    // El 4to argumento (dificultad) se mantiene por compatibilidad pero no se usa.
+    // Constantes del balance (mismas que explorar.js).
+    const VICTORIA_EXP = 0.418;
+    const CASTIGO_EXP = 0.3;
+    const MULT_VICTORIA = 1.25;
+    const MULT_DIFICIL = 1.18;
     const baseConq = npc.recompensa_conquistador || 0;
     const baseBerries = npc.recompensa_berries || 0;
     const p = Math.max(prob, 0.01);
-    const mult = victoria
-        ? Math.max(Math.pow(2, (0.5 - p) / 0.38), 0.05)
-        : Math.max(Math.pow(2, (p - 0.5) / 0.2), 0.05);
+    const multBase = victoria
+        ? Math.max(Math.pow(2, (0.5 - p) / VICTORIA_EXP) * MULT_VICTORIA, 0.05)
+        : Math.max(Math.pow(2, (p - 0.5) / CASTIGO_EXP), 0.05);
+    const mult = (victoria && dificultad === 'dificil') ? multBase * MULT_DIFICIL : multBase;
     return {
         conq: baseConq * mult,
         berries: baseBerries * mult
@@ -3388,7 +3390,7 @@ async function handleWhisper(event) {
             frutaTexto,
             '🛡️ ' + rangoArm.nombre + ' (' + (user.armadura || 0) + ') ' + rangoArm.emoji,
             '👁️ ' + rangoObs.nombre + ' (' + (user.observacion || 0) + ') ' + rangoObs.emoji,
-            '⚜️ ' + rangoConq.nombre + ' (' + Math.round(user.conquistador || 0) + ') ' + rangoConq.emoji,
+            '⚜️ ' + rangoConq.nombre + ' (' + Math.floor(user.conquistador || 0) + ') ' + rangoConq.emoji,
             opTxt,
             '🚩 Postas ' + postasHoy + '/3 (' + Math.min(minLurkHoy, 60) + 'min)',
             estadoExplorar,
@@ -3512,7 +3514,7 @@ async function handleWhisper(event) {
         });
         // Log verbose de opciones generadas (debug)
         const _fmtSignBerries = (n) => (n >= 0 ? '+' : '-') + '$' + formatBerries(Math.abs(n));
-        console.log('[EXPLORAR] ' + username + ' | PCF ' + pcfUsuario + ' | F ' + factorF + ' | conq ' + (Math.round((user.conquistador || 0) * 100) / 100) + ' | max base $' + formatBerries(user.max_base_historica || 0) + ' | delta ' + _fmtSignBerries(user.recompensa_delta || 0));
+        console.log('[EXPLORAR] ' + username + ' | PCF ' + pcfUsuario + ' | F ' + factorF + ' | conq ' + Math.floor(user.conquistador || 0) + ' | max base $' + formatBerries(user.max_base_historica || 0) + ' | delta ' + _fmtSignBerries(user.recompensa_delta || 0));
         for (const _b of ['facil', 'medio', 'dificil']) {
             const _op = opciones[_b];
             if (!_op) continue;
