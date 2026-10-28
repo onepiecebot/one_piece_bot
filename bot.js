@@ -1711,7 +1711,10 @@ async function lurkCerrarBloque(username) {
     const inicio = new Date(v2.join_actual).getTime();
     const minutosBloque = Math.max(0, Math.floor((Date.now() - inicio) / 60000));
     const totalAntes = v2.minutos_hoy || 0;
-    const totalDespues = totalAntes + minutosBloque;
+    // Cap: nunca sumar más de lo que falta para llegar a 60 (3 postas).
+    // Si el bloque lleva >60 min abierto, se suman solo los que faltan.
+    const minutosCap = Math.min(minutosBloque, Math.max(0, 60 - totalAntes));
+    const totalDespues = totalAntes + minutosCap;
 
     const postasAntes = v2.postas_hoy || 0;
     const postasNuevas = Math.min(3, calcularPostasPorMinutos(totalDespues));
@@ -1767,8 +1770,8 @@ async function lurkCerrarBloque(username) {
     }
 
     // Minutos totales (para !infoop)
-    if (minutosBloque > 0) {
-        await updateUsuario(username, { minutos_lurk: (user.minutos_lurk || 0) + minutosBloque });
+    if (minutosCap > 0) {
+        await updateUsuario(username, { minutos_lurk: (user.minutos_lurk || 0) + minutosCap });
     }
 
     if (puntosNuevos !== 0) {
@@ -2022,7 +2025,24 @@ async function cerrarDiaObservacion(fechaAnterior) {
     }
     console.log('📅 Cierre ' + fechaAnterior + ': vigencia avanzada para ' + usuarios.length + ' usuarios');
 }
-
+// Cierra automáticamente los bloques que ya alcanzaron 60 min (3 postas completas).
+// Corre cada 2 min para minimizar latencia.
+async function cerrarBloquesCompletos() {
+    try {
+        const { data: abiertos } = await supabase.from('lurkv2')
+            .select('usuario, minutos_hoy, join_actual')
+            .not('join_actual', 'is', null);
+        if (!abiertos || abiertos.length === 0) return;
+        const ahora = Date.now();
+        for (const row of abiertos) {
+            const transcurridos = Math.floor((ahora - new Date(row.join_actual).getTime()) / 60000);
+            const total = (row.minutos_hoy || 0) + transcurridos;
+            if (total >= 60) {
+                await lurkCerrarBloque(row.usuario);
+            }
+        }
+    } catch (e) { console.error('❌ Error cerrarBloquesCompletos:', e); }
+}
 async function lurkChequeoPeriodico() {
     try {
         const hoy = getFechaHoy();
@@ -4689,6 +4709,7 @@ secuenciaArranque();
 // Schedulers periódicos (estos no arrancan con el boot, solo se registran)
 setInterval(ejecutarTimeoutDuelos, 2 * 60 * 1000);
 setInterval(lurkChequeoPeriodico, 10 * 60 * 1000);
+setInterval(cerrarBloquesCompletos, 2 * 60 * 1000);
 setInterval(revisarColiseosExpirados, 2 * 60 * 1000);
 setInterval(schedulerPenalizacionesDiarias, 60 * 60 * 1000);
 
