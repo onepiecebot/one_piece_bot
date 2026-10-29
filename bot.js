@@ -1707,6 +1707,14 @@ async function lurkCerrarBloque(username) {
         await updateLurkV2(username, { join_actual: null });
         return;
     }
+    // Claim atómico: solo el primer caller gana. Si otro ya limpió join_actual,
+    // esta query devuelve 0 filas y salimos.
+    const { data: claim } = await supabase.from('lurkv2')
+        .update({ join_actual: null })
+        .eq('usuario', username)
+        .not('join_actual', 'is', null)
+        .select('id');
+    if (!claim || claim.length === 0) return;
     const user = await getUsuario(username);
     if (!user) return;
 
@@ -2032,15 +2040,33 @@ async function cerrarDiaObservacion(fechaAnterior) {
 async function cerrarBloquesCompletos() {
     try {
         const { data: abiertos } = await supabase.from('lurkv2')
-            .select('usuario, minutos_hoy, join_actual')
+            .select('usuario, minutos_hoy, postas_hoy, join_actual, completo, avist_pendiente')
             .not('join_actual', 'is', null);
         if (!abiertos || abiertos.length === 0) return;
         const ahora = Date.now();
         for (const row of abiertos) {
+            if (row.completo) continue;
             const transcurridos = Math.floor((ahora - new Date(row.join_actual).getTime()) / 60000);
             const total = (row.minutos_hoy || 0) + transcurridos;
+            // Si llegó a 60 min → cierre normal del bloque
             if (total >= 60) {
                 await lurkCerrarBloque(row.usuario);
+                continue;
+            }
+            // Partial acredit: acreditar postas nuevas sin cerrar el bloque
+            const postasActuales = Math.min(3, calcularPostasPorMinutos(total));
+            const postasAntes = row.postas_hoy || 0;
+            if (postasActuales > postasAntes) {
+                const puntosNuevos = calcularPuntosPostas(postasAntes, postasActuales);
+                await agregarPuntosObservacionNueva(row.usuario, puntosNuevos);
+                await updateLurkV2(row.usuario, { postas_hoy: postasActuales });
+                console.log('📊 Acreditación parcial: ' + row.usuario + ' → ' + postasActuales + ' postas, +' + puntosNuevos + ' pts');
+            }
+            // Avist pendiente: si ya alcanzó 1 posta, acreditar
+            if (postasActuales >= 1 && row.avist_pendiente > 0) {
+                await agregarPuntosObservacionNueva(row.usuario, row.avist_pendiente);
+                await updateLurkV2(row.usuario, { avist_pendiente: 0 });
+                console.log('📊 Avist acreditado: ' + row.usuario + ' +' + row.avist_pendiente + ' pts');
             }
         }
     } catch (e) { console.error('❌ Error cerrarBloquesCompletos:', e); }
@@ -3794,6 +3820,19 @@ async function mostrarObservacion(username, fromUserId) {
     if (postasActuales < 3) faltan = 'Faltan: ' + (3 - postasActuales) + ' posta' + (postasActuales === 2 ? '' : 's') + ' para completar el día';
     else faltan = '¡Día completo!';
 
+    // Racha: si todavía no completó las 3 postas, la racha de hoy no está confirmada.
+    // Mostrarla como "pendiente" en vez de mostrar la racha del día anterior como si fuera actual.
+    let rachaMsg;
+    if (postasActuales < 3) {
+        if (racha > 0) {
+            rachaMsg = '🔥 Racha: ' + racha + ' día' + (racha === 1 ? '' : 's') + ' (hoy pendiente)';
+        } else {
+            rachaMsg = '🔥 Racha: 0 (completá las 3 postas para empezar)';
+        }
+    } else {
+        rachaMsg = '🔥 Racha: ' + racha + ' día' + (racha === 1 ? '' : 's') + (bonusRacha > 0 ? ' (bonus +' + bonusRacha + ')' : '');
+    }
+
     // Al usuario le mostramos los minutos topeados a 60 (el máximo que da postas).
     // Si tiene 24, ve 24. Si tiene 63, ve 60. Coherente con las postas mostradas.
     const minutosMostrar = Math.min(minutosActuales, 60);
@@ -3802,7 +3841,7 @@ async function mostrarObservacion(username, fromUserId) {
     const msg = '📡 Haki de Observación\n' +
         '🚩 Postas hoy: ' + postasActuales + '/3 (' + minutosMostrar + ' min)\n' +
         '📈 Puntos hoy: +' + ptsHoy + (ptsPendientes > 0 ? ' (+' + ptsPendientes + ' pendiente)' : '') + '\n' +
-        '🔥 Racha: ' + racha + ' día' + (racha === 1 ? '' : 's') + (bonusRacha > 0 ? ' (bonus +' + bonusRacha + ')' : '') + '\n' +
+        rachaMsg + '\n' +
         '🔭 Avistamiento: ' + avistamiento + '\n' +
         '⏳ ' + faltan + '\n' +
         '👁️ Rango: ' + rango.emoji + ' ' + rango.nombre + ' (' + (user.observacion || 0) + ')';
