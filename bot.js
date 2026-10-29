@@ -241,7 +241,7 @@ async function schedulerPenalizacionesDiarias() {
                         for (let i = 0; i < usosFaltantes; i++) {
                             const rango = getRangoArmadura(arm);
                             const int = getIntervaloTirada(rango.nombre);
-                            const peor = Math.min(int.min, int.max);
+                            const peor = Math.min(int.min, int.max, -1);
                             delta += peor;
                             arm = Math.max(arm + peor, 0);
                         }
@@ -3996,7 +3996,7 @@ async function procesarOp(username, displayName, fromUserId, esSusurro, chatChan
                 for (let i = 0; i < usosFaltantes; i++) {
                     const rango = getRangoArmadura(arm);
                     const int = getIntervaloTirada(rango.nombre);
-                    const peor = Math.min(int.min, int.max);
+                    const peor = Math.min(int.min, int.max, -1);
                     delta += peor;
                     arm = Math.max(arm + peor, 0);
                 }
