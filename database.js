@@ -167,122 +167,7 @@ async function completoExplorarHoy(username) {
     return (user.ultimo_dia_exploracion === getFechaHoy() && user.evento_explorar_estado !== 'pendiente');
 }
 
-// ==================== LURK ====================
-async function getLurkStats(username) {
-    const { data, error } = await supabase
-        .from('lurk_stats').select('*').eq('username', username).limit(1);
-    if (error) { console.error('❌ Error getLurkStats:', error.message); return null; }
-    if (!data || data.length === 0) {
-        // Verificar que el usuario exista antes de crear
-        const { data: user } = await supabase
-            .from('usuarios').select('username').eq('username', username).limit(1);
-        if (!user || user.length === 0) return null; // No crear si el usuario no está registrado
-        const { data: created, error: insErr } = await supabase
-            .from('lurk_stats').insert([{ username }]).select().limit(1);
-        if (insErr) { console.error('❌ Error creando lurk_stats:', insErr.message); return null; }
-        return created && created[0];
-    }
-    return data[0];
-}
-async function updateLurkStats(username, datos) {
-    const { data, error } = await supabase.from('lurk_stats').update(datos).eq('username', username).select();
-    if (error) { console.error('❌ Error updateLurkStats:', error.message); return null; }
-    return data;
-}
-
-async function getHistorialLurk(username, dias) {
-    if (dias === undefined) dias = 20;
-    const limite = getFechaOffset(-dias);
-    const { data, error } = await supabase.from('lurk_historial')
-        .select('fecha, puntos, minutos').eq('username', username)
-        .gte('fecha', limite).order('fecha', { ascending: false });
-    if (error) { console.error('❌ Error getHistorialLurk:', error.message); return []; }
-    return data || [];
-}
-
-// Agrega puntos al historial del día + recalcula observacion
-async function agregarPuntosObservacion(username, puntos, minutos) {
-    if (minutos === undefined) minutos = 0;
-    const hoy = getFechaHoy();
-    const { data: existing } = await supabase.from('lurk_historial')
-        .select('id, puntos, minutos').eq('username', username).eq('fecha', hoy).maybeSingle();
-    if (existing) {
-        await supabase.from('lurk_historial')
-            .update({ puntos: (existing.puntos || 0) + puntos, minutos: (existing.minutos || 0) + minutos })
-            .eq('id', existing.id);
-    } else {
-        await supabase.from('lurk_historial').insert([{ username, fecha: hoy, puntos, minutos }]);
-    }
-    // Solo recalcular si los puntos cambiaron. Si puntos === 0, la observación
-    // no cambia y ahorramos el SELECT + UPDATE de recalcularObservacion.
-    if (puntos !== 0) await recalcularObservacion(username);
-}
-
-// Recalcula usuarios.observacion = suma de últimos 20 días de historial
-async function recalcularObservacion(username) {
-    const limite = getFechaOffset(-19); // últimos 20 días incluyendo hoy
-    const { data, error } = await supabase.from('lurk_historial')
-        .select('puntos').eq('username', username).gte('fecha', limite);
-    if (error) { console.error('❌ Error recalcularObservacion:', error.message); return null; }
-    const total = (data || []).reduce((s, r) => s + (r.puntos || 0), 0);
-    const nuevo = Math.max(0, total);
-    await updateUsuario(username, { observacion: nuevo });
-    return nuevo;
-}
-
-async function limpiarHistorialViejo() {
-    const limite = getFechaOffset(-20);
-    const { error } = await supabase.from('lurk_historial').delete().lt('fecha', limite);
-    if (error) console.error('❌ Error limpiando historial:', error.message);
-}
-
-// Aplica penalización acumulada por días inactivos con stream
-// Recorre desde el día siguiente a lurk_ultimo_dia hasta ayer (inclusive)
-async function aplicarPenalizacionesInactivas(username, lurkStats) {
-    const ultimoDia = lurkStats.lurk_ultimo_dia;
-    if (!ultimoDia) return 0;
-    const ayer = getFechaOffset(-1);
-    const fechaUltimo = new Date(ultimoDia + 'T00:00:00');
-    const fechaAyer = new Date(ayer + 'T00:00:00');
-    // Días entre ultimoDia (exclusive) y ayer (inclusive)
-    const dias = Math.max(0, Math.floor((fechaAyer - fechaUltimo) / (1000 * 60 * 60 * 24)));
-    if (dias <= 0) return 0;
-    let totalPenalizacion = 0;
-    for (let i = 1; i <= dias; i++) {
-        const fechaCheck = getFechaOffset(-i);
-        const hubo = await huboStreamEseDia(fechaCheck);
-        if (hubo) {
-            // Insertar -5 en historial de ese día (si no existe ya)
-            const { data: existing } = await supabase.from('lurk_historial')
-                .select('id').eq('username', username).eq('fecha', fechaCheck).maybeSingle();
-            if (!existing) {
-                await supabase.from('lurk_historial').insert([{ username, fecha: fechaCheck, puntos: -5, minutos: 0 }]);
-                totalPenalizacion += 5;
-            }
-        }
-    }
-    if (totalPenalizacion > 0) {
-        await recalcularObservacion(username);
-    }
-    return totalPenalizacion;
-}
-
 // ==================== CANALES ====================
-async function sumarMinutosLurk(username, minutos) {
-    const lurk = await getLurkStats(username);
-    if (!lurk) return null;
-    const total = Math.min(LURK_POSTAS_MAX_CALC, (lurk.lurk_minutos_hoy || 0) + minutos);
-    const postas = Math.min(3, Math.floor(total / 20));
-    await updateLurkStats(username, {
-        lurk_minutos_hoy: total,
-        lurk_postas_hoy: Math.max(lurk.lurk_postas_hoy || 0, postas),
-        minutos_lurk_total: (lurk.minutos_lurk_total || 0) + minutos
-    });
-    return { total, postas };
-}
-
-const LURK_POSTAS_MAX_CALC = 60;
-
 async function getCanalesActivos() {
     const { data } = await supabase.from('canales').select('*').eq('bot_activo', true);
     return data || [];
@@ -311,53 +196,6 @@ async function huboStreamEseDia(fecha) {
         .select('canal').eq('dia_contado_2h', fecha).limit(1);
     if (error) return false;
     return data && data.length > 0;
-}
-
-// ==================== INICIALIZACIÓN DE DÍA ====================
-// Evalúa la racha según los días con stream desde la última racha
-async function evaluarRacha(username, lurk) {
-    const rachaDia = lurk.lurk_ultimo_dia_racha;
-    if (!rachaDia) return lurk.lurk_racha || 0;
-    const ayer = getFechaOffset(-1);
-    if (rachaDia === ayer) return lurk.lurk_racha || 0;
-    const fechaRacha = new Date(rachaDia + 'T00:00:00');
-    const fechaAyer = new Date(ayer + 'T00:00:00');
-    const diasDesde = Math.floor((fechaAyer - fechaRacha) / (1000 * 60 * 60 * 24));
-    if (diasDesde <= 0) return lurk.lurk_racha || 0;
-    for (let i = 1; i <= diasDesde; i++) {
-        const fecha = getFechaOffset(-i);
-        const hubo = await huboStreamEseDia(fecha);
-        if (hubo) return 0;
-    }
-    return lurk.lurk_racha || 0;
-}
-// Se llama al primer comando del día de un usuario.
-// Si cambió el día: aplica penalizaciones, resetea contadores diarios.
-async function inicializarDiaLurk(username) {
-    const lurk = await getLurkStats(username);
-    if (!lurk) return null;
-    const hoy = getFechaHoy();
-    if (lurk.lurk_ultimo_dia === hoy) {
-        return { penalizacion: 0, reseteado: false, lurk };
-    }
-    // Aplicar penalizaciones de días inactivos con stream
-    const penalizacion = await aplicarPenalizacionesInactivas(username, lurk);
-    // Evaluar racha
-    const rachaNueva = await evaluarRacha(username, lurk);
-    // Resetear contadores diarios
-    await updateLurkStats(username, {
-        lurk_minutos_hoy: 0,
-        lurk_puntos_hoy: 0,
-        lurk_postas_hoy: 0,
-        lurk_npc_pendiente: 0,
-        lurk_npc_canjeado_hoy: false,
-        lurk_rango_inicio: null,
-        lurk_ultimo_dia: hoy,
-        lurk_join_actual: null,
-        lurk_ultimo_chequeo: new Date().toISOString(),
-        lurk_racha: rachaNueva
-    });
-    return { penalizacion, reseteado: true, lurk: await getLurkStats(username) };
 }
 
 // ==================== LURKV2 (estado diario) ====================
@@ -484,13 +322,8 @@ module.exports = {
     crearDuelo, limpiarEventoDuelo, tieneEventoPendiente,
     completoExplorarHoy, getFechaHoy, getFechaOffset, getFechaNpc,
     usuarioExiste,
-    // Lurk viejo (todavía en uso hasta que migremos)
-    getLurkStats, updateLurkStats,
-    getHistorialLurk, agregarPuntosObservacion, recalcularObservacion,
-    limpiarHistorialViejo, aplicarPenalizacionesInactivas,
     getCanal, getCanales, updateCanal, huboStreamEseDia,
-    inicializarDiaLurk, evaluarRacha,
-    sumarMinutosLurk, getCanalesActivos,
+    getCanalesActivos,
     // Lurk nuevo
     getLurkV2, updateLurkV2,
     getLurkReg, updateLurkReg,

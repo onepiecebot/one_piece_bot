@@ -145,12 +145,14 @@ const COMANDOS_CON_USUARIO = [
     '!exploracionpendiente', '!duelopendiente',
     '!observacion', '!personaje',
     '!coliseo',
-    '!susurrame'
+    '!basico', '!susurrame'
 ];
 
 // Comandos que funcionan también por chat en op_d_bot (redirigidos al handler de susurro).
 const COMANDOS_SUSURRO_EN_OP_D_BOT = [
     '!explorar',
+    '!basico',
+    '!susurrame',
     '!facil', '!medio', '!dificil',
     '!continuar', '!retroceder',
     '!combatir', '!retirarse',
@@ -2343,6 +2345,15 @@ const AYUDA_CHAT = '💬 COMANDOS DE CHAT 🎮 !op → Entrena Haki 📊 !infoop
 const AYUDA_CHAT_STREAMER = '💬 COMANDOS DE CHAT 🎮 !op → Entrena Haki 📊 !infoop → Tu info 🍎 !fruta → Busca fruta ⚔️ !retar @usuario → Duelo 🏆 !historial @usuario 🔴 !offop / 🟢 !onop';
 const AYUDA_SUSURRO = '📩 COMANDOS DE SUSURRO (o chat de op_d_bot) 🗺️ !explorar ⏳ !exploracionpendiente ⚔️ !duelopendiente 📊 !infoop 👤 !infoop @usuario 🔄 !actualizacion 📡 !observacion 📡 !canaleson 👁️ !personaje <nombre>';
 
+const MENSAJE_BIENVENIDA = '👋 ¡Bienvenido/a a la tripulación! Lo básico:\n' +
+    '🛡️ !op → Entrena Armadura (3/día, cd 10 min)\n' +
+    '🍎 !fruta → Busca fruta (5 intentos/día, cd 10 min)\n' +
+    '📡 Mirá streams con el bot → Sube Observación (postas a los 10, 30 y 60 min)\n' +
+    '🗺️ !explorar → Explorá una isla por susurro (1/día)\n' +
+    '⚔️ !retar @user → Duelo\n' +
+    '📊 !infoop → Tus stats completas\n' +
+    '🆘 !ayuda → Más info | 📩 !ayudasusurro → Comandos por susurro | 💬 !ayudachat → Comandos de chat';
+
 // ============================================
 // CLIENTE
 // ============================================
@@ -2393,12 +2404,16 @@ client.on('whisper', async (from, userstate, message, self) => {
     const twitchUserId = userstate['user-id'];
     console.log('📩 [SUSURRO] de ' + fromUser + ': ' + message);
     try {
+        let eraPrimeraVez = false;
         if (twitchUserId) {
             const u = await getUsuario(fromUser.toLowerCase());
             if (u) {
                 const updates = {};
                 if (u.twitch_user_id !== twitchUserId) updates.twitch_user_id = twitchUserId;
-                if (!u.ha_susurrado) updates.ha_susurrado = true;
+                if (!u.ha_susurrado) {
+                    updates.ha_susurrado = true;
+                    eraPrimeraVez = true;
+                }
                 if (Object.keys(updates).length > 0) {
                     await updateUsuario(fromUser.toLowerCase(), updates);
                 }
@@ -2410,6 +2425,12 @@ client.on('whisper', async (from, userstate, message, self) => {
             whisper: { text: message }
         };
         await handleWhisper(fakeEvent);
+        if (eraPrimeraVez && twitchUserId) {
+            const cmd = normalizarComando(message.trim().split(' ')[0]);
+            if (cmd !== '!susurrame' && cmd !== '!basico') {
+                await sendWhisper(twitchUserId, MENSAJE_BIENVENIDA, true);
+            }
+        }
     } catch (err) { console.error('❌ Error whisper:', err); }
 });
 
@@ -2460,30 +2481,25 @@ async function sendWhisper(toUserId, message, forzarSusurro) {
 // ============================================
 // !SUSURRAME — test de susurro
 // ============================================
-async function procesarSusurrame(username, twitchUserId, channel) {
+async function procesarBasicoChat(username, twitchUserId, channel, displayName) {
     if (!twitchUserId) {
-        client.say(channel, '@' + username + ' ❌ No puedo identificarte en Twitch.');
+        client.say(channel, '@' + displayName + ' ❌ No puedo identificarte en Twitch.');
         return;
     }
     const user = await getUsuario(username);
     if (!user) {
-        client.say(channel, '@' + username + ' ❌ Error al obtener tus datos.');
+        client.say(channel, '@' + displayName + ' ❌ Error al obtener tus datos.');
         return;
     }
     const antes = user.ha_susurrado;
-    if (!antes) {
-        await updateUsuario(username, { ha_susurrado: true });
+    if (!antes) await updateUsuario(username, { ha_susurrado: true });
+    const ok = await sendWhisper(twitchUserId, MENSAJE_BIENVENIDA, true);
+    if (ok) {
+        client.say(channel, '@' + displayName + ' 📩 Te mandé el mensaje por susurro.');
+    } else {
+        if (!antes) await updateUsuario(username, { ha_susurrado: false });
+        client.say(channel, '@' + displayName + ' ❌ No puedo mandarte susurros (configuración de Twitch). 💡 Usá el chat de op_d_bot como si fuera susurro: los comandos funcionan igual ahí.');
     }
-    const mensaje = '✅ ¡Funciona! Comandos que podés usar por susurro:\n' + AYUDA_SUSURRO;
-    const ok = await sendWhisper(twitchUserId, mensaje, true);
-    if (!ok) {
-        // Revertir el flag si lo habíamos cambiado
-        if (!antes) {
-            await updateUsuario(username, { ha_susurrado: false });
-        }
-        client.say(channel, '@' + username + ' ❌ No puedo mandarte susurros. Tu configuración de Twitch no lo permite.');
-    }
-    // Si ok, no avisamos nada en el chat: el usuario ya recibió el susurro
 }
 // ============================================
 // !FRUTA — busca fruta (chat o susurro)
@@ -3027,7 +3043,10 @@ async function handleWhisper(event) {
             }
         }
     }
-
+    if (command === '!basico' || command === '!susurrame') {
+        await sendWhisper(fromUserId, MENSAJE_BIENVENIDA);
+        return;
+    }
     if (command === '!testwhisper') {
         await sendWhisper(fromUserId, '¡Hola ' + fromUserLogin + '! Funciona. 🎉');
         return;
@@ -3771,7 +3790,7 @@ async function handleWhisper(event) {
 
     // Fallback: susurro con comando desconocido (cooldown 60s por usuario)
     const COMANDOS_SUSURRO_CONOCIDOS = [
-        '!testwhisper', '!ayuda', '!ayudaop', '!ayudachat', '!ayudasusurro',
+        '!testwhisper', '!ayuda', '!ayudaop', '!ayudachat', '!ayudasusurro', '!basico', '!susurrame',
         '!actualizacion', '!scan', '!agregarcanal', '!predeploy',
         '!deploy', '!dep', '!deploylisto', '!deplis', '!perder',
         '!op', '!observacion', '!canaleson', '!personaje', '!infoop',
@@ -4413,9 +4432,11 @@ async function procesarMensajeChat(channel, tags, message, self) {
         return;
     }
 
-    if (command === '!susurrame') {
-        await procesarSusurrame(username, twitchUserId, channel);
-        return;
+    if (command === '!basico' || command === '!susurrame') {
+        if (canal !== 'op_d_bot') {
+            await procesarBasicoChat(username, twitchUserId, channel, tags.username);
+            return;
+        }
     }
 
     if (usaUsuario) {
@@ -4753,8 +4774,6 @@ setInterval(lurkChequeoPeriodico, 10 * 60 * 1000);
 setInterval(cerrarBloquesCompletos, 2 * 60 * 1000);
 setInterval(revisarColiseosExpirados, 2 * 60 * 1000);
 setInterval(schedulerPenalizacionesDiarias, 60 * 60 * 1000);
-
-// Limpieza de historial viejo (1 vez cada 6 horas)
 
 // Scheduler de Supremos cada 30s
 setInterval(async () => {
