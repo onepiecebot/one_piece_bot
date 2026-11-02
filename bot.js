@@ -1362,14 +1362,16 @@ function calcularRecompensasExplorar(npc, prob, victoria, dificultad) {
     const VICTORIA_EXP = 0.418;
     const CASTIGO_EXP = 0.3;
     const MULT_VICTORIA = 1.25;
-    const MULT_DIFICIL = 1.18;
+    const MULT_DIFICIL_MAX = 1.392;
     const baseConq = npc.recompensa_conquistador || 0;
     const baseBerries = npc.recompensa_berries || 0;
     const p = Math.max(prob, 0.01);
-    const multBase = victoria
-        ? Math.max(Math.pow(2, (0.5 - p) / VICTORIA_EXP) * MULT_VICTORIA, 0.05)
+    const extraDificil = (dificultad === 'dificil')
+        ? 1.0 + (MULT_DIFICIL_MAX - 1.0) * Math.max(0, Math.min(1, (0.33 - p) / 0.26))
+        : 1.0;
+    const mult = victoria
+        ? Math.max(Math.pow(2, (0.5 - p) / VICTORIA_EXP) * MULT_VICTORIA * extraDificil, 0.05)
         : Math.max(Math.pow(2, (p - 0.5) / CASTIGO_EXP), 0.05);
-    const mult = (victoria && dificultad === 'dificil') ? multBase * MULT_DIFICIL : multBase;
     return {
         conq: baseConq * mult,
         berries: baseBerries * mult
