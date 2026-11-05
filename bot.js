@@ -26,6 +26,23 @@ const TOTAL_PUERTAS_JUEGO = 10000;
 const FACTOR_RECOMPENSA = 3614500; // berries por punto de aporte de haki
 const TOPE_DELTA_MULT = 1.8; // tope delta = 1.8 × max base histórica
 const EXP_PROB = 4.0; // exponente de la fórmula de probabilidad (duelos, explorar, coliseo, fruta)
+
+// Tramos de !op por puntaje de armadura (no por rango visual)
+const WEIGHTED_125 = [-3, -2, -2, -1, -1, -1, 0, 0, 0, +1, +1, +1, +2, +2];
+const WEIGHTED_150 = [-3, -3, -3, -3, -2, -2, -1, -1, -1, 0, 0, +1, +1, +2];
+const WEIGHTED_180 = [-3, -3, -3, -3, -3, -2, -2, -1, -1, 0, 0, +1, +1, +2];
+const TRAMOS_OP = [
+    { max: 40,       tipo: 'uniforme', vals: [1, 5],        nombre: 'No despertado' },
+    { max: 70,       tipo: 'uniforme', vals: [-1, 4],       nombre: 'Despertado' },
+    { max: 90,       tipo: 'uniforme', vals: [-2, 3],       nombre: 'Básico' },
+    { max: 110,      tipo: 'uniforme', vals: [-3, 4],       nombre: 'Avanzado' },
+    { max: 125,      tipo: 'uniforme', vals: [-3, 3],       nombre: 'Avanzado+' },
+    { max: 135,      tipo: 'weighted', vals: WEIGHTED_125,  nombre: 'Alto' },
+    { max: 150,      tipo: 'uniforme', vals: [-3, 2],       nombre: 'Alto+' },
+    { max: 180,      tipo: 'weighted', vals: WEIGHTED_150,  nombre: 'Tope' },
+    { max: Infinity, tipo: 'weighted', vals: WEIGHTED_180,  nombre: 'Tope180' }
+];
+
 const DUEÑO = 'fan_d_larana';
 const TWITCH_API_URL = 'https://api.twitch.tv/helix';
 const GITHUB_REPO = 'onepiecebot/one_piece_bot';
@@ -241,9 +258,7 @@ async function schedulerPenalizacionesDiarias() {
                         arm = Math.max(arm - 1, 0);
                     } else {
                         for (let i = 0; i < usosFaltantes; i++) {
-                            const rango = getRangoArmadura(arm);
-                            const int = getIntervaloTirada(rango.nombre);
-                            const peor = Math.min(int.min, int.max, -1);
+                            const peor = getPeorPenalizacion(arm);
                             delta += peor;
                             arm = Math.max(arm + peor, 0);
                         }
@@ -379,25 +394,36 @@ function formatearProbExplorar(prob, esSupObs) {
 }
 
 // ============================================
-// !op
+// !op — tramos por puntaje de armadura
 // ============================================
-function getIntervaloTirada(rango) {
-    const intervalos = {
-        'No despertado': { min: 1, max: 5 },
-        'Despertado': { min: -1, max: 4 },
-        'Básico': { min: -2, max: 3 },
-        'Avanzado': { min: -3, max: 4 },
-        'Supremo': { min: -4, max: 2 }
-    };
-    return intervalos[rango] || { min: 0, max: 0 };
+function getTramoOp(armor) {
+    for (const t of TRAMOS_OP) if (armor < t.max) return t;
+    return TRAMOS_OP[TRAMOS_OP.length - 1];
+}
+
+function tirarOp(tramo) {
+    if (tramo.tipo === 'uniforme') {
+        return Math.floor(Math.random() * (tramo.vals[1] - tramo.vals[0] + 1)) + tramo.vals[0];
+    }
+    return tramo.vals[Math.floor(Math.random() * tramo.vals.length)];
+}
+
+// Peor tirada de penalización, según rango visual (no por tramo)
+function getPeorPenalizacion(armor) {
+    if (armor < 70) return -1;
+    if (armor < 90) return -2;
+    return -3;
+}
+
+function getBonusDiario(armor) {
+    if (armor < 40) return 5;
+    if (armor < 70) return 4;
+    if (armor < 90) return 3;
+    if (armor < 125) return 2;
+    return 1;
 }
 
 const tiradaAleatoria = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
-
-function getBonusDiario(rango) {
-    const b = { 'No despertado': 5, 'Despertado': 4, 'Básico': 3, 'Avanzado': 2, 'Supremo': 1 };
-    return b[rango] || 0;
-}
 
 function getBonusRachaOp(dias) {
     if (dias % 10 === 0) return 10;
@@ -2245,15 +2271,33 @@ async function programarProximoNpc() {
     }, ms);
 }
 
-async function procesarPersonaje(username, nombreIngresado, fromUserId) {
-    if (!npcActual) { await sendWhisper(fromUserId, '⏳ No hay ningún avistamiento activo ahora.'); return; }
+async function procesarPersonaje(username, nombreIngresado, fromUserId, esChat, chatChannel) {
+    const responder = async (msgLargo, msgCorto) => {
+        if (!esChat) {
+            await sendWhisper(fromUserId, msgLargo);
+            return;
+        }
+        const user = await getUsuario(username);
+        if (user && user.ha_susurrado && fromUserId) {
+            const ok = await sendWhisper(fromUserId, msgLargo, true);
+            if (ok) return;
+        }
+        if (chatChannel) client.say(chatChannel, '@' + username + ' ' + msgCorto);
+    };
+
+    if (!npcActual) {
+        await responder('⏳ No hay ningún avistamiento activo ahora.', '⏳ No hay avistamiento.');
+        return;
+    }
     if (!npcVentanaHasta || new Date(npcVentanaHasta) < new Date()) {
-        await sendWhisper(fromUserId, '⏳ Ya pasó la ventana de reclamo.'); return;
+        await responder('⏳ Ya pasó la ventana de reclamo.', '⏳ La ventana ya cerró.');
+        return;
     }
     const v2 = await getLurkV2(username);
     if (!v2) return;
     if (v2.avist_reclamado) {
-        await sendWhisper(fromUserId, 'Ya reclamaste tu avistamiento de hoy. Volvé mañana.'); return;
+        await responder('Ya reclamaste tu avistamiento de hoy. Volvé mañana.', '✅ Ya reclamaste hoy.');
+        return;
     }
     const ingresado = nombreIngresado.toLowerCase().trim();
     const correcto = npcActual.toLowerCase().trim();
@@ -2265,13 +2309,13 @@ async function procesarPersonaje(username, nombreIngresado, fromUserId) {
             await agregarPuntosObservacionNueva(username, 2);
             const userPost = await getUsuario(username);
             if (userPost) chequearHakiCambio('observacion', obsAntes, userPost.observacion);
-            await sendWhisper(fromUserId, '👁️ ¡Bien visto! +2 de Haki de Observación para vos.');
+            await responder('👁️ ¡Bien visto! +2 de Haki de Observación para vos.', '✅ +2 Observación 👁️');
         } else {
             await updateLurkV2(username, { avist_pendiente: 2 });
-            await sendWhisper(fromUserId, '👁️ ¡Acertaste! Aunque... hace falta que estés al menos 10 min en el stream. Cuando llegues, te sumo los puntos.');
+            await responder('👁️ ¡Acertaste! Aunque... hace falta que estés al menos 10 min en el stream. Cuando llegues, te sumo los puntos.', '✅ Correcto, pero necesitás 10 min en el chat 👁️');
         }
     } else {
-        await sendWhisper(fromUserId, '❌ Ese no era, locura.');
+        await responder('❌ Ese no era, locura.', '❌ No era.');
     }
 }
 // ============================================
@@ -3743,7 +3787,6 @@ async function handleWhisper(event) {
         return;
     }
 
-    // Duelos
     if (command === '!retar') {
         if (args.length < 2) { await sendWhisper(fromUserId, 'Uso: !retar @usuario'); return; }
         await procesarRetar(username, args[1], fromUserId, true, null);
@@ -4015,9 +4058,7 @@ async function procesarOp(username, displayName, fromUserId, esSusurro, chatChan
             if (usosAyer === 0 && arm < 20) { delta = -1; arm = Math.max(arm - 1, 0); }
             else {
                 for (let i = 0; i < usosFaltantes; i++) {
-                    const rango = getRangoArmadura(arm);
-                    const int = getIntervaloTirada(rango.nombre);
-                    const peor = Math.min(int.min, int.max, -1);
+                    const peor = getPeorPenalizacion(arm);
                     delta += peor;
                     arm = Math.max(arm + peor, 0);
                 }
@@ -4037,10 +4078,8 @@ async function procesarOp(username, displayName, fromUserId, esSusurro, chatChan
     }
     if ((user.op_usos_hoy || 0) >= 3) { await responder('Límite diario alcanzado.'); return; }
     const armActual = user.armadura || 0;
-    const eraSupremo = await esSupremoArmadura(username);
-    const rangoActual = getRangoArmadura(armActual, eraSupremo);
-    const intervalo = getIntervaloTirada(rangoActual.nombre);
-    const delta = tiradaAleatoria(intervalo.min, intervalo.max);
+    const tramo = getTramoOp(armActual);
+    const delta = tirarOp(tramo);
     const nuevaArm = Math.max(armActual + delta, 0);
     const nuevosUsos = (user.op_usos_hoy || 0) + 1;
     const updateData = {
@@ -4049,7 +4088,7 @@ async function procesarOp(username, displayName, fromUserId, esSusurro, chatChan
     };
     const mensajesExtra = [];
     if (nuevosUsos === 3) {
-        const bonusDiario = getBonusDiario(rangoActual.nombre);
+        const bonusDiario = getBonusDiario(armActual);
         mensajesExtra.push('🔥 Diario: +' + bonusDiario);
         const ultimoDiaRacha = user.ultimo_dia_racha || null;
         let rachaActual = user.racha_ops || 0;
@@ -4537,6 +4576,12 @@ async function procesarMensajeChat(channel, tags, message, self) {
             else client.say(channel, '@' + tags.username + ' Concentrate en la pelea pendiente.');
             return;
         }
+    }
+    if (command === '!personaje' && canal !== 'op_d_bot') {
+        if (!args[1]) { client.say(channel, '@' + tags.username + ' Uso: !personaje <nombre>'); return; }
+        const nombreCompleto = args.slice(1).join(' ');
+        await procesarPersonaje(username, nombreCompleto, twitchUserId, true, channel);
+        return;
     }
 
     if (command === '!retar') {
